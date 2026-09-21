@@ -1,0 +1,33 @@
+# What the dependency tree is allowed to carry. `cargo deny check` runs in
+# CI and fails the build on anything not listed here.
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+# Permissive, plus MPL-2.0 (file-level copyleft, fine for a linked crate).
+# zrush itself is GPL-3.0-only, which these are all compatible with.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "MPL-2.0",
+  "CC0-1.0",
+  # xxhash-rust, the transcript cache's hasher.
+  "BSL-1.0",
+  # zrush's own crates.
+  "GPL-3.0-only",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
