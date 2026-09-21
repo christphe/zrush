@@ -9,17 +9,18 @@ One binary, no daemon, no database. The only persistent state is one file per
 worktree, inside that worktree's own gitdir. No secrets stored.
 
 ```
-Repo       wt                          <enter> open     <^o> new session
-Branch     main                        <^w> worktree    <^d> delete
-Agent      claude                      </> filter       <?> help
-Worktrees  2 · ●2 live · ◌1 resumable
-╭ Worktrees(2) ────────────────────────────────────╮╭ Preview ─────────────────────────────────────────╮
-│ ▾ main [root]              ● 1 live        ~/wt  ││you port it to rust                               │
-│    ├─ ● refonte du picker  busy 4m               ││                                                  │
-│    └─ ◌ fix CI zip         resumable 2d          ││  · Le port est fait. 243 tests, clippy propre.   │
-│ ▾ rust                     ● 1 live        …/rust││                                                  │
-│    └─ ● port ratatui       busy 0m               ││                                                  │
-╰──────────────────────────────────────────────────╯╰──────────────────────────────────────────────────╯
+Repo       wt                          <enter> open     <^o> new session                                  ______  ______   __  __   ______   __  __
+Branch     main                        <^w> worktree    <^d> delete                                      /\___  \/\  == \ /\ \/\ \ /\  ___\ /\ \_\ \
+Agent      claude                      </> filter       <?> help                                         \/_/  /_\ \  __< \ \ \_\ \\ \___  \\ \  __ \
+Worktrees  2 · ●2 live · ◌1 resumable                                                                      /\____\\ \_\ \_\\ \_____\\/\_____\\ \_\ \_\
+                                                                                                           \/____/ \/_/ /_/ \/_____/ \/_____/ \/_/\/_/
+╭ Worktrees(2) ───────────────────────────────────────────────────────────╮╭ Preview ────────────────────────────────────────────────────────────────╮
+│ ▾ main [root]              ● 1 live        ~/wt                         ││ you port it to rust                                                     │
+│    ├─ ● refonte du picker  busy 4m                                      ││                                                                         │
+│    └─ ◌ fix CI zip         resumable 2d                                 ││   · On y va. Le port garde tout ce que faisait la version sh.           │
+│ ▾ rust                     ● 1 live        ~/wt/.claude/worktrees/rust  ││                                                                         │
+│    └─ ● port ratatui       busy 0m                                      ││                                                                         │
+╰─────────────────────────────────────────────────────────────────────────╯╰─────────────────────────────────────────────────────────────────────────╯
  <esc> quit
 ```
 

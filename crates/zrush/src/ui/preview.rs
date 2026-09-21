@@ -27,7 +27,14 @@ pub fn render(f: &mut Frame, area: Rect, preview: &Preview) {
         .border_type(BorderType::Rounded)
         .border_style(theme::border())
         .title(Span::styled(" Preview ", theme::title()));
-    let inner = block.inner(area);
+    // One column of air, so the text does not touch the border the way the
+    // table's rows do not.
+    let full = block.inner(area);
+    let inner = ratatui::layout::Rect {
+        x: full.x + 1,
+        width: full.width.saturating_sub(2),
+        ..full
+    };
     f.render_widget(block, area);
 
     let lines: Vec<Line> = match preview {

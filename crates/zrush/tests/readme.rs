@@ -22,8 +22,8 @@ use zrush_core::config::{Config, dirs_under};
 use zrush_core::host::RecordingHost;
 use zrush_core::model::{Session, SessionKind};
 
-const WIDTH: u16 = 104;
-const HEIGHT: u16 = 12;
+const WIDTH: u16 = 150;
+const HEIGHT: u16 = 13;
 const FENCE: &str = "```";
 
 fn git(cwd: &Path, args: &[&str]) {
@@ -119,7 +119,7 @@ fn render() -> String {
                 },
                 Turn {
                     role: Role::Assistant,
-                    text: "Le port est fait. 243 tests, clippy propre.".into(),
+                    text: "On y va. Le port garde tout ce que faisait la version sh.".into(),
                 },
             ]),
         );

@@ -13,11 +13,13 @@ use unicode_width::UnicodeWidthStr;
 
 use super::theme;
 
-pub const HEIGHT: u16 = 4;
+/// Five, because that is how tall the logo is; the info block uses four
+/// of them.
+pub const HEIGHT: u16 = 5;
 
 /// Below this there is no room for the logo; below `MIN_FOR_KEYS` there is
 /// none for the key grid either, and the info block takes what is left.
-const MIN_FOR_LOGO: u16 = 110;
+const MIN_FOR_LOGO: u16 = 140;
 const MIN_FOR_KEYS: u16 = 64;
 
 pub struct Info<'a> {
@@ -51,15 +53,16 @@ impl Info<'_> {
     }
 }
 
-/// Z R U S H, three rows of box drawing, five letters of three columns
-/// separated by one space. The first attempt drew a bare diagonal for the
-/// Z and a literal 2 beside it, so it read "/2RUSH".
-const LOGO: [&str; 3] = [
-    "╶─╮ ╭─╮ ╷ ╷ ╭─╴ ╷ ╷",
-    " ╭╯ ├┬╯ │ │ ╰─╮ ├─┤",
-    "╰─╴ ╵╰╴ ╰─╯ ╶─╯ ╵ ╵",
+/// Five rows, padded to a rectangle so the column it sits in is the width
+/// it claims. Raw strings: it is mostly backslashes.
+const LOGO: [&str; 5] = [
+    r" ______  ______   __  __   ______   __  __   ",
+    r"/\___  \/\  == \ /\ \/\ \ /\  ___\ /\ \_\ \  ",
+    r"\/_/  /_\ \  __< \ \ \_\ \\ \___  \\ \  __ \ ",
+    r"  /\____\\ \_\ \_\\ \_____\\/\_____\\ \_\ \_\",
+    r"  \/____/ \/_/ /_/ \/_____/ \/_____/ \/_/\/_/",
 ];
-const LOGO_WIDTH: u16 = 19;
+const LOGO_WIDTH: u16 = 45;
 
 /// Two columns of `<key> action`, the way k9s lists them.
 const KEYS: [[(&str, &str); 2]; 3] = [
@@ -178,37 +181,20 @@ pub mod tests {
         }
     }
 
-    /// Five cells of three columns with one space between them. A cell that
-    /// has drifted is a letter leaning into its neighbour, which is how the
-    /// first logo ended up spelling something else.
     #[test]
-    fn the_logo_is_five_cells_of_three_columns() {
+    fn the_logo_is_a_rectangle() {
         for l in LOGO {
-            let cells: Vec<Vec<char>> = l
-                .chars()
-                .collect::<Vec<_>>()
-                .chunks(4)
-                .map(<[char]>::to_vec)
-                .collect();
-            assert_eq!(cells.len(), 5, "not five cells: {l}");
-            for (i, cell) in cells.iter().enumerate() {
-                assert!(cell.len() <= 4, "cell {i} is {} wide in: {l}", cell.len());
-                if let Some(sep) = cell.get(3) {
-                    assert_eq!(*sep, ' ', "cell {i} runs into the next in: {l}");
-                }
-            }
+            assert_eq!(
+                UnicodeWidthStr::width(l),
+                LOGO_WIDTH as usize,
+                "ragged: |{l}|"
+            );
         }
     }
 
     #[test]
-    fn the_logo_says_zrush_and_not_something_else() {
-        // The first one drew a bare diagonal and a literal 2: "/2RUSH".
-        assert!(!LOGO[0].contains('╱'), "a bare diagonal is not a Z");
-        assert_eq!(
-            LOGO[1].chars().next(),
-            Some(' '),
-            "the Z's middle stroke is inset"
-        );
+    fn the_header_is_tall_enough_for_the_logo() {
+        assert!(HEIGHT as usize >= LOGO.len());
     }
 
     #[test]
