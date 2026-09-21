@@ -2244,18 +2244,26 @@ dependencies = [
  "assert_cmd",
  "clap",
  "crossterm",
- "dirs",
  "insta",
- "jiff",
  "nucleo-matcher",
  "portable-pty",
  "predicates",
  "ratatui",
+ "tempfile",
+ "unicode-width",
+ "zrush-core",
+]
+
+[[package]]
+name = "zrush-core"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "jiff",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "toml",
- "unicode-width",
  "xxhash-rust",
 ]

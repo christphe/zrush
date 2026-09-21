@@ -1,0 +1,31 @@
+[package]
+name = "zrush"
+description = "Pick a git worktree, or one of its agent sessions, and open it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "zrush"
+path = "src/main.rs"
+
+[dependencies]
+zrush-core.workspace = true
+
+clap.workspace = true
+crossterm.workspace = true
+nucleo-matcher.workspace = true
+ratatui.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+insta.workspace = true
+portable-pty.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
