@@ -89,7 +89,7 @@ Run `zrush` from anywhere inside a repository.
 | `ctrl-d` | delete a conversation, or remove a worktree |
 | `ctrl-p` | purge: mark rows with `space`, `enter` removes the lot |
 | `ctrl-l` | reload |
-| `/` | filter. Substring by default, `~needle` for fuzzy. Smart case. A node and its children travel together, so the list stays a tree |
+| `/` | filter, fuzzy by default. `'sub` `=exact` `^start` `end$` `!not`, as in fzf. A node and its children travel together, so the list stays a tree |
 | `:` | command bar — `:agent`, `:help`, `:q` |
 | `?` | every key, in full |
 | `esc` | close a dialog, leave a mode, or quit |
@@ -142,13 +142,25 @@ only mechanism.
 
 ### Filtering
 
-`/` matches the branch or the session title as a **substring**, with smart
-case. fzf can afford fuzzy matching because it ranks, putting the best match
-on top and leaving the rest as noise below; this list is a tree whose order
-means something, so there is nowhere to put the noise. `rust` would otherwise
-find `r`, `u`, `s` and `t` in order inside `z-rush agent orchestrator`.
+`/` matches the branch or the session title — not the path, and not the tree
+glyphs. Fuzzy by default, with fzf's vocabulary for the rest:
 
-`~needle` asks for fuzzy explicitly.
+| Typed | Matches |
+|---|---|
+| `rust` | fuzzy |
+| `'rust` | contains |
+| `=rust` | is exactly |
+| `^rust` | starts with |
+| `rust$` | ends with |
+| `!rust` | does not contain |
+
+Fuzzy is loose on short needles: `rust` finds `r`, `u`, `s` and `t` in order
+inside `z-rush agent orchestrator`. The characters that matched are marked, so
+a surprising row explains itself, and `'` is the way out.
+
+A node and its children travel together: filtering to a worktree keeps its
+sessions, and a matching session keeps the worktree that says where it lives.
+A row with no marks is one that came along with a neighbour.
 
 ## Agents
 

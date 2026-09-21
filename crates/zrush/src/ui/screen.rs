@@ -99,6 +99,7 @@ pub fn draw(f: &mut Frame, app: &App, z: &Zrush, prev: &Preview) {
         body[0],
         &table::View {
             rows: &visible,
+            matched: &app.matched,
             home: home.as_deref(),
             cursor: app.cursor,
             marked: &marked,
@@ -119,7 +120,10 @@ pub fn draw(f: &mut Frame, app: &App, z: &Zrush, prev: &Preview) {
 
 fn status_line(f: &mut Frame, area: Rect, app: &App) {
     let left = match app.mode {
-        Mode::Filter => format!("/{}▏   substring · ~ for fuzzy", app.filter),
+        Mode::Filter => format!(
+            "/{}▏   fuzzy · \x27sub · =exact · ^start · end$ · !not",
+            app.filter
+        ),
         Mode::Purge => "space marks · enter purges · esc cancels".into(),
         Mode::Normal if !app.filter.is_empty() => format!("/{}", app.filter),
         Mode::Normal => "<esc> quit".into(),
@@ -679,19 +683,5 @@ pub mod tests {
                 if lines.iter().any(|l| l.contains("init")))
         });
         assert!(found, "the git log never came back: {events:?}");
-    }
-}
-
-#[cfg(test)]
-mod look {
-    use super::tests::*;
-
-    /// Not an assertion — a way to look at the thing. `cargo test -p zrush
-    /// look -- --nocapture` prints the frame.
-    #[test]
-    fn print_a_frame() {
-        let td = tempfile::TempDir::new().unwrap();
-        let (z, app) = loaded(&td);
-        println!("{}", frame(&app, &z, 150, 18));
     }
 }

@@ -69,6 +69,9 @@ pub struct App {
     pub rows: Vec<Row>,
     /// Indices into `rows` that survive the filter, in order.
     pub visible: Vec<usize>,
+    /// Alongside `visible`: which characters of each row's name the filter
+    /// matched. Empty means the row came along with a neighbour.
+    pub matched: Vec<Vec<usize>>,
     pub cursor: usize,
     pub offset: usize,
     pub mode: Mode,
@@ -109,6 +112,7 @@ impl App {
         Self {
             rows: Vec::new(),
             visible: Vec::new(),
+            matched: Vec::new(),
             cursor: 0,
             offset: 0,
             mode: Mode::Normal,
@@ -173,7 +177,9 @@ impl App {
     }
 
     pub fn refilter(&mut self) {
-        self.visible = filter::apply(&self.rows, &self.filter);
+        let hits = filter::hits(&self.rows, &self.filter);
+        self.visible = hits.iter().map(|h| h.index).collect();
+        self.matched = hits.into_iter().map(|h| h.matched).collect();
         self.clamp();
     }
 

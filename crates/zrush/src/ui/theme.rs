@@ -148,6 +148,13 @@ pub fn cursor() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// The characters a filter matched. Underlined rather than recoloured, so
+/// it survives on top of whatever the row's own colour is, including the
+/// cursor bar.
+pub fn matched() -> Style {
+    Style::default().add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
+}
+
 pub fn marked() -> Style {
     Style::default().fg(MARKED).add_modifier(Modifier::BOLD)
 }

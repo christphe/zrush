@@ -18,6 +18,10 @@ use super::theme;
 /// core stays free of interface state.
 pub struct View<'a> {
     pub rows: &'a [Row],
+    /// Per row, the characters of `Row::search` a filter matched. Empty
+    /// means the row came along with its node or one of its children —
+    /// which is the whole explanation of why it is on screen.
+    pub matched: &'a [Vec<usize>],
     /// Shown as `~` in the path column. Display only: the rows keep the
     /// absolute path, which is what `--list` hands to a script.
     pub home: Option<&'a std::path::Path>,
@@ -105,17 +109,17 @@ pub fn line<'a>(
     selected: bool,
     room: usize,
     home: Option<&std::path::Path>,
+    matched: &[usize],
 ) -> Line<'a> {
     let (lw, bw, sw) = w;
     // Whatever is left after the fixed columns and the three gaps.
     let for_path = room.saturating_sub(1 + lw + 2 + bw + 2 + sw + 2);
     let mark = if marked { "▌" } else { " " };
+    let label = pad(&format!("{}{}", row.glyph, row.label), lw);
+    let base = style_for(row.kind);
     let parts = [
         (mark.to_string(), theme::marked()),
-        (
-            pad(&format!("{}{}", row.glyph, row.label), lw),
-            style_for(row.kind),
-        ),
+        (String::new(), base),
         ("  ".to_string(), Style::default()),
         (pad(&row.badge, bw), theme::badge()),
         ("  ".to_string(), Style::default()),
@@ -126,11 +130,62 @@ pub fn line<'a>(
             theme::path(),
         ),
     ];
-    let spans: Vec<Span<'a>> = parts
-        .into_iter()
-        .map(|(text, style)| Span::styled(text, if selected { theme::cursor() } else { style }))
-        .collect();
+    let mut spans: Vec<Span<'a>> = Vec::new();
+    for (i, (text, style)) in parts.into_iter().enumerate() {
+        let style = if selected { theme::cursor() } else { style };
+        // Slot 1 is the label, which is the only column a filter matches.
+        if i == 1 {
+            spans.extend(highlight(&label, row, matched, style));
+        } else {
+            spans.push(Span::styled(text, style));
+        }
+    }
     Line::from(spans)
+}
+
+/// Split the label so the matched characters carry their own style.
+///
+/// The positions come from `Row::search`, which sits inside the label after
+/// the tree glyphs; find where it starts and shift them.
+fn highlight<'a>(label: &str, row: &Row, matched: &[usize], base: Style) -> Vec<Span<'a>> {
+    if matched.is_empty() || row.search.is_empty() {
+        return vec![Span::styled(label.to_string(), base)];
+    }
+    let Some(byte_at) = label.find(row.search.as_str()) else {
+        return vec![Span::styled(label.to_string(), base)];
+    };
+    let offset = label[..byte_at].chars().count();
+    let want: std::collections::HashSet<usize> = matched.iter().map(|c| c + offset).collect();
+
+    let mut spans = Vec::new();
+    let mut run = String::new();
+    let mut run_hot = false;
+    for (i, c) in label.chars().enumerate() {
+        let hot = want.contains(&i);
+        if hot != run_hot && !run.is_empty() {
+            spans.push(Span::styled(
+                std::mem::take(&mut run),
+                if run_hot {
+                    base.patch(theme::matched())
+                } else {
+                    base
+                },
+            ));
+        }
+        run_hot = hot;
+        run.push(c);
+    }
+    if !run.is_empty() {
+        spans.push(Span::styled(
+            run,
+            if run_hot {
+                base.patch(theme::matched())
+            } else {
+                base
+            },
+        ));
+    }
+    spans
 }
 
 pub fn render(f: &mut Frame, area: Rect, view: &View<'_>, title: &str) {
@@ -158,6 +213,7 @@ pub fn render(f: &mut Frame, area: Rect, view: &View<'_>, title: &str) {
                 i == view.cursor,
                 inner.width as usize,
                 view.home,
+                view.matched.get(i).map_or(&[][..], Vec::as_slice),
             )
         })
         .collect();
@@ -219,9 +275,9 @@ mod tests {
     #[test]
     fn a_marked_row_carries_the_bar() {
         let r = row(RowKind::Session, "", "t", "", "");
-        let marked = line(&r, (1, 0, 0), true, false, 80, None);
+        let marked = line(&r, (1, 0, 0), true, false, 80, None, &[]);
         assert!(marked.spans[0].content.contains('▌'));
-        let plain = line(&r, (1, 0, 0), false, false, 80, None);
+        let plain = line(&r, (1, 0, 0), false, false, 80, None, &[]);
         assert_eq!(plain.spans[0].content.as_ref(), " ");
     }
 
@@ -230,7 +286,7 @@ mod tests {
         // Reversing each span instead turns every column into a block of a
         // different colour.
         let r = row(RowKind::Worktree, "▾ ", "main", "● 1 live", "~3");
-        let l = line(&r, (10, 10, 4), false, true, 80, None);
+        let l = line(&r, (10, 10, 4), false, true, 80, None, &[]);
         let first = l.spans[0].style;
         assert!(
             l.spans.iter().all(|s| s.style == first),
@@ -242,7 +298,7 @@ mod tests {
     #[test]
     fn an_unselected_row_keeps_its_own_colours() {
         let r = row(RowKind::Worktree, "▾ ", "main", "● 1 live", "~3");
-        let l = line(&r, (10, 10, 4), false, false, 80, None);
+        let l = line(&r, (10, 10, 4), false, false, 80, None, &[]);
         let styles: std::collections::HashSet<_> = l.spans.iter().map(|s| s.style).collect();
         assert!(
             styles.len() > 1,
@@ -273,7 +329,7 @@ mod tests {
         let r = row(RowKind::Worktree, "▾ ", "main [root]", "● 1 live", "~3");
         let mut r = r;
         r.location = "/private/var/folders/3c/6v5l9jgd/T/zrush/repo/.claude/worktrees/rust".into();
-        let l = line(&r, (13, 8, 2), false, false, 50, None);
+        let l = line(&r, (13, 8, 2), false, false, 50, None, &[]);
         let drawn: usize = l
             .spans
             .iter()
@@ -310,5 +366,95 @@ mod tests {
     #[test]
     fn a_zero_height_pane_does_not_divide_by_it() {
         assert_eq!(scroll_to(4, 9, 0), 0);
+    }
+}
+
+#[cfg(test)]
+mod highlight_tests {
+    use super::*;
+    use zrush_core::model::tree::NodeId;
+
+    fn session(title: &str) -> Row {
+        Row {
+            kind: RowKind::Session,
+            node: NodeId::Orphans,
+            session_id: None,
+            glyph: String::new(),
+            label: format!("   ├─ ● {title}"),
+            search: title.into(),
+            badge: String::new(),
+            status: String::new(),
+            location: String::new(),
+        }
+    }
+
+    /// The label's styled runs, as (text, underlined) pairs.
+    fn runs(row: &Row, matched: &[usize]) -> Vec<(String, bool)> {
+        highlight(&row.label, row, matched, Style::default())
+            .into_iter()
+            .map(|s| {
+                (
+                    s.content.to_string(),
+                    s.style
+                        .add_modifier
+                        .contains(ratatui::style::Modifier::UNDERLINED),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_matched_characters_are_the_ones_marked() {
+        let r = session("Conversion en Rust");
+        // "Rust" starts at character 14 of the title.
+        let marked = runs(&r, &[14, 15, 16, 17]);
+        let hot: String = marked
+            .iter()
+            .filter(|(_, on)| *on)
+            .map(|(t, _)| t.clone())
+            .collect();
+        assert_eq!(hot, "Rust");
+    }
+
+    #[test]
+    fn the_positions_are_shifted_past_the_tree_glyphs() {
+        // They index the title; the label carries "   ├─ ● " in front.
+        let r = session("rust");
+        let hot: String = runs(&r, &[0, 1, 2, 3])
+            .iter()
+            .filter(|(_, on)| *on)
+            .map(|(t, _)| t.clone())
+            .collect();
+        assert_eq!(hot, "rust");
+    }
+
+    #[test]
+    fn a_row_with_nothing_matched_is_drawn_plain() {
+        // Which is how you tell it came along with a neighbour.
+        let r = session("Conversion en Rust");
+        assert!(runs(&r, &[]).iter().all(|(_, on)| !on));
+    }
+
+    #[test]
+    fn accented_titles_do_not_shift_the_marks() {
+        let r = session("réécriture");
+        let hot: String = runs(&r, &[0, 1, 2])
+            .iter()
+            .filter(|(_, on)| *on)
+            .map(|(t, _)| t.clone())
+            .collect();
+        assert_eq!(hot, "réé");
+    }
+
+    #[test]
+    fn scattered_matches_become_several_runs() {
+        let r = session("rust");
+        let marked = runs(&r, &[0, 3]);
+        let hot: Vec<&str> = marked
+            .iter()
+            .filter(|(_, on)| *on)
+            .map(|(t, _)| t.as_str())
+            .collect();
+        assert_eq!(hot, vec!["r", "t"]);
     }
 }
