@@ -57,18 +57,22 @@ fn widths(rows: &[Row]) -> (usize, usize, usize) {
     (label, badge, status)
 }
 
-/// `$HOME` shown as `~`.
+/// `$HOME` shown as `~`, with `/` throughout.
 ///
 /// Compared as paths, not as strings: git reports `C:/Users/...` on Windows
-/// while the environment holds `C:\Users\...`, and a string comparison
+/// while the environment holds `C:\Users\...`, and comparing those as text
 /// silently never matches.
+///
+/// Displayed with forward slashes on both platforms. Joining `~` with the
+/// platform separator while the remainder keeps git's own would print
+/// `~\projects/wt`, and git prints `/` on Windows anyway.
 fn shorten(path: &str, home: Option<&std::path::Path>) -> String {
     let Some(home) = home else {
         return path.to_string();
     };
     match std::path::Path::new(path).strip_prefix(home) {
         Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
-        Ok(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        Ok(rest) => format!("~/{}", rest.display().to_string().replace('\\', "/")),
         Err(_) => path.to_string(),
     }
 }
@@ -357,11 +361,30 @@ mod tests {
             shorten("/Users/you/projects/wt", Some(home)),
             "~/projects/wt"
         );
+        assert_eq!(shorten("/Users/you", Some(home)), "~");
         assert_eq!(shorten("/opt/thing", Some(home)), "/opt/thing");
         assert_eq!(
             shorten("/Users/you/projects/wt", None),
             "/Users/you/projects/wt"
         );
+    }
+
+    /// git reports forward slashes on Windows while the environment holds
+    /// backslashes. Comparing those as text never matched, so the tilde
+    /// never appeared there.
+    #[cfg(windows)]
+    #[test]
+    fn a_separator_git_chose_does_not_defeat_the_tilde() {
+        let home = std::path::Path::new(r"C:\Users\you");
+        assert_eq!(
+            shorten("C:/Users/you/projects/wt", Some(home)),
+            "~/projects/wt"
+        );
+        assert_eq!(
+            shorten(r"C:\Users\you\projects\wt", Some(home)),
+            "~/projects/wt"
+        );
+        assert_eq!(shorten("D:/elsewhere", Some(home)), "D:/elsewhere");
     }
 
     #[test]
