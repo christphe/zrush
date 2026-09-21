@@ -98,6 +98,7 @@ hand you over to the editor or a new terminal anyway.
 | `ctrl-w` | create a worktree | create a worktree **and bind this session to it** |
 | `ctrl-d` | remove the worktree, optionally delete its sessions | delete that one conversation |
 | `ctrl-l` | reload the list | |
+| `ctrl-p` | purge: mark several rows, remove them in one go | same |
 | `←` / `→` | fold / unfold its rows | `←` folds the parent worktree |
 
 On an **orphaned** session row — one whose worktree is gone — `enter` and
@@ -326,6 +327,34 @@ Only paths inside this repository become orphans. A session from another
 repository is not ours to show, and a worktree that lived beside the repo
 rather than under `.claude/worktrees/` cannot be told apart from any other
 directory once it is gone.
+
+## Purging several at once
+
+`ctrl-p` unfolds everything first — every `[…more]`, every fold — because
+marking rows you cannot see would be a trap. Then `space` marks the row under
+the cursor and moves on, `space` again on a marked row unmarks it, and `enter`
+turns what is marked into a plan and asks once:
+
+```
+purge? ▌ main [root]
+       ▌ ✓ aa          ◌ 2 resumable
+       ▌   ├─ ◌ aa sess 1
+       ▌ ✓ bb          ◌ 2 resumable
+       ╭─────────────────────────────────────────────────────────────────╮
+       │ purge 2 worktrees and 1 session?      1 running kept            │
+       │  y  yes, and their other sessions too   n  no, only what is marked │
+       ╰─────────────────────────────────────────────────────────────────╯
+```
+
+The plan is computed, not guessed: the main worktree is skipped, running
+sessions are never deleted, and a session whose worktree is also marked drops
+out of it — it goes with the worktree anyway. Each item is then independent,
+so a dirty worktree refuses without stopping the rest, and the footer reports
+the tally.
+
+While a question or purge mode is up, `space` marks instead of typing a space
+into the filter. `esc` leaves purge mode, clears the marks and folds the list
+back to its caps.
 
 ## Worktree or session
 

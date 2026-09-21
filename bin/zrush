@@ -24,6 +24,7 @@
 #   ctrl-w   create a worktree; on a session row, bind that session to it
 #   ctrl-d   on a SESSION delete that conversation; on a WORKTREE remove it,
 #            and optionally delete the sessions that belong to it
+#   ctrl-p   purge: unfold everything, mark rows with space, remove the lot
 #   left/right  fold / unfold a worktree's rows
 #   ctrl-l   reload the list
 #
@@ -97,6 +98,8 @@ keys inside fzf:
   ctrl-w   create a worktree; on a session row, bind that session to it
   ctrl-d   on a session: delete that conversation
            on a worktree: remove it, and optionally delete its sessions
+  ctrl-p   purge: unfold everything, mark rows with space, enter to remove
+           them all in one go
   ctrl-l   reload the list
   left     fold this worktree's rows   (right unfolds)
   last row create a new worktree (asks for a name)
@@ -134,6 +137,7 @@ ASK=""
 ANSWER=""
 Q_TEXT=""
 Q_CUR=""
+declare -a ROWS=()
 FOLD_PATH=""
 UNFOLD_PATH=""
 MORE_PATH=""
@@ -163,6 +167,7 @@ while [ $# -gt 0 ]; do
     --answer)         MODE=answer; ANSWER="${2:-}"; shift 2 ;;
     --query)          Q_TEXT="${2:-}"; shift 2 ;;
     --current)        Q_CUR="${2:-}"; shift 2 ;;
+    --rows)           shift; ROWS=("$@"); break ;;
     --state)          STATE_DIR="${2:-}"; [ -n "$STATE_DIR" ] || die "--state needs a path"; shift 2 ;;
     --fold)           FOLD_PATH="${2:-}"; shift 2 ;;
     --unfold)         UNFOLD_PATH="${2:-}"; shift 2 ;;
@@ -297,6 +302,9 @@ status_file="$tmpdir/status"       # worktree \t git badge, one full refresh's w
 CONFIRM_FILE="$tmpdir/confirm"     # {y,n,path,type,id}
 LAST_FILE="$tmpdir/last"           # whatever the last action printed
 FOOTER_FILE="$tmpdir/footer"       # what transform-footer reads back
+SHOWALL_FILE="$tmpdir/showall"     # exists while purge mode wants every row
+PLAN_WTS="$tmpdir/plan-wts"        # one worktree path per line
+PLAN_SESS="$tmpdir/plan-sess"      # id \t path \t type, one per line
 # Helper scripts fzf calls back into. Named here so a child spawned by a
 # binding, which only gets --state, can point at them too. No parentheses in
 # FOOTER: it is passed inside change-footer( ).
@@ -305,9 +313,10 @@ act_sh="$tmpdir/act";       ACT_SH="$act_sh"
 do_sh="$tmpdir/do"
 ans_sh="$tmpdir/ans";       ANS_SH="$ans_sh"
 ask_sh="$tmpdir/ask";       ASK_SH="$ask_sh"
+rows_sh="$tmpdir/rows"
 show_sh="$tmpdir/show"
 foot_sh="$tmpdir/foot";     FOOT_SH="$foot_sh"
-FOOTER='enter open  ^o claude  ^w worktree  ^d delete  ^l reload  ←→ fold  esc quit'
+FOOTER='enter open  ^o claude  ^w worktree  ^d delete  ^p purge  ^l reload  ←→ fold  esc quit'
 [ -n "$STATE_DIR" ] || { : > "$expand_file"; : > "$collapse_file"; : > "$status_file"; }
 wtlist="$tmpdir/wtlist"            # label \t path
 menu="$tmpdir/menu"                # display \t path \t type \t id
@@ -359,6 +368,53 @@ state_clear() {  # $1 = worktree path
 # Results are cached under $CACHE_DIR, keyed by the md5 of the tail we read.
 
 slugify() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
+
+# Turn the rows marked in purge mode into a plan, then ask once. A session
+# whose worktree is also marked is dropped -- it would go with the worktree
+# anyway -- and a running session is never deleted.
+purge_plan() {
+      wts=(); sess=(); n_main=0; n_live=0
+      for row in ${ROWS[@]+"${ROWS[@]}"}; do
+        IFS=$'\t' read -r _lbl rpath rtype rid <<<"$row"
+        case "$rtype" in
+          wt)
+            if [ "$rpath" = "$main_root" ]; then n_main=$((n_main+1)); else wts+=("$rpath"); fi ;;
+          session|orphan)
+            k=$(awk -F'\t' -v i="$rid" '$2==i{print $5; exit}' "$owned_file" 2>/dev/null)
+            if [ "$k" = "live" ]; then n_live=$((n_live+1))
+            else sess+=("$rid"$'\t'"$rpath"$'\t'"$rtype"); fi ;;
+        esac
+      done
+      # drop the sessions that a marked worktree already takes with it
+      keep=()
+      for e in ${sess[@]+"${sess[@]}"}; do
+        sp=${e#*$'\t'}; sp=${sp%%$'\t'*}; dup=0
+        for w in ${wts[@]+"${wts[@]}"}; do [ "$sp" = "$w" ] && dup=1; done
+        [ "$dup" -eq 0 ] && keep+=("$e")
+      done
+      sess=(${keep[@]+"${keep[@]}"})
+
+      if [ "${#wts[@]}" -eq 0 ] && [ "${#sess[@]}" -eq 0 ]; then
+        printf 'nothing to purge: mark rows with space first\n  esc  cancel\n' > "$FOOTER_FILE"
+        printf 'transform-footer(%q)\n' "$FOOT_SH"; exit 0
+      fi
+
+      # One item per line: a worktree path, or "id \t path \t type".
+      # No empty fields, so nothing to escape and nothing to misread.
+      : > "$PLAN_WTS"; : > "$PLAN_SESS"
+      [ "${#wts[@]}"  -gt 0 ] && printf '%s\n' "${wts[@]}"  > "$PLAN_WTS"
+      [ "${#sess[@]}" -gt 0 ] && printf '%s\n' "${sess[@]}" > "$PLAN_SESS"
+      confirm_write purge-all purge-marked "" purge ""
+
+      note=""
+      [ "$n_live" -gt 0 ] && note="$note  ·  $n_live running kept"
+      [ "$n_main" -gt 0 ] && note="$note  ·  main worktree skipped"
+      printf 'purge %s worktree%s and %s session%s?%s\n  y  yes, and their other sessions too      n  no, only what is marked      esc  cancel\n' \
+             "${#wts[@]}" "$( [ "${#wts[@]}" -ne 1 ] && printf s )" \
+             "${#sess[@]}" "$( [ "${#sess[@]}" -ne 1 ] && printf s )" \
+             "$note" > "$FOOTER_FILE"
+      printf 'change-prompt(purge? )+transform-footer(%q)+rebind(y,n,c)+unbind(space)\n' "$FOOT_SH"
+}
 
 # The pending footer question. Written as JSON so an empty field stays a
 # field; read back through jq's @sh, which quotes every value for the shell.
@@ -541,7 +597,8 @@ assign_sessions() {
   [ -s "$sessions_file" ] && [ -s "$wtlist" ] || return 0
   awk -F'\t' -v OFS='\t' -v maxr="${ZRUSH_RESUMABLE_MAX:-0}" \
       -v ef="$expand_file" -v wl="$wtlist" -v cf="$counts_file" \
-      -v nr="$new_root" -v orph="$ORPHANS" -v mr="$main_root" '
+      -v nr="$new_root" -v orph="$ORPHANS" -v mr="$main_root" \
+      -v all="$( [ -f "$SHOWALL_FILE" ] && echo 1 || echo 0 )" '
     function owner(cwd,   i, p, l, best, bl) {
       best = ""; bl = 0
       for (i = 1; i <= nwt; i++) {
@@ -584,7 +641,7 @@ assign_sessions() {
       }
       if ($6 == "resum") {
         total[o]++
-        cap = (o in lim) ? lim[o] : maxr
+        cap = all ? 1000000 : ((o in lim) ? lim[o] : maxr)
         if (total[o] > cap) next
         shown[o]++
       }
@@ -689,7 +746,7 @@ refresh_resumable() {
   # Expanding a worktree lifts the cap: the rows it wants may sit well past
   # the newest $ZRUSH_RESUMABLE_SCAN transcripts of the repo.
   scan="$ZRUSH_RESUMABLE_SCAN"
-  [ -s "$expand_file" ] && scan=1000000
+  { [ -s "$expand_file" ] || [ -f "$SHOWALL_FILE" ]; } && scan=1000000
 
   # The ids already listed as live, gathered once: a grep per transcript costs
   # more than the whole scan.
@@ -1134,14 +1191,17 @@ mode_ask() {
       ;;
 
     enter)
-      # In branch mode the list holds branch names, so the typed query or the
-      # highlighted line is the answer; otherwise dispatch on the row type.
-      if [ "${FZF_PROMPT:-}" = "branch> " ]; then
-        name="${Q_CUR:-$Q_TEXT}"
-        printf 'execute-silent(%q branch %q)+transform(%q done)+reload(%q)\n' \
-               "$ANS_SH" "$name" "$ASK_SH" "$RELOAD_SH"
-        exit 0
-      fi
+      case "${FZF_PROMPT:-}" in
+        "purge> ")  purge_plan; exit 0 ;;
+        "branch> ")
+          # The list holds branch names here: the highlighted one if there is
+          # one, otherwise whatever was typed.
+          name="${ROWS[0]:-}"; [ -n "$name" ] || name="$Q_TEXT"
+          printf 'execute-silent(%q branch %q)+transform(%q done)+reload(%q)\n' \
+                 "$ANS_SH" "$name" "$ASK_SH" "$RELOAD_SH"
+          exit 0 ;;
+      esac
+      IFS=$'\t' read -r _lbl DO_PATH DO_TYPE DO_ID <<<"${ROWS[0]:-}"
       case "$DO_TYPE" in
         more)       printf 'reload(%q --more %q)\n' "$ACT_SH" "$DO_PATH" ;;
         new|orphan) exec "$0" --state "$tmpdir" --repo "$repo_dir" --ask branch \
@@ -1150,6 +1210,32 @@ mode_ask() {
         *)          printf 'accept\n' ;;
       esac
       ;;
+
+    # ctrl-p: purge mode. Unfold everything first -- marking rows you cannot
+    # see would be a trap -- then let space mark them.
+    purge)
+      : > "$collapse_file"
+      : > "$expand_file"
+      : > "$SHOWALL_FILE"
+      printf 'purge: space marks a row and moves on, space again unmarks it\n  enter  purge what is marked      esc  cancel\n' > "$FOOTER_FILE"
+      printf 'change-prompt(purge> )+transform-footer(%q)+rebind(space)' "$FOOT_SH"
+      printf '+unbind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,ctrl-p,left,right)+reload(%q)\n' "$RELOAD_SH"
+      ;;
+
+    # esc: cancel a question, leave purge mode, or quit the picker.
+    escape)
+      case "${FZF_PROMPT:-}" in
+        "worktree> ") printf 'abort\n'; exit 0 ;;
+      esac
+      had_all=0; [ -f "$SHOWALL_FILE" ] && had_all=1
+      rm -f "$SHOWALL_FILE"
+      printf '%s\n' "$FOOTER" > "$FOOTER_FILE"
+      printf 'change-prompt(worktree> )+transform-footer(%q)+clear-selection' "$FOOT_SH"
+      printf '+unbind(y,n,c,space)+rebind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,ctrl-p,left,right)'
+      [ "$had_all" -eq 1 ] && printf '+reload(%q)' "$RELOAD_SH"
+      printf '\n'
+      ;;
+
     # After an action: restore the normal bindings and report what happened.
     # execute-silent does NOT shield the screen -- anything the command prints
     # lands on the terminal and corrupts the frame -- so the command writes to
@@ -1167,8 +1253,9 @@ mode_ask() {
       : > "$LAST_FILE"
       if [ -n "$msg" ]; then printf '%s\n%s\n' "$msg" "$FOOTER" > "$FOOTER_FILE"
       else printf '%s\n' "$FOOTER" > "$FOOTER_FILE"; fi
-      printf 'change-prompt(worktree> )+transform-footer(%q)' "$FOOT_SH"
-      printf '+unbind(y,n,c)+rebind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,left,right)\n'
+      rm -f "$SHOWALL_FILE"
+      printf 'change-prompt(worktree> )+transform-footer(%q)+clear-selection' "$FOOT_SH"
+      printf '+unbind(y,n,c,space)+rebind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,ctrl-p,left,right)\n'
       ;;
     *) printf 'ignore\n' ;;
   esac
@@ -1206,6 +1293,31 @@ mode_do() {
       delete_session "$DO_ID" "$DO_PATH" "${title:-${DO_ID:0:8}}" "$kind" || true
       ;;
     delete-all)  delete_worktree "$DO_PATH" y || true ;;
+    # The purge: worktrees first, then the sessions marked on their own.
+    # Each item is independent -- a dirty worktree refuses without stopping
+    # the rest -- and only the closing summary reaches the footer.
+    purge-all|purge-marked)
+      keep=n; [ "$DO_ACTION" = "purge-all" ] && keep=y
+      nwt=0; nkept=0; nsess=0
+      while IFS= read -r w; do
+        [ -n "$w" ] || continue
+        if delete_worktree "$w" "$keep"; then nwt=$((nwt+1)); else nkept=$((nkept+1)); fi
+      done < "$PLAN_WTS"
+      while IFS=$'\t' read -r sid spath stype; do
+        [ -n "$sid" ] || continue
+        [ "$stype" = "orphan" ] && spath=""
+        t=$(awk -F'\t' -v i="$sid" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
+        k=$(awk -F'\t' -v i="$sid" '$2==i{print $5; exit}' "$owned_file" 2>/dev/null)
+        delete_session "$sid" "$spath" "${t:-${sid:0:8}}" "$k" && nsess=$((nsess+1))
+      done < "$PLAN_SESS"
+      : > "$PLAN_WTS"; : > "$PLAN_SESS"
+      out="purged $nwt worktree$( [ "$nwt" -ne 1 ] && printf s )"
+      [ "$keep" = y ] && out="$out with their sessions"
+      [ "$nsess" -gt 0 ] \
+        && out="$out, $nsess marked session$( [ "$nsess" -ne 1 ] && printf s ) deleted"
+      [ "$nkept" -gt 0 ] && out="$out, $nkept kept: git refused"
+      printf '%s\n' "$out"
+      ;;
     delete-wt)   delete_worktree "$DO_PATH" n || true ;;
     newwt)
       if newp=$(create_worktree "$DO_NAME") && [ -n "$newp" ]; then
@@ -1307,7 +1419,9 @@ esac
 # quoted one-liner: no escaping to get wrong, whatever the repo path holds.
 {
   printf '#!/bin/sh\nexec'
-  printf ' %q' "$SELF" --menu --repo "$repo_dir"
+  # --state: the reload has to see the same tmpdir as the picker, or it
+  # misses the flags a mode left there -- purge's "show everything" above all.
+  printf ' %q' "$SELF" --menu --state "$tmpdir" --repo "$repo_dir"
   [ "$WANT_SESSIONS" -eq 0 ] && printf ' -n'
   printf '\n'
 } > "$reload_sh" && chmod +x "$reload_sh"
@@ -1337,6 +1451,16 @@ esac
   printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir"
   printf ' --ask "$1" --path "$2" --type "$3" --id "$4" --query "$5" --current "$6"\n'
 } > "$ask_sh" && chmod +x "$ask_sh"
+
+# enter has to serve three modes, and purge needs every marked row, so it
+# goes through its own wrapper: "$1" is the query, the rest are whole menu
+# lines. fzf's {+} is the cursor row when nothing is marked, which is exactly
+# what the other two modes want.
+{
+  printf '#!/bin/sh\nq="$1"; shift\nexec'
+  printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir" --ask enter
+  printf ' --query "$q" --rows "$@"\n'
+} > "$rows_sh" && chmod +x "$rows_sh"
 
 # And this carries out whatever the footer just asked.
 {
@@ -1414,28 +1538,30 @@ while :; do
   # while a question is up. It is the one piece of state fzf exports back to
   # a transform, which is why the prompt carries it.
   printf '%s\n' "$FOOTER" > "$FOOTER_FILE"
-  restore="change-prompt(worktree> )+transform-footer($foot_sh)+unbind(y,n,c)"
-  restore="$restore+rebind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,left,right)"
+  restore="change-prompt(worktree> )+transform-footer($foot_sh)+unbind(y,n,c,space)"
+  restore="$restore+clear-selection+rebind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,ctrl-p,left,right)"
 
   sel=$(
     fzf --ansi --sync \
-        --delimiter=$'\t' --with-nth=1 --id-nth=2,3,4 \
+        --delimiter=$'\t' --with-nth=1 --id-nth=2,3,4 --multi \
         ${height_opt[@]+"${height_opt[@]}"} --reverse --border \
         --prompt="worktree> " \
         --footer="$FOOTER" --footer-border=rounded \
         --expect=ctrl-o,ctrl-q \
-        --bind="start:unbind(y,n,c)" \
+        --bind="start:unbind(y,n,c,space)" \
         --bind="ctrl-l:reload($reload_sh)" \
         --bind="left:reload($act_sh --fold {2})" \
         --bind="right:reload($act_sh --unfold {2})" \
         --bind="load:transform($pos_sh)" \
         --bind="ctrl-d:transform($ask_sh delete {2} {3} {4})" \
         --bind="ctrl-w:transform($ask_sh branch {2} {3} {4})" \
-        --bind="enter:transform($ask_sh enter {2} {3} {4} {q} {})" \
+        --bind="enter:transform($rows_sh {q} {+})" \
+        --bind="space:toggle+down" \
+        --bind="ctrl-p:transform($ask_sh purge)" \
         --bind="y:execute-silent($ans_sh y)+transform($ask_sh done)+reload($reload_sh)" \
         --bind="n:execute-silent($ans_sh n)+transform($ask_sh done)+reload($reload_sh)" \
         --bind="c:$restore" \
-        --bind="esc:transform:[ ! \"\$FZF_PROMPT\" = 'worktree> ' ] && echo \"$restore\" || echo abort" \
+        --bind="esc:transform($ask_sh escape)" \
         ${pos_bind[@]+"${pos_bind[@]}"} \
         --preview="$show_sh {2} {3} {4}" \
         --preview-window=right:50%:wrap \
