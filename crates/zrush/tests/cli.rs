@@ -221,3 +221,30 @@ fn nothing_opened_an_editor_along_the_way() {
     zrush(&sb).arg("--list").assert().success();
     assert!(!sb.log.exists(), "--list must have no side effect");
 }
+
+#[test]
+fn no_sessions_and_an_agent_name_do_not_fight() {
+    // -n empties the agent list, so a named agent has nothing left to
+    // select. It must be dropped rather than fail to match an empty list.
+    let sb = sandbox();
+    zrush(&sb)
+        .args(["--no-sessions", "--agent", "claude", "--list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("main [root]"));
+}
+
+#[test]
+fn a_worktree_row_carries_its_path_for_a_shell_helper() {
+    let sb = sandbox();
+    let out = zrush(&sb).arg("--list").output().expect("run");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let path = text
+        .lines()
+        .next()
+        .expect("a row")
+        .split('\t')
+        .nth(3)
+        .expect("a path field");
+    assert_eq!(Path::new(path), sb.repo.as_path());
+}

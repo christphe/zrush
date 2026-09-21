@@ -91,10 +91,10 @@ pub fn main() -> Result<()> {
         Some(Command::Session { list }) => return crate::session::run(&dirs, &cfg, *list),
         Some(Command::Sessions { path }) => {
             let z = build(&cli, &cfg, &dirs, path.clone(), Box::new(NullHost))?;
-            for s in z.live_sessions() {
+            let live = z.live_sessions();
+            for s in &live {
                 println!("{}\t● {}  ({})", s.id, s.title, s.status);
             }
-            let live = z.live_sessions();
             let wts = z.worktrees()?;
             for s in z.resumable_sessions(&wts, &live, false) {
                 println!("{}\t◌ {}  ({})", s.id, s.title, s.status);
@@ -144,17 +144,17 @@ fn build(
     repo: PathBuf,
     host: Box<dyn Host>,
 ) -> Result<Zrush> {
-    // -n means: do not go looking for sessions at all.
-    let agents = if cli.no_sessions {
-        Vec::new()
-    } else {
-        agent::available()
-    };
+    // -n means: do not go looking for sessions at all. With no agent to
+    // list, naming one has nothing left to select, so -a is dropped rather
+    // than failing to match an empty list.
+    if cli.no_sessions {
+        return Zrush::new(dirs.clone(), cfg.clone(), repo, Vec::new(), host, None);
+    }
     Zrush::new(
         dirs.clone(),
         cfg.clone(),
         repo,
-        agents,
+        agent::available(),
         host,
         cli.agent.as_deref(),
     )
