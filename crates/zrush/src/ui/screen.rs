@@ -436,3 +436,189 @@ pub fn run(mut app: App, z: &Arc<Zrush>) -> zrush_core::error::Result<()> {
     ratatui::restore();
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::{git, scratch_repo, zrush};
+    use crate::ui::app::App;
+    use zrush_core::model::{Session, SessionKind};
+
+    fn session(id: &str, title: &str, cwd: &str, kind: SessionKind) -> Session {
+        Session {
+            agent: "claude",
+            id: id.into(),
+            title: title.into(),
+            status: match kind {
+                SessionKind::Live => "busy 0m".into(),
+                SessionKind::Resumable => "resumable 2d".into(),
+            },
+            cwd: cwd.into(),
+            launch_cwd: cwd.into(),
+            kind,
+            last_activity: 0,
+        }
+    }
+
+    /// A full frame as text, at a fixed size so the layout is the thing
+    /// under test rather than the terminal.
+    fn frame(app: &App, z: &Zrush, w: u16, h: u16) -> String {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        let prev = preview_for(app, z);
+        term.draw(|f| draw(f, app, z, &prev)).unwrap();
+        crate::ui::tests_support::flatten(term.backend())
+    }
+
+    fn loaded(td: &tempfile::TempDir) -> (Arc<Zrush>, App) {
+        let repo = scratch_repo(td);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                ".claude/worktrees/rust",
+                "-b",
+                "rust",
+            ],
+        );
+        let z = zrush(td, repo.clone());
+
+        let mut app = App::new(20, 5);
+        app.active_agent = "claude".into();
+        app.agent_names = vec!["claude".into()];
+        app.worktrees = z.worktrees().unwrap();
+        app.live = vec![session(
+            "aaaaaaaa-1111-2222-3333-444455556666",
+            "Conversion en Rust",
+            repo.join(".claude/worktrees/rust").to_str().unwrap(),
+            SessionKind::Live,
+        )];
+        app.resumable = vec![session(
+            "bbbbbbbb-1111-2222-3333-444455556666",
+            "Publier zrush sur GitHub",
+            repo.to_str().unwrap(),
+            SessionKind::Resumable,
+        )];
+        app.scanned = true;
+        rebuild(&mut app, &z);
+        (z, app)
+    }
+
+    #[test]
+    fn the_frame_shows_the_worktrees_and_their_sessions() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, app) = loaded(&td);
+        let text = frame(&app, &z, 120, 20);
+        assert!(text.contains("main [root]"));
+        assert!(text.contains("rust"));
+        assert!(text.contains("Conversion en Rust"));
+        assert!(text.contains("Publier zrush sur GitHub"));
+    }
+
+    #[test]
+    fn the_header_names_the_agent_and_counts_what_is_loaded() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, app) = loaded(&td);
+        let text = frame(&app, &z, 120, 20);
+        assert!(text.contains("Agent"));
+        assert!(text.contains("claude"));
+        assert!(text.contains("1 live"));
+        assert!(text.contains("1 resumable"));
+    }
+
+    #[test]
+    fn the_title_counts_the_worktrees() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, app) = loaded(&td);
+        assert!(frame(&app, &z, 120, 20).contains("Worktrees(2)"));
+    }
+
+    #[test]
+    fn a_narrow_terminal_drops_the_preview_rather_than_squashing_it() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, app) = loaded(&td);
+        assert!(frame(&app, &z, 120, 20).contains("Preview"));
+        assert!(!frame(&app, &z, 80, 20).contains("Preview"));
+    }
+
+    #[test]
+    fn a_modal_covers_the_list_rather_than_sitting_beside_it() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, mut app) = loaded(&td);
+        app.modal = Some(crate::ui::modal::Modal::Help);
+        let text = frame(&app, &z, 120, 24);
+        assert!(text.contains("Keys"));
+        assert!(text.contains("ctrl-p"));
+    }
+
+    #[test]
+    fn purge_mode_says_so_in_the_title_and_the_status_line() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, mut app) = loaded(&td);
+        app.mode = crate::ui::app::Mode::Purge;
+        app.marked.insert(0);
+        let text = frame(&app, &z, 120, 20);
+        assert!(text.contains("Purge — 1 marked"));
+        assert!(text.contains("space marks"));
+    }
+
+    #[test]
+    fn the_filter_shows_what_is_being_typed() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, mut app) = loaded(&td);
+        app.mode = crate::ui::app::Mode::Filter;
+        app.filter = "rust".into();
+        assert!(frame(&app, &z, 120, 20).contains("/rust"));
+    }
+
+    #[test]
+    fn a_flash_message_reaches_the_status_line() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, mut app) = loaded(&td);
+        app.flash("created feature");
+        assert!(frame(&app, &z, 120, 20).contains("created feature"));
+    }
+
+    #[test]
+    fn before_the_scan_lands_the_badge_is_the_cheap_disk_count() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, mut app) = loaded(&td);
+        app.scanned = false;
+        app.resumable.clear();
+        app.history.insert(z.main_root().to_path_buf(), 12);
+        rebuild(&mut app, &z);
+        let text = frame(&app, &z, 120, 20);
+        assert!(text.contains("12 resumable"), "the immediate number");
+        assert!(text.contains("loading"), "and it says it is still arriving");
+    }
+
+    #[test]
+    fn once_scanned_the_badge_counts_what_was_actually_assigned() {
+        // Otherwise the badge and the rows can disagree for good, and no
+        // amount of pressing [...more] reconciles them.
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, mut app) = loaded(&td);
+        app.history.insert(z.main_root().to_path_buf(), 12);
+        app.scanned = true;
+        rebuild(&mut app, &z);
+        let text = frame(&app, &z, 120, 20);
+        assert!(!text.contains("12 resumable"));
+    }
+
+    #[test]
+    fn a_tiny_terminal_draws_without_panicking() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, app) = loaded(&td);
+        for (w, h) in [(20_u16, 6_u16), (40, 10), (200, 60)] {
+            let _ = frame(&app, &z, w, h);
+        }
+    }
+
+    #[test]
+    fn the_preview_shows_the_git_log_for_a_worktree() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, app) = loaded(&td);
+        assert!(frame(&app, &z, 140, 24).contains("init"));
+    }
+}
