@@ -1,0 +1,62 @@
+[package]
+name = "zrush"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+description = "Pick a git worktree or one of its Claude Code sessions, then open it"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
+dirs = "7.0.0"
+jiff = "0.2.37"
+nucleo-matcher = "0.3.1"
+ratatui = "0.30.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+toml = "1.1.6"
+unicode-width = "0.2.2"
+xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+insta = "1.48.0"
+portable-pty = "0.9.0"
+predicates = "3.1.4"
+tempfile = "3.27.0"
+
+[lib]
+name = "zrush"
+path = "src/lib.rs"
+
+[[bin]]
+name = "zrush"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Terminal coordinates and collection indices convert back and forth all
+# over the table code; casting each one by hand is noise, not safety.
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+# These doc comments describe behaviour, not panics we promise to keep.
+missing_panics_doc = "allow"
+missing_errors_doc = "allow"
+module_name_repetitions = "allow"
+# A binary crate: nothing outside it can ignore a return value.
+must_use_candidate = "allow"
+# The maps here are built and consumed in this crate; a hasher parameter
+# would buy nothing and cost every signature.
+implicit_hasher = "allow"
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.release]
+strip = true
+lto = "thin"

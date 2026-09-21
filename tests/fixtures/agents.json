@@ -1,0 +1,7 @@
+[
+  {"kind":"interactive","sessionId":"aaaaaaaa-1111-2222-3333-444455556666","cwd":"/home/u/repo","name":"repo-e8","status":"running","startedAt":1789646000000},
+  {"kind":"interactive","sessionId":"aaaaaaaa-1111-2222-3333-444455556666","cwd":"/home/u/repo","name":"repo-e8","status":"running","startedAt":1789646500000},
+  {"kind":"interactive","sessionId":"bbbbbbbb-1111-2222-3333-444455556666","cwd":"/home/u/repo/.claude/worktrees/rust","name":"my own name","status":"running","startedAt":1789646400000},
+  {"kind":"background","sessionId":"cccccccc-1111-2222-3333-444455556666","cwd":"/home/u/repo","name":"bg","status":"running","startedAt":1789646400000},
+  {"kind":"interactive","sessionId":"","cwd":"/home/u/repo","name":"nameless","status":"running","startedAt":1789646400000}
+]
