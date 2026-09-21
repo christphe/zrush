@@ -50,7 +50,7 @@ fn wait_for(reader: &mut dyn Read, needle: &str, within: Duration) -> String {
 #[test]
 fn the_picker_boots_on_a_pty_draws_and_quits() {
     let td = TempDir::new().expect("tempdir");
-    let base = td.path().canonicalize().expect("canonicalize");
+    let base = zrush_core::paths::real(td.path());
     let home = base.join("home");
     let repo = base.join("repo");
     std::fs::create_dir_all(home.join(".config/zrush")).expect("mkdir");

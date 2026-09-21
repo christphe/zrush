@@ -21,10 +21,7 @@ pub fn git(cwd: &Path, args: &[&str]) {
 /// A repo with one commit on `main`, cloned from a bare remote so
 /// `origin/main` exists.
 pub fn scratch_repo(td: &tempfile::TempDir) -> PathBuf {
-    // canonicalize: on macOS $TMPDIR is a symlink into /private, and git
-    // reports the resolved path. Comparing one against the other matches
-    // nothing.
-    let base = td.path().canonicalize().unwrap();
+    let base = zrush_core::paths::real(td.path());
     let remote = base.join("remote.git");
     let repo = base.join("repo");
     git(&base, &["init", "-q", "--bare", remote.to_str().unwrap()]);

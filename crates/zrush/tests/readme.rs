@@ -54,7 +54,7 @@ fn session(id: &str, title: &str, cwd: &Path, kind: SessionKind, age: &str) -> S
 
 fn render() -> String {
     let td = tempfile::TempDir::new().expect("tempdir");
-    let base = td.path().canonicalize().expect("canonicalize");
+    let base = zrush_core::paths::real(td.path());
     let repo = base.join("wt");
     git(&base, &["init", "-q", repo.to_str().expect("utf8")]);
     git(&repo, &["config", "user.email", "t@example.invalid"]);
@@ -141,6 +141,40 @@ fn render() -> String {
         out.push('\n');
     }
     out
+}
+
+/// Every long flag the README advertises still exists.
+///
+/// The wording is the README's own — shorter than clap's, and worth
+/// keeping — but a flag that was renamed or dropped must not survive here.
+#[test]
+fn the_readme_advertises_flags_that_exist() {
+    use clap::CommandFactory;
+
+    let readme = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md");
+    let text = std::fs::read_to_string(&readme).expect("README.md");
+    let help = zrush::cli::Cli::command().render_long_help().to_string();
+
+    // Only the usage block: other fenced blocks quote git's flags, not ours.
+    let at = text.find("zrush [OPTIONS]").expect("the usage block");
+    let block = &text[at..at + text[at..].find(FENCE).expect("its closing fence")];
+
+    let mut checked = 0;
+    for word in block.split_whitespace() {
+        let flag = word.trim_matches(|c: char| !c.is_ascii_graphic() || c == ',');
+        if !flag.starts_with("--") || flag.len() < 4 {
+            continue;
+        }
+        assert!(
+            help.contains(flag),
+            "the README offers {flag}, which zrush does not"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 4,
+        "only {checked} flags checked; did the block move?"
+    );
 }
 
 #[test]

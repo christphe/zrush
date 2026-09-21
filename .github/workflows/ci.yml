@@ -44,7 +44,9 @@ jobs:
           git config --global init.defaultBranch main
 
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo nextest run --workspace --locked
+      # --no-fail-fast: one platform-specific break should not hide the
+      # others behind it.
+      - run: cargo nextest run --workspace --locked --no-fail-fast
 
   lint:
     name: fmt and deny

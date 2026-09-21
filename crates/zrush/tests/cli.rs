@@ -31,9 +31,7 @@ fn git(cwd: &Path, args: &[&str]) {
 
 fn sandbox() -> Sandbox {
     let dir = TempDir::new().expect("tempdir");
-    // canonicalize: on macOS $TMPDIR is a symlink into /private, and git
-    // reports the resolved path.
-    let base = dir.path().canonicalize().expect("canonicalize");
+    let base = zrush_core::paths::real(dir.path());
     let home = base.join("home");
     let repo = base.join("repo");
     let remote = base.join("remote.git");

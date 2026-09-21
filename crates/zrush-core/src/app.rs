@@ -356,7 +356,7 @@ mod tests {
     /// A repo with one commit on `main`, cloned from a bare remote so
     /// `origin/main` exists. Nothing here touches a real repository.
     fn scratch(td: &tempfile::TempDir) -> PathBuf {
-        let base = td.path().canonicalize().unwrap();
+        let base = crate::paths::real(td.path());
         let remote = base.join("remote.git");
         let repo = base.join("repo");
         run(&base, &["init", "-q", "--bare", remote.to_str().unwrap()]);
