@@ -126,8 +126,23 @@ inline instead.
 
 Worktree rows show branch (plus `[root]` for the primary worktree, `🔒`
 locked, `⚠` prunable) · session
-badge · git status · path. Session rows show the title and its status. The
-preview pane shows `git status -sb` and the last 10 commits.
+badge · git status · path. Session rows show the title and its status.
+
+The preview pane follows the row. On a worktree it is `git status -sb` and the
+last 10 commits; on a **session** it is the tail of the conversation, so you
+can see what one was about before resuming it:
+
+```
+  you je ne retrouve pas ma session qui parle de la transition vers manual
+
+    · Deux candidates, la première colle le mieux : 1. `1cda3476…` —
+      17 sept, worktree `next-zone`…
+```
+
+`ZRUSH_PREVIEW_TURNS` (14) caps how many turns are shown. About 60 ms per
+draw, read straight from the transcript. fzf's preview is output-only — no
+keystroke reaches it — so an interactive Claude cannot live there; this is as
+close as fzf gets.
 
 ### The git status column
 

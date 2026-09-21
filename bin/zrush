@@ -119,6 +119,7 @@ DO_ID=""
 DO_NAME=""
 ASK=""
 ANSWER=""
+SHOW=0
 Q_TEXT=""
 Q_CUR=""
 FOLD_PATH=""
@@ -145,6 +146,7 @@ while [ $# -gt 0 ]; do
     --id)             DO_ID="${2:-}"; shift 2 ;;
     --name)           DO_NAME="${2:-}"; shift 2 ;;
     --ask)            ASK="${2:-}"; shift 2 ;;
+    --show)           SHOW=1; shift ;;
     --answer)         ANSWER="${2:-}"; shift 2 ;;
     --query)          Q_TEXT="${2:-}"; shift 2 ;;
     --current)        Q_CUR="${2:-}"; shift 2 ;;
@@ -163,7 +165,7 @@ done
 # --sessions and --do carry their own target, so the repo comes from it.
 [ -n "$SESSIONS_OF" ] && [ -z "$REPO_ARG" ] && REPO_ARG="$SESSIONS_OF"
 [ -n "$DO_ACTION" ] && [ -z "$REPO_ARG" ] && [ -d "$DO_PATH" ] && REPO_ARG="$DO_PATH"
-{ [ -n "$ASK" ] || [ -n "$ANSWER" ]; } && [ -z "$REPO_ARG" ] && [ -d "$DO_PATH" ] && REPO_ARG="$DO_PATH"
+{ [ -n "$ASK" ] || [ -n "$ANSWER" ] || [ "$SHOW" -eq 1 ]; } && [ -z "$REPO_ARG" ] && [ -d "$DO_PATH" ] && REPO_ARG="$DO_PATH"
 
 for c in git fzf; do have "$c" || die "missing dependency: $c"; done
 
@@ -279,6 +281,7 @@ act_sh="$tmpdir/act";       ACT_SH="$act_sh"
 do_sh="$tmpdir/do"
 ask_sh="$tmpdir/ask"
 ans_sh="$tmpdir/ans";       ANS_SH="$ans_sh"
+show_sh="$tmpdir/show"
 FOOTER='enter open  ^o claude  ^w worktree  ^d delete  ^l reload  ←→ fold  esc quit'
 [ -n "$STATE_DIR" ] || { : > "$expand_file"; : > "$collapse_file"; : > "$status_file"; }
 wtlist="$tmpdir/wtlist"            # label \t path
@@ -1003,6 +1006,48 @@ run_claude_term() {  # $1 = worktree path, rest = extra claude args
     || { warn "${ZRUSH_TERMINAL[0]} could not open a terminal"; rm -rf "$dir"; return 1; }
 }
 
+# --show: what the preview pane draws for the highlighted row. A worktree
+# still gets its git status; a session gets the tail of the conversation,
+# which is the thing you actually want to see before resuming one. fzf's
+# preview is output-only -- no keystroke reaches it -- so this is as close to
+# "Claude in the preview" as fzf can get.
+if [ "$SHOW" -eq 1 ]; then
+  case "$DO_TYPE" in
+    session|orphan)
+      [ -n "$DO_ID" ] || exit 0
+      f=$(find "$CLAUDE_PROJECTS" -mindepth 2 -maxdepth 2 -name "$DO_ID.jsonl" 2>/dev/null | head -1)
+      [ -n "$f" ] || { printf 'no transcript for %s\n' "${DO_ID:0:8}"; exit 0; }
+      printf '\033[2m%s\033[0m\n\n' "${f#$CLAUDE_PROJECTS/}"
+      tail -n "$TAIL_LINES" "$f" | jq -Rr '
+        fromjson? // empty
+        | select(.type=="user" or .type=="assistant")
+        | (.message.content // empty) as $c
+        | if ($c|type)=="string" then {r:.type, t:$c}
+          elif ($c|type)=="array" then {r:.type, t:([$c[] | select(.type=="text") | .text] | join(" "))}
+          else empty end
+        | select(.t != "" and (.t|startswith("<")|not))
+        | "\(.r)\t\(.t | gsub("[\n\t]+";" ") | gsub("  +";" "))"' 2>/dev/null \
+      | tail -n "${ZRUSH_PREVIEW_TURNS:-14}" \
+      | awk -F'\t' -v w="${FZF_PREVIEW_COLUMNS:-60}" '
+          { c = ($1 == "user") ? "\033[1;36m" : "\033[0;37m"
+            tag = ($1 == "user") ? "you" : "  ·"
+            t = $2
+            while (length(t) > 0) {
+              printf "%s%s\033[0m %s\n", c, tag, substr(t, 1, w - 5)
+              t = substr(t, w - 4); tag = "   "
+            }
+            print "" }'
+      ;;
+    wt)
+      [ -d "$DO_PATH" ] || exit 0
+      git -C "$DO_PATH" status --short --branch 2>/dev/null | head -15
+      echo
+      git -C "$DO_PATH" log --oneline --decorate -n 10 2>/dev/null
+      ;;
+  esac
+  exit 0
+fi
+
 # --ask / --answer: the two halves of a question posed in the footer.
 #
 # fzf cannot draw a dialog over its own list, but it can rewrite the footer
@@ -1225,6 +1270,13 @@ fi
   printf ' --answer "$1" --name "$2"\n'
 } > "$ans_sh" && chmod +x "$ans_sh"
 
+# What the preview pane draws, per row type.
+{
+  printf '#!/bin/sh\nexec'
+  printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir" --show
+  printf ' --path "$1" --type "$2" --id "$3"\n'
+} > "$show_sh" && chmod +x "$show_sh"
+
 # fzf runs this after every reload; it prints a pos() action when the child
 # left one behind, and nothing otherwise.
 pos_sh="$tmpdir/posact"
@@ -1302,7 +1354,7 @@ while :; do
         --bind="c:$restore" \
         --bind="esc:transform:[ ! \"\$FZF_PROMPT\" = 'worktree> ' ] && echo \"$restore\" || echo abort" \
         ${pos_bind[@]+"${pos_bind[@]}"} \
-        --preview='[ -d {2} ] && { git -C {2} status --short --branch 2>/dev/null | head -15; echo; git -C {2} log --oneline --decorate -n 10 2>/dev/null; }' \
+        --preview="$show_sh {2} {3} {4}" \
         --preview-window=right:50%:wrap \
         < "$menu"
   )
