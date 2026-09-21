@@ -5,6 +5,18 @@
 //! `repo/.git/worktrees/<name>` for a linked worktree and `repo/.git` for
 //! the main one. Per-worktree by construction, so several editor windows can
 //! each hold their own session. No global state, no secrets.
+//!
+//! Shell-ish, one key per line, unknown keys ignored:
+//!
+//! ```text
+//! session_id=<id>
+//! agent=claude
+//! ```
+//!
+//! A file with no `agent=` line was written before zrush knew about more
+//! than one, and means the first available agent. This module stores and
+//! returns the id verbatim; whether it is well formed is the agent's
+//! question, answered by `Agent::valid_id`.
 
 use std::path::{Path, PathBuf};
 
@@ -28,23 +40,36 @@ fn state_file(worktree: &Path) -> Result<PathBuf> {
     Ok(git::absolute_git_dir(worktree)?.join(BASENAME))
 }
 
-/// The first `session_id=` line wins. Anything that is not a UUID is
-/// discarded: a malformed value must never reach `claude --resume`.
-fn parse(text: &str) -> Option<String> {
+/// What a worktree is bound to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Binding {
+    pub id: String,
+    /// `None` for a file written before agents were a concept.
+    pub agent: Option<String>,
+}
+
+/// The first value for each key wins.
+fn parse(text: &str) -> Option<Binding> {
+    let mut id: Option<String> = None;
+    let mut agent: Option<String> = None;
     for line in text.lines() {
         let Some((k, v)) = line.split_once('=') else {
             continue;
         };
-        if k.trim() != "session_id" {
+        let v = v.trim().trim_matches('"').to_string();
+        if v.is_empty() {
             continue;
         }
-        let v = v.trim().trim_matches('"');
-        return is_uuid(v).then(|| v.to_string());
+        match k.trim() {
+            "session_id" if id.is_none() => id = Some(v),
+            "agent" if agent.is_none() => agent = Some(v),
+            _ => {}
+        }
     }
-    None
+    id.map(|id| Binding { id, agent })
 }
 
-pub fn read(worktree: &Path) -> Result<Option<String>> {
+pub fn read(worktree: &Path) -> Result<Option<Binding>> {
     let f = state_file(worktree)?;
     match std::fs::read_to_string(&f) {
         Ok(text) => Ok(parse(&text)),
@@ -54,14 +79,15 @@ pub fn read(worktree: &Path) -> Result<Option<String>> {
 }
 
 /// Written through a temporary file and renamed, so a crash mid-write cannot
-/// leave half an id behind.
-pub fn write(worktree: &Path, id: &str) -> Result<()> {
-    if !is_uuid(id) {
+/// leave half an id behind. The caller has already asked the agent whether
+/// the id is well formed.
+pub fn write(worktree: &Path, agent: &str, id: &str) -> Result<()> {
+    if id.is_empty() || id.contains(['\n', '\r']) {
         return Err(ZrushError::msg("refusing to store a malformed session id"));
     }
     let f = state_file(worktree)?;
     let tmp = f.with_extension(format!("tmp.{}", std::process::id()));
-    std::fs::write(&tmp, format!("session_id={id}\n"))?;
+    std::fs::write(&tmp, format!("session_id={id}\nagent={agent}\n"))?;
     std::fs::rename(&tmp, &f)?;
     Ok(())
 }
@@ -98,23 +124,40 @@ mod tests {
 
     #[test]
     fn the_first_session_id_line_wins_and_quotes_are_stripped() {
+        assert_eq!(parse(&format!("session_id=\"{GOOD}\"\n")).unwrap().id, GOOD);
         assert_eq!(
-            parse(&format!("session_id=\"{GOOD}\"\n")).as_deref(),
-            Some(GOOD)
+            parse(&format!("  session_id = {GOOD}  \n")).unwrap().id,
+            GOOD
         );
         assert_eq!(
-            parse(&format!("  session_id = {GOOD}  \n")).as_deref(),
-            Some(GOOD)
-        );
-        assert_eq!(
-            parse(&format!("other=1\nsession_id={GOOD}\n")).as_deref(),
-            Some(GOOD)
+            parse(&format!("other=1\nsession_id={GOOD}\n")).unwrap().id,
+            GOOD
         );
     }
 
     #[test]
-    fn a_malformed_id_is_discarded_rather_than_returned() {
-        assert_eq!(parse("session_id=nope\n"), None);
+    fn a_file_with_no_id_binds_nothing() {
         assert_eq!(parse(""), None);
+        assert_eq!(parse("agent=claude\n"), None);
+        assert_eq!(parse("session_id=\n"), None);
+    }
+
+    #[test]
+    fn the_agent_is_read_back_when_it_is_there() {
+        let b = parse(&format!("session_id={GOOD}\nagent=codex\n")).unwrap();
+        assert_eq!(b.agent.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn a_file_written_before_agents_existed_names_none() {
+        let b = parse(&format!("session_id={GOOD}\n")).unwrap();
+        assert_eq!(b.agent, None);
+    }
+
+    #[test]
+    fn a_non_uuid_id_is_kept_because_another_agent_may_use_one() {
+        // is_uuid is Claude Code's rule, applied by its adapter, not here.
+        let b = parse("session_id=01JB2Q3K4\nagent=codex\n").unwrap();
+        assert_eq!(b.id, "01JB2Q3K4");
     }
 }

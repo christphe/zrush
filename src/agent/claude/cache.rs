@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use crate::claude::transcript::{self, Meta, TAIL_LINES};
+use crate::agent::claude::transcript::{self, Meta, TAIL_LINES};
 use crate::config::Dirs;
 
 /// `<stamp> \t <hash> \t <title> \t <cwd> \t <last ts>`

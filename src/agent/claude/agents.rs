@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::claude::{cache, projects};
+use crate::agent::claude::{cache, projects};
 use crate::config::{Config, Dirs};
 use crate::model::{Session, SessionKind, age, truncate_title};
 
@@ -128,6 +128,7 @@ pub fn to_session(dirs: &Dirs, cfg: &Config, e: Entry, now: i64) -> Session {
     };
 
     Session {
+        agent: super::ID,
         id: e.session_id,
         title: truncate_title(&title, cfg.title_width),
         status: if last > 0 {
@@ -161,7 +162,7 @@ mod tests {
     use super::*;
     use crate::config::dirs_under;
 
-    const J: &str = include_str!("../../tests/fixtures/agents.json");
+    const J: &str = include_str!("../../../tests/fixtures/agents.json");
 
     #[test]
     fn background_sessions_are_dropped() {

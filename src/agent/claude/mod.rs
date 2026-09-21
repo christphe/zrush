@@ -1,9 +1,12 @@
-//! Everything zrush learns about Claude Code sessions.
+//! The Claude Code adapter.
 //!
-//! Live ones come from `claude agents --json`; past ones are found by
+//! Live sessions come from `claude agents --json`; past ones are found by
 //! reading the transcripts Claude Code keeps under `~/.claude/projects`.
 //! Nothing here is ever used to resume: `claude --resume <id>` stays the
 //! only mechanism.
+//!
+//! Everything Claude-specific lives under this module. The rest of zrush
+//! sees only `agent::Agent`.
 
 pub mod agents;
 pub mod cache;
@@ -13,22 +16,28 @@ pub mod transcript;
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::agent::{Agent, Scope, Turn};
 use crate::config::{Config, Dirs};
-use crate::model::{Session, SessionKind, Worktree, age, truncate_title};
-use crate::state::is_uuid;
+use crate::error::Result;
+use crate::model::{Session, SessionKind, age, truncate_title};
+
+/// Claude Code session ids are UUIDs. Anything else must never reach
+/// `claude --resume`.
+pub const ID: &str = "claude";
+
+pub struct ClaudeCode;
 
 /// Sessions that are no longer running but can still be resumed. Claude Code
 /// offers no non-interactive listing for them, so this reads the transcripts
 /// it keeps — best effort, and bounded: only the newest `resumable_scan`
 /// files are examined, unless something has been expanded.
-pub fn resumable(
-    dirs: &Dirs,
-    cfg: &Config,
-    main_root: &Path,
-    worktrees: &[Worktree],
-    live_ids: &HashSet<String>,
-    uncapped: bool,
-) -> Vec<Session> {
+fn find_resumable(dirs: &Dirs, cfg: &Config, scope: &Scope<'_>) -> Vec<Session> {
+    let (main_root, worktrees, live_ids, uncapped) = (
+        scope.main_root,
+        scope.worktrees,
+        scope.live_ids,
+        scope.uncapped,
+    );
     if cfg.resumable_max == 0 {
         return Vec::new();
     }
@@ -63,7 +72,7 @@ pub fn resumable(
         let Some(id) = f.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
             continue;
         };
-        if !is_uuid(&id) || !seen.insert(id.clone()) {
+        if !crate::state::is_uuid(&id) || !seen.insert(id.clone()) {
             continue;
         }
         // A transcript's mtime is useless as an age: Claude Code rewrites
@@ -78,6 +87,7 @@ pub fn resumable(
         let ts = meta.last_ts.unwrap_or(mtime);
         let title = meta.title.unwrap_or_else(|| id.chars().take(8).collect());
         out.push(Session {
+            agent: ID,
             id,
             title: truncate_title(&title, cfg.title_width),
             status: format!("resumable {}", age(now, ts)),
@@ -90,10 +100,85 @@ pub fn resumable(
     out
 }
 
+impl Agent for ClaudeCode {
+    fn id(&self) -> &'static str {
+        ID
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Claude Code"
+    }
+
+    fn available(&self) -> bool {
+        super::on_path("claude")
+    }
+
+    fn valid_id(&self, id: &str) -> bool {
+        crate::state::is_uuid(id)
+    }
+
+    fn live(&self, dirs: &Dirs, cfg: &Config) -> Vec<Session> {
+        agents::live(dirs, cfg)
+    }
+
+    fn resumable(&self, dirs: &Dirs, cfg: &Config, scope: &Scope<'_>) -> Vec<Session> {
+        find_resumable(dirs, cfg, scope)
+    }
+
+    fn history_count(&self, dirs: &Dirs, worktree: &Path) -> usize {
+        projects::history_count(dirs, worktree)
+    }
+
+    fn preview(&self, dirs: &Dirs, id: &str, turns: usize) -> Vec<Turn> {
+        projects::find_transcript(dirs, id)
+            .map(|p| transcript::turns(&p, transcript::TAIL_LINES, turns))
+            .unwrap_or_default()
+    }
+
+    /// The transcript wherever Claude Code filed it, plus the sidecar
+    /// directory and our cached title.
+    fn delete(&self, dirs: &Dirs, id: &str) -> Result<usize> {
+        let mut gone = 0;
+        let Ok(rd) = std::fs::read_dir(&dirs.claude_projects) else {
+            return Ok(0);
+        };
+        for e in rd.flatten() {
+            let f = e.path().join(format!("{id}.jsonl"));
+            if f.is_file() && std::fs::remove_file(&f).is_ok() {
+                gone += 1;
+            }
+            let sidecar = e.path().join(id);
+            if sidecar.is_dir() {
+                let _ = std::fs::remove_dir_all(&sidecar);
+            }
+        }
+        let _ = std::fs::remove_file(dirs.cache.join(id));
+        Ok(gone)
+    }
+
+    fn resume_command(&self, id: &str) -> Vec<String> {
+        vec!["claude".into(), "--resume".into(), id.into()]
+    }
+
+    fn start_command(&self) -> Vec<String> {
+        vec!["claude".into()]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::dirs_under;
+
+    fn scope<'a>(main_root: &'a Path, live: &'a HashSet<String>) -> Scope<'a> {
+        Scope {
+            main_root,
+            new_root: main_root,
+            worktrees: &[],
+            live_ids: live,
+            uncapped: false,
+        }
+    }
 
     fn fixture(dirs: &Dirs, slug_of: &Path, id: &str, title: &str, cwd: &str) {
         let d = dirs.claude_projects.join(projects::slugify(slug_of));
@@ -120,7 +205,7 @@ mod tests {
             "/home/u/repo",
         );
 
-        let s = resumable(&dirs, &Config::default(), root, &[], &HashSet::new(), false);
+        let s = find_resumable(&dirs, &Config::default(), &scope(root, &HashSet::new()));
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].title, "old work");
         assert_eq!(s[0].kind, SessionKind::Resumable);
@@ -136,7 +221,7 @@ mod tests {
         fixture(&dirs, root, id, "old work", "/home/u/repo");
 
         let live: HashSet<String> = std::iter::once(id.to_string()).collect();
-        assert!(resumable(&dirs, &Config::default(), root, &[], &live, false).is_empty());
+        assert!(find_resumable(&dirs, &Config::default(), &scope(root, &live)).is_empty());
     }
 
     #[test]
@@ -147,7 +232,9 @@ mod tests {
         let d = dirs.claude_projects.join(projects::slugify(root));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("notes.jsonl"), "{}\n").unwrap();
-        assert!(resumable(&dirs, &Config::default(), root, &[], &HashSet::new(), false).is_empty());
+        assert!(
+            find_resumable(&dirs, &Config::default(), &scope(root, &HashSet::new())).is_empty()
+        );
     }
 
     #[test]
@@ -164,11 +251,19 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            resumable(&dirs, &cfg, root, &[], &HashSet::new(), false).len(),
+            find_resumable(&dirs, &cfg, &scope(root, &HashSet::new())).len(),
             3
         );
         assert_eq!(
-            resumable(&dirs, &cfg, root, &[], &HashSet::new(), true).len(),
+            find_resumable(
+                &dirs,
+                &cfg,
+                &Scope {
+                    uncapped: true,
+                    ..scope(root, &HashSet::new())
+                }
+            )
+            .len(),
             10
         );
     }
@@ -189,6 +284,6 @@ mod tests {
             resumable_max: 0,
             ..Config::default()
         };
-        assert!(resumable(&dirs, &cfg, root, &[], &HashSet::new(), false).is_empty());
+        assert!(find_resumable(&dirs, &cfg, &scope(root, &HashSet::new())).is_empty());
     }
 }

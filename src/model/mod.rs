@@ -73,6 +73,9 @@ pub enum SessionKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
+    /// Which agent this conversation belongs to, as `Agent::id` reports it.
+    /// Deleting, previewing and resuming all route through it.
+    pub agent: &'static str,
     pub id: String,
     pub title: String,
     pub status: String,

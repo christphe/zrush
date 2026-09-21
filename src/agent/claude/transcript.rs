@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::agent::{Role, Turn};
+
 /// How far back we look in a transcript.
 pub const TAIL_LINES: usize = 400;
 
@@ -20,18 +22,6 @@ pub struct Meta {
     pub title: Option<String>,
     pub cwd: Option<PathBuf>,
     pub last_ts: Option<i64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    User,
-    Assistant,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Turn {
-    pub role: Role,
-    pub text: String,
 }
 
 #[derive(Deserialize)]
@@ -161,7 +151,7 @@ mod tests {
 
     use super::*;
 
-    const T: &str = include_str!("../../tests/fixtures/transcript.jsonl");
+    const T: &str = include_str!("../../../tests/fixtures/transcript.jsonl");
 
     fn long_transcript(dir: &Path) -> PathBuf {
         let p = dir.join("long.jsonl");

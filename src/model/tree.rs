@@ -319,6 +319,7 @@ mod tests {
 
     fn sess(cwd: &str, launch: &str, kind: SessionKind) -> Session {
         Session {
+            agent: "claude",
             id: "aaaaaaaa-1111-2222-3333-444455556666".into(),
             title: "t".into(),
             status: "running".into(),
