@@ -649,7 +649,9 @@ flush_wt() {
   [ -n "$wt_path" ] || return 0
   local label="$wt_branch"
   [ -n "$wt_flags" ] && label="$label $wt_flags"
-  [ "$wt_path" = "$main_root" ] && label="$label [main wt]"
+  # The primary worktree: the one holding .git, and the one git refuses to
+  # remove. "[root]" says that without repeating the branch name.
+  [ "$wt_path" = "$main_root" ] && label="$label [root]"
   printf '%s\t%s\n' "$label" "$wt_path" >> "$wtlist"
   wt_path=""; wt_branch=""; wt_flags=""
 }

@@ -109,7 +109,8 @@ The picker takes the **whole terminal** (fzf's alternate screen, so your
 scrollback comes back untouched on exit). `ZRUSH_FZF_HEIGHT="80%"` keeps it
 inline instead.
 
-Worktree rows show branch (plus `[main wt]`, `🔒` locked, `⚠` prunable) · session
+Worktree rows show branch (plus `[root]` for the primary worktree, `🔒`
+locked, `⚠` prunable) · session
 badge · git status · path. Session rows show the title and its status. The
 preview pane shows `git status -sb` and the last 10 commits.
 
