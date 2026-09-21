@@ -1,5 +1,7 @@
 # zrush
 
+[![CI](https://github.com/christphe/zrush/actions/workflows/ci.yml/badge.svg)](https://github.com/christphe/zrush/actions/workflows/ci.yml)
+
 Git worktree **and Claude Code session** router for your editor, driven by `fzf`.
 
 Two shell scripts, no daemon, no database. The only persistent state is one
@@ -110,18 +112,21 @@ refuses for lack of one.
 The key reminder sits in a one-line footer at the bottom, so it survives a
 narrow window.
 
-The **last row creates a worktree**: `enter` opens a branch picker — type a
-new name, or pick one of the repo's branches, newest first — and runs
-`git worktree add` under `<main worktree>/.claude/worktrees/<name>`, beside the
-ones `claude --worktree` makes. An existing branch is checked out as-is; a new
-one is cut with `--no-track`, so a later `git push -u origin HEAD` sets the
-right upstream instead of pointing at main.
+**`ctrl-w` creates a worktree.** It asks for a branch name — type a new one,
+or pick one of the repo's branches, newest first — and runs `git worktree add`
+under `<main worktree>/.claude/worktrees/<name>`, beside the ones
+`claude --worktree` makes. An existing branch is checked out as-is; a new one
+is cut with `--no-track`, so a later `git push -u origin HEAD` sets the right
+upstream instead of pointing at main.
 
 The base is `origin/HEAD` when there is a remote, because that is the one
 actually up to date; otherwise the local default branch, and failing that the
 current `HEAD`. A repo with no remote is ordinary and works the same. Either
 way `zrush` never touches the network — `origin/HEAD` is as fresh as your last
 `git fetch`.
+
+On a session row `ctrl-w` also hands that session to the new worktree, which
+is how an orphan gets a home again.
 
 Flags: `-C/--repo`, `-p/--print`, `-l/--list`, `-n/--no-sessions`,
 `-S/--no-status`, `-1/--once`, `-h`.
@@ -441,8 +446,7 @@ where it is and the row you aimed at stays highlighted:
 ```
   remove? ▌ main [root]        …/wms
           ▌ 2427               …/wms/.claude/worktrees/2427
-          ▌ + new worktree…
-          ╭──────────────────────────────────────────────────────────╮
+             ╭──────────────────────────────────────────────────────────╮
           │ remove  2427  and its 3, 1 running sessions?             │
           │   y  yes, delete them too    n  no, keep them    esc  cancel │
           ╰──────────────────────────────────────────────────────────╯
