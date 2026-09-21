@@ -1,3 +1,6 @@
+# worktrees created inside the repo, and local Claude Code state
+.claude/
+
 __pycache__/
 .DS_Store
 *.pyc
