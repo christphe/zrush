@@ -372,6 +372,8 @@ slugify() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
 # whose worktree is also marked is dropped -- it would go with the worktree
 # anyway -- and a running session is never deleted.
 purge_plan() {
+      # Clear first: a plan left by a previous pass must never be acted on.
+      : > "$PLAN_WTS"; : > "$PLAN_SESS"
       local -a wts=() sess=()
       local n_main=0 n_live=0 row _lbl rpath rtype rid k e sp dup w note
       for row in ${ROWS[@]+"${ROWS[@]}"}; do
@@ -401,7 +403,6 @@ purge_plan() {
 
       # One item per line: a worktree path, or "id \t path \t type".
       # No empty fields, so nothing to escape and nothing to misread.
-      : > "$PLAN_WTS"; : > "$PLAN_SESS"
       [ "${#wts[@]}"  -gt 0 ] && printf '%s\n' "${wts[@]}"  > "$PLAN_WTS"
       [ "${#sess[@]}" -gt 0 ] && printf '%s\n' "${sess[@]}" > "$PLAN_SESS"
       confirm_write purge-all purge-marked "" purge ""
@@ -1457,7 +1458,7 @@ esac
 {
   printf '#!/bin/sh\nexec'
   printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir"
-  printf ' --ask "$1" --path "$2" --type "$3" --id "$4" --query "$5" --current "$6"\n'
+  printf ' --ask "$1" --path "$2" --type "$3" --id "$4"\n'
 } > "$ask_sh" && chmod +x "$ask_sh"
 
 # enter has to serve three modes, and purge needs every marked row, so it

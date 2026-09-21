@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Everything: syntax, lint, then each test file in order.
+#
+#   tests/run           all of it
+#   tests/run 01        just the files whose name starts with 01
+set -uo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." || exit 1
+filter="${1:-}"
+rc=0
+
+echo "syntax"
+for f in bin/zrush bin/zrush_session install.sh tests/lib/harness.sh tests/run tests/[0-9]*.sh; do
+  bash -n "$f" || { echo "  FAIL  $f"; rc=1; }
+done
+[ "$rc" -eq 0 ] && echo "  ok    all files parse"
+
+echo "shellcheck"
+for f in bin/zrush bin/zrush_session install.sh tests/lib/harness.sh tests/run tests/[0-9]*.sh; do
+  out=$(shellcheck -s bash -f gcc "$f" 2>&1) || true
+  if [ -n "$out" ]; then printf '  FAIL  %s\n%s\n' "$f" "$out"; rc=1; fi
+done
+[ "$rc" -eq 0 ] && echo "  ok    no findings"
+
+for f in tests/[0-9]*.sh; do
+  case "$f" in tests/"$filter"*) ;; *) [ -n "$filter" ] && continue ;; esac
+  printf '\n%s\n' "$f"
+  bash "$f" || rc=1
+done
+
+printf '\n%s\n' "$( [ "$rc" -eq 0 ] && echo 'all green' || echo 'SOMETHING FAILED' )"
+exit "$rc"

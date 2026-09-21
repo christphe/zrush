@@ -71,7 +71,7 @@ current=$(sed -n 's/^[[:space:]]*ZRUSH_EDITOR=\([a-z]*\).*/\1/p' "$cfg_dir/confi
 
 if [ -z "$editor" ]; then
   if [ -t 0 ]; then
-  # shellcheck disable=SC2016  # the $-names belong to the printed snippet
+    # shellcheck disable=SC2016  # the backticks are part of the printed text
     printf 'Which editor should `enter` open a worktree in?\n'
     printf '  1) zed     2) cursor     3) code\n'
     printf 'choice [%s]: ' "${current:-zed}"
