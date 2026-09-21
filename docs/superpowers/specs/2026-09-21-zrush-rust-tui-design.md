@@ -169,9 +169,9 @@ length: labels routinely carry accents and box-drawing glyphs.
 | Key | Action |
 |---|---|
 | `↑` `↓` `k` `j` | move |
-| `enter` | worktree: clear the association, open the editor. session: bind it, open the editor. `[...more]`: raise this worktree's cap. `+ new worktree…`: the branch modal |
+| `enter` | worktree: clear the association, open the editor. session: bind it, open the editor. `[...more]`: raise this worktree's cap |
 | `ctrl-o` | new `claude` in its own terminal |
-| `ctrl-w` | branch modal; on a session row, bind that session to the new worktree |
+| `ctrl-w` | branch modal, the only way to create a worktree; on a session row, hand that session to the new worktree |
 | `ctrl-d` | delete modal |
 | `ctrl-p` | purge mode |
 | `space` | mark a row (purge mode) |
@@ -199,7 +199,7 @@ it is up; there is no rebinding of anything.
 ### Theme
 
 One `theme.rs` holding named colours. Worktrees cyan, sessions magenta,
-orphans red, the creation row green, `[...more]` dim. Live is green,
+orphans red, `[...more]` dim. Live is green,
 resumable dim. Everything resolves through `ratatui::style::Color`, so
 a 16-colour terminal degrades rather than breaks.
 
@@ -272,7 +272,7 @@ Every behaviour of the bash version, and where it lands:
 | Fold and unfold | `ui/app.rs` |
 | Git status badge | `git.rs` |
 | Preview: conversation tail, or status plus log | `ui/preview.rs` |
-| Create a worktree under `<main>/.claude/worktrees/` | `actions.rs` |
+| Create a worktree under `<main>/.claude/worktrees/`, from `ctrl-w` only | `actions.rs` |
 | An existing branch is checked out, a new one cut `--no-track` | `actions.rs` |
 | The main worktree can never be removed | `actions.rs` |
 | Delete a session: transcript, sidecar directory, cache entry | `actions.rs` |
