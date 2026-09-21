@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 #
-# wt — pick a git worktree *or one of its Claude Code sessions* with fzf,
-#      then open it in Zed.
+# zrush — pick a git worktree *or one of its Claude Code sessions* with fzf,
+#         then open it in your editor.
 #
 # The association worktree <-> session lives in the worktree's own gitdir:
 #
-#     <git rev-parse --absolute-git-dir>/wt-session      # session_id=<uuid>
+#     <git rev-parse --absolute-git-dir>/zrush-session      # session_id=<uuid>
 #
 # i.e. `repo/.git/worktrees/<name>` for a linked worktree, `repo/.git` for the
 # main one. Per-worktree by construction, so several Zed windows can each hold
-# their own session. No global state, no secrets. `wt_session`, the shell Zed
+# their own session. No global state, no secrets. `zrush_session`, the shell Zed
 # starts in its terminal panel, reads that file and resumes the session.
 #
 # The picker LOOPS: after Zed opens, or after you quit claude, you land back on
-# the (refreshed) list. Esc / ctrl-c / ctrl-q leaves wt.
+# the (refreshed) list. Esc / ctrl-c / ctrl-q leaves zrush.
 #
 #   enter    on a WORKTREE  drop its session association, then open the editor
-#                           -> wt_session starts a fresh Claude there
+#                           -> zrush_session starts a fresh Claude there
 #            on a SESSION   write that session id, then open the editor
-#                           -> wt_session resumes it
+#                           -> zrush_session resumes it
 #            on [...more]   load more of that worktree's older sessions
 #   ctrl-o   run `claude` here, in the current terminal (new session)
 #   ctrl-w   create a worktree; on a session row, bind that session to it
@@ -31,17 +31,17 @@
 # `git worktree add` under <main worktree>/.claude/worktrees/, and opens Zed.
 #
 # Deps: git, fzf, zed, claude. Optional: jq (session rows, titles, badges).
-# Config: ~/.config/wt/config   (shell syntax, sourced)
-#           WT_DEFAULT_REPO="/path/to/main/repo"   # used when cwd is not a git repo
-#           WT_EDITOR=zed|cursor|code              # editor `enter` opens
-#           WT_EDITOR_CMD=(code --reuse-window)     # or the whole command line
-#           WT_TITLES=0                            # skip the transcript probe
-#           WT_STATUS=0                            # skip the git status column
-#           WT_RESUMABLE_MAX=5                     # dead sessions listed per worktree
-#           WT_RESUMABLE_SCAN=40                   # newest transcripts examined
-#           WT_FZF_HEIGHT="80%"                    # inline instead of full screen
-#           WT_TITLE_WIDTH=48                      # truncate session titles here
-# Cache:  ~/.cache/wt/sessions/  (derived data only, safe to delete)
+# Config: ~/.config/zrush/config   (shell syntax, sourced)
+#           ZRUSH_DEFAULT_REPO="/path/to/main/repo"   # used when cwd is not a git repo
+#           ZRUSH_EDITOR=zed|cursor|code              # editor `enter` opens
+#           ZRUSH_EDITOR_CMD=(code --reuse-window)     # or the whole command line
+#           ZRUSH_TITLES=0                            # skip the transcript probe
+#           ZRUSH_STATUS=0                            # skip the git status column
+#           ZRUSH_RESUMABLE_MAX=5                     # dead sessions listed per worktree
+#           ZRUSH_RESUMABLE_SCAN=40                   # newest transcripts examined
+#           ZRUSH_FZF_HEIGHT="80%"                    # inline instead of full screen
+#           ZRUSH_TITLE_WIDTH=48                      # truncate session titles here
+# Cache:  ~/.cache/zrush/sessions/  (derived data only, safe to delete)
 # No secrets are ever stored.
 
 set -uo pipefail
@@ -52,11 +52,11 @@ PROG=${0##*/}
 SELF=$0
 case "$SELF" in */*) ;; *) SELF=$(command -v -- "$SELF" 2>/dev/null || printf %s "$SELF") ;; esac
 case "$SELF" in */*) SELF=$(cd -- "${SELF%/*}" 2>/dev/null && pwd)/${SELF##*/} ;; esac
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wt"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zrush"
 CONFIG_FILE="$CONFIG_DIR/config"
 CLAUDE_PROJECTS="$HOME/.claude/projects"
-CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/wt/sessions"
-STATE_BASENAME="wt-session"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zrush/sessions"
+STATE_BASENAME="zrush-session"
 TAIL_LINES=400          # how far back we look in a transcript
 
 # ---------------------------------------------------------------- helpers ---
@@ -73,7 +73,7 @@ is_uuid() {
 
 usage() {
   cat <<EOF
-$PROG — git worktree / Claude session switcher for Zed
+$PROG — git worktree / Claude session router for your editor
 
 usage: $PROG [options]
 
@@ -86,9 +86,9 @@ usage: $PROG [options]
   -h, --help          this help
 
 keys inside fzf:
-  enter    worktree: clear its session, open the editor (wt_session starts a
+  enter    worktree: clear its session, open the editor (zrush_session starts a
                      new Claude session there)
-           session:  bind it to the worktree, open the editor (wt_session
+           session:  bind it to the worktree, open the editor (zrush_session
                      resumes it)
            [...more]: load more of that worktree's older sessions
   ctrl-o   run claude here, in this terminal
@@ -98,7 +98,7 @@ keys inside fzf:
   ctrl-l   reload the list
   left     fold this worktree's rows   (right unfolds)
   last row create a new worktree (asks for a name)
-  esc / ctrl-c / ctrl-q            quit wt
+  esc / ctrl-c / ctrl-q            quit zrush
 EOF
 }
 
@@ -129,7 +129,7 @@ while [ $# -gt 0 ]; do
     --unfold)         UNFOLD_PATH="${2:-}"; shift 2 ;;
     --more)           MORE_PATH="${2:-}"; shift 2 ;;
     -n|--no-sessions) WANT_SESSIONS=0; shift ;;
-    -S|--no-status)   WT_STATUS=0; shift ;;
+    -S|--no-status)   ZRUSH_STATUS=0; shift ;;
     -1|--once)        LOOP=0; shift ;;
     -h|--help)        usage; exit 0 ;;
     *)                die "unknown option: $1 (try --help)" ;;
@@ -140,42 +140,42 @@ for c in git fzf; do have "$c" || die "missing dependency: $c"; done
 
 # ---------------------------------------------------------------- config ----
 mkdir -p "$CONFIG_DIR"
-WT_DEFAULT_REPO="${WT_DEFAULT_REPO:-}"
+ZRUSH_DEFAULT_REPO="${ZRUSH_DEFAULT_REPO:-}"
 # Which editor `enter` opens a worktree in. A known name gets the right
 # "new window" flag; anything else is run as-is with the path appended.
 #   zed | cursor | code   ->  <editor> -n <path>
-# WT_EDITOR_CMD overrides the whole command line, e.g. (code --reuse-window).
-WT_EDITOR="${WT_EDITOR:-zed}"
-declare -a WT_EDITOR_CMD=()
+# ZRUSH_EDITOR_CMD overrides the whole command line, e.g. (code --reuse-window).
+ZRUSH_EDITOR="${ZRUSH_EDITOR:-zed}"
+declare -a ZRUSH_EDITOR_CMD=()
 # Defaults, overridable from the environment, then from the config file.
-WT_TITLES="${WT_TITLES:-1}"             # 0 disables the transcript probe
-WT_STATUS="${WT_STATUS:-1}"             # 0 disables the per-worktree git status
-WT_RESUMABLE_MAX="${WT_RESUMABLE_MAX:-5}"    # dead sessions listed per worktree (0 = none)
-WT_RESUMABLE_SCAN="${WT_RESUMABLE_SCAN:-40}" # newest transcripts examined, repo-wide
-WT_MORE_STEP="${WT_MORE_STEP:-20}"           # rows added by one "[...more]"
+ZRUSH_TITLES="${ZRUSH_TITLES:-1}"             # 0 disables the transcript probe
+ZRUSH_STATUS="${ZRUSH_STATUS:-1}"             # 0 disables the per-worktree git status
+ZRUSH_RESUMABLE_MAX="${ZRUSH_RESUMABLE_MAX:-5}"    # dead sessions listed per worktree (0 = none)
+ZRUSH_RESUMABLE_SCAN="${ZRUSH_RESUMABLE_SCAN:-40}" # newest transcripts examined, repo-wide
+ZRUSH_MORE_STEP="${ZRUSH_MORE_STEP:-20}"           # rows added by one "[...more]"
 # Empty = full screen: fzf takes the whole terminal on its alternate screen
 # and gives it back untouched on exit. Set e.g. "80%" to keep it inline.
-WT_FZF_HEIGHT="${WT_FZF_HEIGHT:-}"
-WT_TITLE_WIDTH="${WT_TITLE_WIDTH:-48}"
+ZRUSH_FZF_HEIGHT="${ZRUSH_FZF_HEIGHT:-}"
+ZRUSH_TITLE_WIDTH="${ZRUSH_TITLE_WIDTH:-48}"
 # shellcheck disable=SC1090
-_wt_status_cli="$WT_STATUS"
+_zrush_status_cli="$ZRUSH_STATUS"
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 # An explicit -S on the command line outranks the config file.
-[ "$_wt_status_cli" = "0" ] && WT_STATUS=0
-# Tolerate WT_EDITOR_CMD="code -n" (a plain string) in the config file:
+[ "$_zrush_status_cli" = "0" ] && ZRUSH_STATUS=0
+# Tolerate ZRUSH_EDITOR_CMD="code -n" (a plain string) in the config file:
 # assigning a string to an already-declared array just fills element 0.
-if [ "${#WT_EDITOR_CMD[@]}" -eq 1 ]; then
-  case "${WT_EDITOR_CMD[0]}" in
-    *[[:space:]]*) IFS=$' \t\n' read -r -a WT_EDITOR_CMD <<<"${WT_EDITOR_CMD[0]}" ;;
+if [ "${#ZRUSH_EDITOR_CMD[@]}" -eq 1 ]; then
+  case "${ZRUSH_EDITOR_CMD[0]}" in
+    *[[:space:]]*) IFS=$' \t\n' read -r -a ZRUSH_EDITOR_CMD <<<"${ZRUSH_EDITOR_CMD[0]}" ;;
   esac
 fi
-if [ "${#WT_EDITOR_CMD[@]}" -eq 0 ] || [ -z "${WT_EDITOR_CMD[0]}" ]; then
-  case "$WT_EDITOR" in
+if [ "${#ZRUSH_EDITOR_CMD[@]}" -eq 0 ] || [ -z "${ZRUSH_EDITOR_CMD[0]}" ]; then
+  case "$ZRUSH_EDITOR" in
     # -n on all three: a worktree nested inside another one is otherwise
     # swallowed by the parent project's window.
-    zed|cursor|code) WT_EDITOR_CMD=("$WT_EDITOR" -n) ;;
-    "")              WT_EDITOR_CMD=(zed -n) ;;
-    *)               WT_EDITOR_CMD=("$WT_EDITOR") ;;
+    zed|cursor|code) ZRUSH_EDITOR_CMD=("$ZRUSH_EDITOR" -n) ;;
+    "")              ZRUSH_EDITOR_CMD=(zed -n) ;;
+    *)               ZRUSH_EDITOR_CMD=("$ZRUSH_EDITOR") ;;
   esac
 fi
 
@@ -186,7 +186,7 @@ elif have md5sum; then  hash_stdin() { md5sum | cut -d' ' -f1; }
 else                    hash_stdin() { return 1; }
 fi
 
-if [ "$WT_TITLES" != "0" ] && [ "$WANT_SESSIONS" -eq 1 ]; then
+if [ "$ZRUSH_TITLES" != "0" ] && [ "$WANT_SESSIONS" -eq 1 ]; then
   mkdir -p "$CACHE_DIR" 2>/dev/null
   # Derived data only: drop whatever has not been touched in a month.
   find "$CACHE_DIR" -type f -mtime +30 -delete 2>/dev/null
@@ -201,10 +201,10 @@ if [ -n "$REPO_ARG" ]; then
   repo_dir="$REPO_ARG"
 elif git rev-parse --git-dir >/dev/null 2>&1; then
   repo_dir="$PWD"
-elif [ -n "$WT_DEFAULT_REPO" ] && [ -d "$WT_DEFAULT_REPO" ]; then
-  repo_dir="$WT_DEFAULT_REPO"
+elif [ -n "$ZRUSH_DEFAULT_REPO" ] && [ -d "$ZRUSH_DEFAULT_REPO" ]; then
+  repo_dir="$ZRUSH_DEFAULT_REPO"
 else
-  die "not inside a git repository. Use --repo <path>, or set WT_DEFAULT_REPO in $CONFIG_FILE"
+  die "not inside a git repository. Use --repo <path>, or set ZRUSH_DEFAULT_REPO in $CONFIG_FILE"
 fi
 git -C "$repo_dir" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $repo_dir"
 
@@ -219,7 +219,7 @@ if [ -n "$STATE_DIR" ]; then
   [ -d "$STATE_DIR" ] || die "no such state directory: $STATE_DIR"
   tmpdir="$STATE_DIR"
 else
-  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/wt.XXXXXX") || die "mktemp failed"
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/zrush.XXXXXX") || die "mktemp failed"
   trap 'rm -rf "$tmpdir"' EXIT
 fi
 sessions_file="$tmpdir/sessions"   # cwd \t id \t title \t status \t launch-cwd \t kind \t epoch
@@ -329,7 +329,7 @@ session_meta() {  # $1 = id, $2 = launch cwd  ->  prints "<title>\t<cwd>"
 # Passing it keeps this function fork-free on a cache hit, which matters: the
 # scan calls it once per transcript and a repo can hold hundreds.
 session_meta_file() {  # $1 = path, $2 = id, [$3 = mtime]  ->  "<title>\t<cwd>"
-  [ "$WT_TITLES" != "0" ] || return 1
+  [ "$ZRUSH_TITLES" != "0" ] || return 1
   local f cache line st key meta blob c_st c_md5 c_title c_cwd _t
   f="$1"; st="${3:-}"; set -- "$2"
   [ -n "$st" ] || [ -f "$f" ] || return 1
@@ -383,7 +383,7 @@ session_meta_file() {  # $1 = path, $2 = id, [$3 = mtime]  ->  "<title>\t<cwd>"
 # --------------------------------------------------- live Claude sessions ---
 # Official, scriptable source of truth: `claude agents --json`.
 # Background sessions are dropped: they are reattached with `claude attach`,
-# not `--resume`, so they are not something wt can bind to a Zed terminal.
+# not `--resume`, so they are not something zrush can bind to an editor.
 # Each row is enriched with the transcript probe above:
 #   <effective cwd> \t <id> \t <label> \t <status> \t <launch cwd>
 refresh_sessions() {
@@ -400,8 +400,8 @@ refresh_sessions() {
     fi
     [ -n "$title" ] || title="$name"
     [ -n "$ecwd" ]  || ecwd="$cwd"
-    if [ "${#title}" -gt "$WT_TITLE_WIDTH" ]; then
-      title="${title:0:$((WT_TITLE_WIDTH - 1))}…"
+    if [ "${#title}" -gt "$ZRUSH_TITLE_WIDTH" ]; then
+      title="${title:0:$((ZRUSH_TITLE_WIDTH - 1))}…"
     fi
     [ "${started:-0}" -gt 0 ] 2>/dev/null && status="$status $(age_of "$started")"
     printf '%s\t%s\t%s\t%s\t%s\tlive\t%s\n' \
@@ -426,7 +426,7 @@ refresh_sessions() {
 assign_sessions() {
   : > "$owned_file"
   [ -s "$sessions_file" ] && [ -s "$wtlist" ] || return 0
-  awk -F'\t' -v OFS='\t' -v maxr="${WT_RESUMABLE_MAX:-0}" \
+  awk -F'\t' -v OFS='\t' -v maxr="${ZRUSH_RESUMABLE_MAX:-0}" \
       -v ef="$expand_file" -v wl="$wtlist" -v cf="$counts_file" '
     function owner(cwd,   i, p, l, best, bl) {
       best = ""; bl = 0
@@ -483,7 +483,7 @@ session_badge() {  # $1 = worktree path
 # ------------------------------------------------------- git status ---------
 # One `git status --porcelain=v2 --branch` per worktree yields both numbers:
 # the changed files and the ahead/behind counts against the upstream. Measured
-# at 40-250 ms on a large repo; -S / WT_STATUS=0 skips it.
+# at 40-250 ms on a large repo; -S / ZRUSH_STATUS=0 skips it.
 #
 # Prints "<changed>\t<untracked>\t<ahead>\t<behind>\t<has-upstream>".
 git_counts() {  # $1 = worktree path
@@ -499,7 +499,7 @@ git_counts() {  # $1 = worktree path
 #   ~3  changed tracked files      ?1  untracked
 #   ↑2  commits ahead of upstream  ↓1  behind        ⚠  no upstream at all
 status_badge() {  # $1 = worktree path
-  [ "$WT_STATUS" != "0" ] || return 0
+  [ "$ZRUSH_STATUS" != "0" ] || return 0
   local c n a b up out="" hit
   # Cached for the whole refresh: a fold redraws the menu and must not pay for
   # four `git status` again. The leading "-" makes an empty badge a cache hit.
@@ -521,12 +521,12 @@ status_badge() {  # $1 = worktree path
 
 # Sessions that are no longer running but can still be resumed. Claude Code
 # offers no non-interactive listing for them, so this reads the transcripts it
-# keeps -- best effort, and bounded: only the newest $WT_RESUMABLE_SCAN files
-# are examined, and at most $WT_RESUMABLE_MAX land under any one worktree.
+# keeps -- best effort, and bounded: only the newest $ZRUSH_RESUMABLE_SCAN files
+# are examined, and at most $ZRUSH_RESUMABLE_MAX land under any one worktree.
 # Nothing here resumes anything; `claude --resume <id>` still does that.
 refresh_resumable() {
   [ "$WANT_SESSIONS" -eq 1 ] || return 0
-  [ "${WT_RESUMABLE_MAX:-0}" != "0" ] || return 0
+  [ "${ZRUSH_RESUMABLE_MAX:-0}" != "0" ] || return 0
   [ -d "$CLAUDE_PROJECTS" ] || return 0
   have jq || return 0
 
@@ -547,8 +547,8 @@ refresh_resumable() {
   [ "${#dirs[@]}" -gt 0 ] || return 0
 
   # Expanding a worktree lifts the cap: the rows it wants may sit well past
-  # the newest $WT_RESUMABLE_SCAN transcripts of the repo.
-  scan="$WT_RESUMABLE_SCAN"
+  # the newest $ZRUSH_RESUMABLE_SCAN transcripts of the repo.
+  scan="$ZRUSH_RESUMABLE_SCAN"
   [ -s "$expand_file" ] && scan=1000000
 
   # The ids already listed as live, gathered once: a grep per transcript costs
@@ -565,8 +565,8 @@ refresh_resumable() {
     title=${meta%%$'\t'*}; ecwd=${meta#*$'\t'}
     [ -n "$ecwd" ] || continue
     [ -n "$title" ] || title="${id:0:8}"
-    if [ "${#title}" -gt "$WT_TITLE_WIDTH" ]; then
-      title="${title:0:$((WT_TITLE_WIDTH - 1))}…"
+    if [ "${#title}" -gt "$ZRUSH_TITLE_WIDTH" ]; then
+      title="${title:0:$((ZRUSH_TITLE_WIDTH - 1))}…"
     fi
     seen="$seen $id"
     printf '%s\t%s\t%s\tresumable %s\t%s\tresum\t%s\n' \
@@ -705,15 +705,15 @@ build_menu() {
 # Nested worktrees have a further catch: while the parent project is open in
 # Zed, `zed <parent>/.claude/worktrees/<name>` is swallowed by the parent's
 # window. Only the -n flag reliably gives such a worktree its own window --
-# at the cost of a new window on every open. See WT_EDITOR / WT_EDITOR_CMD.
+# at the cost of a new window on every open. See ZRUSH_EDITOR / ZRUSH_EDITOR_CMD.
 open_editor() {  # $1 = worktree path
-  have "${WT_EDITOR_CMD[0]}" \
-    || { warn "${WT_EDITOR_CMD[0]} not found (install its shell command)"; return 1; }
-  "${WT_EDITOR_CMD[@]}" "$1" || warn "could not open $1"
+  have "${ZRUSH_EDITOR_CMD[0]}" \
+    || { warn "${ZRUSH_EDITOR_CMD[0]} not found (install its shell command)"; return 1; }
+  "${ZRUSH_EDITOR_CMD[@]}" "$1" || warn "could not open $1"
 }
 
 # Remote default branch, the base every new branch is cut from. No fetch:
-# wt never touches the network.
+# zrush never touches the network.
 default_base() {
   local b
   b=$(git -C "$repo_dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) \
@@ -848,7 +848,7 @@ EOF
   return 0
 }
 
-# Run claude in a subshell: wt keeps its own cwd and regains control on quit.
+# Run claude in a subshell: zrush keeps its own cwd and regains control on quit.
 run_claude() {  # $1 = worktree path, rest = extra claude args
   local p="$1"; shift
   have claude || { warn "claude CLI not found"; return 1; }
@@ -861,10 +861,10 @@ if [ "$MENU_ONLY" -eq 1 ]; then
   [ -n "$UNFOLD_PATH" ] && collapse_unset "$UNFOLD_PATH"
   if [ -n "$MORE_PATH" ]; then
     cur=$(awk -F'\t' -v p="$MORE_PATH" '$1==p{print $2; exit}' "$expand_file" 2>/dev/null)
-    [ -n "$cur" ] || cur="$WT_RESUMABLE_MAX"
+    [ -n "$cur" ] || cur="$ZRUSH_RESUMABLE_MAX"
     awk -F'\t' -v p="$MORE_PATH" '$1!=p' "$expand_file" > "$expand_file.new" 2>/dev/null
     mv -f "$expand_file.new" "$expand_file" 2>/dev/null
-    printf '%s\t%s\n' "$MORE_PATH" "$(( cur + WT_MORE_STEP ))" >> "$expand_file"
+    printf '%s\t%s\n' "$MORE_PATH" "$(( cur + ZRUSH_MORE_STEP ))" >> "$expand_file"
   fi
   # A reload resets fzf's cursor to the top, so leave it the row the key was
   # pressed on: the worktree for a fold, the "[...more]" row for an unfold
@@ -913,7 +913,7 @@ act_sh="$tmpdir/act"
   printf '#!/bin/sh\nexec'
   printf ' %q' "$SELF" --menu --render --state "$tmpdir" --repo "$repo_dir"
   [ "$WANT_SESSIONS" -eq 0 ] && printf ' -n'
-  [ "$WT_STATUS" = "0" ] && printf ' -S'
+  [ "$ZRUSH_STATUS" = "0" ] && printf ' -S'
   printf ' "$1" "$2"\n'
 } > "$act_sh" && chmod +x "$act_sh"
 
@@ -956,7 +956,7 @@ while :; do
   # before `start` fires; a row that vanished just leaves the cursor on top.
   # No --height at all = fzf's full-screen mode (alternate screen).
   height_opt=()
-  [ -n "$WT_FZF_HEIGHT" ] && height_opt=(--height="$WT_FZF_HEIGHT")
+  [ -n "$ZRUSH_FZF_HEIGHT" ] && height_opt=(--height="$ZRUSH_FZF_HEIGHT")
 
   pos_bind=()
   if [ -n "$cursor_key" ]; then
@@ -981,7 +981,7 @@ while :; do
         --preview-window=right:50%:wrap \
         < "$menu"
   )
-  # Empty selection = esc / ctrl-c / no match -> leave wt.
+  # Empty selection = esc / ctrl-c / no match -> leave zrush.
   [ -n "$sel" ] || break
 
   title=""; kind=""
@@ -1013,10 +1013,10 @@ while :; do
   # redraws, so enter after enter keeps unfolding it.
   if [ "$rtype" = "more" ]; then
     cur=$(awk -F'\t' -v p="$path" '$1==p{print $2; exit}' "$expand_file" 2>/dev/null)
-    [ -n "$cur" ] || cur="$WT_RESUMABLE_MAX"
+    [ -n "$cur" ] || cur="$ZRUSH_RESUMABLE_MAX"
     awk -F'\t' -v p="$path" '$1!=p' "$expand_file" > "$expand_file.new" 2>/dev/null
     mv -f "$expand_file.new" "$expand_file" 2>/dev/null
-    printf '%s\t%s\n' "$path" "$(( cur + WT_MORE_STEP ))" >> "$expand_file"
+    printf '%s\t%s\n' "$path" "$(( cur + ZRUSH_MORE_STEP ))" >> "$expand_file"
     if [ "$scanned_all" -eq 1 ]; then
       next_build=render        # the rows are already in hand, just show more
     else
@@ -1063,7 +1063,7 @@ while :; do
         delete_worktree "$path" && cursor_key=""
       fi
       ;;
-    # enter: set (or drop) the worktree's session, then let Zed's wt_session
+    # enter: set (or drop) the worktree's session, then let Zed's zrush_session
     # terminal do the actual resuming.
     *)
       if [ "$rtype" = "session" ] && [ -n "$sessid" ]; then

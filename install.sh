@@ -1,18 +1,31 @@
 #!/usr/bin/env bash
-# Install wt: symlinks into ~/.local/bin, a config in ~/.config/wt, Zed tasks.
+# Install zrush: symlinks into ~/.local/bin, a config in ~/.config/zrush, Zed tasks.
 # Your Zed settings.json is never touched — see the note this prints at the end.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 bin_dir="$HOME/.local/bin"
-cfg_dir="${XDG_CONFIG_HOME:-$HOME/.config}/wt"
+cfg_dir="${XDG_CONFIG_HOME:-$HOME/.config}/zrush"
 zed_dir="${XDG_CONFIG_HOME:-$HOME/.config}/zed"
 zed_tasks="$zed_dir/tasks.json"
 
+# Moving on from the old name: keep the config, drop the dead symlinks.
+old_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/wt"
+if [ -d "$old_cfg" ] && [ ! -d "$cfg_dir" ]; then
+  mv "$old_cfg" "$cfg_dir"
+  echo "moved $old_cfg -> $cfg_dir"
+fi
+for f in wt wt_session wt-zed-shell; do
+  if [ -L "$bin_dir/$f" ]; then
+    rm -f "$bin_dir/$f"
+    echo "removed the old symlink $bin_dir/$f"
+  fi
+done
+
 mkdir -p "$bin_dir" "$cfg_dir"
 
-# ~/.local/bin/{wt,wt_session} -> <repo>/bin/*  (symlinks: `git pull` updates them)
-for f in wt wt_session; do
+# ~/.local/bin/{zrush,zrush_session} -> <repo>/bin/*  (symlinks: `git pull` updates them)
+for f in zrush zrush_session; do
   ln -sfn "$here/bin/$f" "$bin_dir/$f"
   echo "linked $bin_dir/$f -> $here/bin/$f"
 done
@@ -24,25 +37,25 @@ esac
 
 if [ ! -f "$cfg_dir/config" ]; then
   cat > "$cfg_dir/config" <<'CFG'
-# ~/.config/wt/config — sourced by wt (shell syntax). Never put secrets here.
+# ~/.config/zrush/config — sourced by zrush (shell syntax). Never put secrets here.
 
-# Repo used when `wt` runs outside any git repository:
-# WT_DEFAULT_REPO="$HOME/projects/my-repo"
+# Repo used when `zrush` runs outside any git repository:
+# ZRUSH_DEFAULT_REPO="$HOME/projects/my-repo"
 
 # Editor `enter` opens a worktree in: zed, cursor or code (run with -n).
-# WT_EDITOR=zed
-# WT_EDITOR_CMD=(code --reuse-window)   # or override the whole command line
+# ZRUSH_EDITOR=zed
+# ZRUSH_EDITOR_CMD=(code --reuse-window)   # or override the whole command line
 
 # Session titles are read from Claude Code transcripts (best effort, cached).
-# WT_TITLES=0              # skip the probe entirely
-# WT_TITLE_WIDTH=48        # truncate titles here
+# ZRUSH_TITLES=0              # skip the probe entirely
+# ZRUSH_TITLE_WIDTH=48        # truncate titles here
 
 # Per-worktree git status column (~changed ?untracked ^ahead vbehind).
 # One `git status` per worktree, 40-250 ms each on a large repo.
-# WT_STATUS=0              # drop the column
+# ZRUSH_STATUS=0              # drop the column
 
 # Picker size. Empty (the default) = full screen on the alternate screen.
-# WT_FZF_HEIGHT="80%"      # keep it inline instead
+# ZRUSH_FZF_HEIGHT="80%"      # keep it inline instead
 CFG
   echo "created $cfg_dir/config"
 fi
@@ -62,7 +75,7 @@ done
 
 cat <<MSG
 
-Done. In a Zed terminal, run \`wt_session\` to pick up the session \`wt\` bound
+Done. In a Zed terminal, run \`zrush_session\` to pick up the session \`zrush\` bound
 to that worktree (cmd-j opens the panel).
 
 To have every Zed terminal do it on its own, add this to $zed_dir/settings.json
@@ -70,7 +83,7 @@ yourself — install.sh will not edit that file:
 
     "terminal": {
       "shell": {
-        "with_arguments": { "program": "$bin_dir/wt_session", "args": [] }
+        "with_arguments": { "program": "$bin_dir/zrush_session", "args": [] }
       }
     }
 MSG
