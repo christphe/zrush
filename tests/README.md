@@ -16,6 +16,7 @@ it created.
 | `01-data.sh` | the menu and the purge plan, no terminal involved | fast |
 | `02-picker.sh` | what the screen actually shows, and which keys leave fzf | ~30 s |
 | `03-wrappers.sh` | the eight scripts the picker generates for fzf to call back | ~10 s |
+| `04-rows.sh` | enter, on every kind of row | ~60 s |
 
 ## lib
 
@@ -41,5 +42,11 @@ Each one was written after a bug reached the user:
 - a flag removed from the argument parser was still passed by a generated
   wrapper, so every `ctrl-d`, `ctrl-w` and `ctrl-p` failed without a word
 
-None of them would have been caught by a syntax check. Three of the four are
-now covered here.
+- the last row's path field was empty by design, and the same collapsing
+  shifted its type, so enter on it left the picker and came back having done
+  nothing
+
+None of them would have been caught by a syntax check. All five are covered
+here now. The last one is why `04-rows.sh` exists: enter had never been
+pressed on that row in a test, and it was the only row that had stopped
+working.
