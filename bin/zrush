@@ -136,7 +136,6 @@ DO_NAME=""
 ASK=""
 ANSWER=""
 Q_TEXT=""
-Q_CUR=""
 declare -a ROWS=()
 FOLD_PATH=""
 UNFOLD_PATH=""
@@ -157,7 +156,7 @@ while [ $# -gt 0 ]; do
                       [ -n "$SESSIONS_OF" ] || die "--sessions needs a path"; shift 2 ;;
     # Internal, run by fzf's execute(): the prompts happen on the real
     # terminal while the picker waits, instead of quitting and coming back.
-    --do)             MODE=do; DO_ACTION="${2:-}"; shift 2 ;;
+    --do)             MODE="do"; DO_ACTION="${2:-}"; shift 2 ;;
     --path)           DO_PATH="${2:-}"; shift 2 ;;
     --type)           DO_TYPE="${2:-}"; shift 2 ;;
     --id)             DO_ID="${2:-}"; shift 2 ;;
@@ -166,7 +165,6 @@ while [ $# -gt 0 ]; do
     --show)           MODE=show; shift ;;
     --answer)         MODE=answer; ANSWER="${2:-}"; shift 2 ;;
     --query)          Q_TEXT="${2:-}"; shift 2 ;;
-    --current)        Q_CUR="${2:-}"; shift 2 ;;
     --rows)           shift; ROWS=("$@"); break ;;
     --state)          STATE_DIR="${2:-}"; [ -n "$STATE_DIR" ] || die "--state needs a path"; shift 2 ;;
     --fold)           FOLD_PATH="${2:-}"; shift 2 ;;
@@ -185,7 +183,7 @@ done
 if [ -z "$REPO_ARG" ]; then
   case "$MODE" in
     sessions)          REPO_ARG="$SESSIONS_OF" ;;
-    do|ask|answer|show) [ -d "$DO_PATH" ] && REPO_ARG="$DO_PATH" ;;
+    "do"|ask|answer|show) [ -d "$DO_PATH" ] && REPO_ARG="$DO_PATH" ;;
   esac
 fi
 
@@ -217,6 +215,7 @@ ZRUSH_FZF_HEIGHT="${ZRUSH_FZF_HEIGHT:-}"
 ZRUSH_TITLE_WIDTH="${ZRUSH_TITLE_WIDTH:-48}"
 # shellcheck disable=SC1090
 _zrush_status_cli="$ZRUSH_STATUS"
+# shellcheck disable=SC1090  # the path is only known at run time
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
 # An explicit -S on the command line outranks the config file.
 [ "$_zrush_status_cli" = "0" ] && ZRUSH_STATUS=0
@@ -373,7 +372,8 @@ slugify() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
 # whose worktree is also marked is dropped -- it would go with the worktree
 # anyway -- and a running session is never deleted.
 purge_plan() {
-      wts=(); sess=(); n_main=0; n_live=0
+      local -a wts=() sess=()
+      local n_main=0 n_live=0 row _lbl rpath rtype rid k e sp dup w note
       for row in ${ROWS[@]+"${ROWS[@]}"}; do
         IFS=$'\t' read -r _lbl rpath rtype rid <<<"$row"
         case "$rtype" in
@@ -386,13 +386,13 @@ purge_plan() {
         esac
       done
       # drop the sessions that a marked worktree already takes with it
-      keep=()
+      local -a standalone=()
       for e in ${sess[@]+"${sess[@]}"}; do
         sp=${e#*$'\t'}; sp=${sp%%$'\t'*}; dup=0
         for w in ${wts[@]+"${wts[@]}"}; do [ "$sp" = "$w" ] && dup=1; done
-        [ "$dup" -eq 0 ] && keep+=("$e")
+        [ "$dup" -eq 0 ] && standalone+=("$e")
       done
-      sess=(${keep[@]+"${keep[@]}"})
+      sess=(${standalone[@]+"${standalone[@]}"})
 
       if [ "${#wts[@]}" -eq 0 ] && [ "${#sess[@]}" -eq 0 ]; then
         printf 'nothing to purge: mark rows with space first\n  esc  cancel\n' > "$FOOTER_FILE"
@@ -1036,7 +1036,7 @@ delete_session() {  # $1 = id, $2 = worktree path, $3 = title, $4 = kind
 # Deleting a session means deleting Claude Code's own transcript file under
 # ~/.claude/projects/. Running sessions are never touched.
 delete_worktree() {  # $1 = worktree path, $2 = y (with sessions) | n (without)
-  local p="$1" rows n live ans hdr id kind gone=0
+  local p="$1" rows n live ans id kind gone=0
   [ -n "$p" ] || return 1
   if [ "$p" = "$main_root" ]; then
     warn "refusing to remove the main worktree"
@@ -1116,7 +1116,7 @@ mode_show() {
       [ -n "$DO_ID" ] || exit 0
       f=$(find "$CLAUDE_PROJECTS" -mindepth 2 -maxdepth 2 -name "$DO_ID.jsonl" 2>/dev/null | head -1)
       [ -n "$f" ] || { printf 'no transcript for %s\n' "${DO_ID:0:8}"; exit 0; }
-      printf '\033[2m%s\033[0m\n\n' "${f#$CLAUDE_PROJECTS/}"
+      printf '\033[2m%s\033[0m\n\n' "${f#"$CLAUDE_PROJECTS"/}"
       tail -n "$TAIL_LINES" "$f" | jq -Rr '
         fromjson? // empty
         | select(.type=="user" or .type=="assistant")
@@ -1264,8 +1264,11 @@ mode_ask() {
 
 mode_answer() {
   [ -f "$CONFIRM_FILE" ] || exit 0
+  # shellcheck disable=SC2154  # ya, na, cpath, ctype and cid come from
+  # confirm_read, which prints the assignments for eval to run.
   eval "$(confirm_read)"
   : > "$CONFIRM_FILE"
+  # shellcheck disable=SC2154  # ya/na/cpath/ctype/cid are set by the eval above
   case "$ANSWER" in
     y) act="$ya" ;;
     n) act="$na" ;;
@@ -1370,7 +1373,7 @@ mode_menu() {
   if [ "$RENDER_ONLY" -eq 1 ]; then
     # State built by the parent: only lay the rows out again. `more` still
     # needs the transcript scan, the rest costs one `git worktree list`.
-    [ -n "$MORE_PATH" ] && build_menu more || build_menu render
+    if [ -n "$MORE_PATH" ]; then build_menu more; else build_menu render; fi
   else
     refresh_sessions
     build_menu full
@@ -1393,6 +1396,7 @@ mode_menu() {
 # ------------------------------------------------------------- dispatch ----
 # The only place that decides what runs. Everything above is definitions;
 # every mode but `pick` is a callback fzf makes into this same script.
+# shellcheck disable=SC2317  # the mode_* bodies are reached through here
 case "$MODE" in
   show)     mode_show;     exit 0 ;;
   ask)      mode_ask;      exit 0 ;;
@@ -1417,6 +1421,7 @@ esac
 
 # fzf runs a bind's command through sh, so hand it a script instead of a
 # quoted one-liner: no escaping to get wrong, whatever the repo path holds.
+# shellcheck disable=SC2016  # $1 and $@ must reach the generated script literally
 {
   printf '#!/bin/sh\nexec'
   # --state: the reload has to see the same tmpdir as the picker, or it
@@ -1429,6 +1434,7 @@ esac
 # Folding and "[...more]" go through fzf's reload rather than quitting it:
 # tearing the picker down and starting it again costs far more than the
 # redraw. $1 $2 are --fold/--unfold/--more and the path, quoted by fzf.
+# shellcheck disable=SC2016  # $1 and $@ must reach the generated script literally
 {
   printf '#!/bin/sh\nexec'
   printf ' %q' "$SELF" --menu --render --state "$tmpdir" --repo "$repo_dir"
@@ -1439,6 +1445,7 @@ esac
 
 # The interactive half, run by execute(): "$1 $2 $3 $4" are the action, the
 # path, the row type and the session id, all quoted by fzf.
+# shellcheck disable=SC2016  # $1 and $@ must reach the generated script literally
 {
   printf '#!/bin/sh\nexec'
   printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir"
@@ -1446,6 +1453,7 @@ esac
 } > "$do_sh" && chmod +x "$do_sh"
 
 # transform() calls this and feeds our stdout back to fzf as actions.
+# shellcheck disable=SC2016  # $1 and $@ must reach the generated script literally
 {
   printf '#!/bin/sh\nexec'
   printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir"
@@ -1456,6 +1464,7 @@ esac
 # goes through its own wrapper: "$1" is the query, the rest are whole menu
 # lines. fzf's {+} is the cursor row when nothing is marked, which is exactly
 # what the other two modes want.
+# shellcheck disable=SC2016  # $1 and $@ must reach the generated script literally
 {
   printf '#!/bin/sh\nq="$1"; shift\nexec'
   printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir" --ask enter
@@ -1463,6 +1472,7 @@ esac
 } > "$rows_sh" && chmod +x "$rows_sh"
 
 # And this carries out whatever the footer just asked.
+# shellcheck disable=SC2016  # $1 and $@ must reach the generated script literally
 {
   printf '#!/bin/sh\nexec'
   printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir"
@@ -1470,12 +1480,16 @@ esac
 } > "$ans_sh" && chmod +x "$ans_sh"
 
 # What the preview pane draws, per row type.
+# shellcheck disable=SC2016  # $1 and $@ must reach the generated script literally
 {
   printf '#!/bin/sh\nexec'
   printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir" --show
   printf ' --path "$1" --type "$2" --id "$3"\n'
 } > "$show_sh" && chmod +x "$show_sh"
 
+# shellcheck disable=SC2016  # from here on, single-quoted $1 and $@ are
+# meant to stay literal: these printf bodies are written into scripts that
+# fzf runs later, and expanding them now would bake in the wrong values.
 # transform-footer takes a command and uses its output, one screen line per
 # line -- which is how the footer gets two lines. change-footer cannot: it
 # takes a single string and renders a literal \n.
@@ -1590,7 +1604,7 @@ while :; do
     if [ "$scanned_all" -eq 1 ]; then
       next_build=render        # the rows are already in hand, just show more
     else
-      next_build=more          # first unfold: scan the transcripts uncapped
+      next_build="more"        # first unfold: scan the transcripts uncapped
       scanned_all=1
     fi
     [ "$LOOP" -eq 1 ] || break
