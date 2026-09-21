@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+#
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Christophe Opoix
+#
 # Install zrush: symlinks into ~/.local/bin, a config in ~/.config/zrush, and
 # for Zed a task plus a keybinding. Your editor's settings.json is never
 # touched — see the note this prints at the end.

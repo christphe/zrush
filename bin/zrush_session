@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 #
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Christophe Opoix
+#
 # zrush_session — the shell Zed starts in its terminal panel.
 #
 # Resumes the Claude Code session that `wt` associated with THIS worktree,

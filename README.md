@@ -485,3 +485,10 @@ zc() { local d; d=$(zrush -p "$@") || return; [ -n "$d" ] && cd "$d"; }
   `claude --fork-session`
 - richer status per worktree: dirty, staged, ahead/behind, unpushed branch
 - named sessions via `claude -n <title>`, `zrush rename`
+
+## License
+
+zrush is free software, licensed under the GNU General Public License v3.0
+only. See [LICENSE](LICENSE) for the full text.
+
+Copyright (C) 2026 Christophe Opoix

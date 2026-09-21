@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 #
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Christophe Opoix
+#
 # zrush — pick a git worktree *or one of its Claude Code sessions* with fzf,
 #         then open it in your editor.
 #
