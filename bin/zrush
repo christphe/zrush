@@ -105,10 +105,23 @@ EOF
 }
 
 # --------------------------------------------------------------- cli args ---
+#
+# One MODE, dispatched once, near the bottom. Everything but `pick` is
+# internal: fzf calls this script back through generated wrappers, handing it
+# the shared state directory with --state.
+#
+#   pick      the picker (the only mode you type yourself)
+#   menu      print the row list, for fzf's reload; --render skips the probes
+#   sessions  one line per session of a worktree, for zrush_session -l
+#   show      what the preview pane draws for a row
+#   ask       print fzf actions: put a question up, or take it back down
+#   answer    carry out what the question asked
+#   do        perform one action, named by --do
+#
+MODE=pick
 REPO_ARG=""
 PRINT_ONLY=0
 LIST_ONLY=0
-MENU_ONLY=0
 RENDER_ONLY=0
 STATE_DIR=""
 SESSIONS_OF=""
@@ -119,7 +132,6 @@ DO_ID=""
 DO_NAME=""
 ASK=""
 ANSWER=""
-SHOW=0
 Q_TEXT=""
 Q_CUR=""
 FOLD_PATH=""
@@ -135,19 +147,20 @@ while [ $# -gt 0 ]; do
     # Internal, for fzf's reload bindings: folding must not tear the picker
     # down and build it again, so a child process mutates the shared state
     # directory and prints the new menu on stdout.
-    --menu)           MENU_ONLY=1; shift ;;
+    --menu)           MODE=menu; shift ;;
     --render)         RENDER_ONLY=1; shift ;;
-    --sessions)       SESSIONS_OF="${2:-}"; [ -n "$SESSIONS_OF" ] || die "--sessions needs a path"; shift 2 ;;
+    --sessions)       MODE=sessions; SESSIONS_OF="${2:-}"
+                      [ -n "$SESSIONS_OF" ] || die "--sessions needs a path"; shift 2 ;;
     # Internal, run by fzf's execute(): the prompts happen on the real
     # terminal while the picker waits, instead of quitting and coming back.
-    --do)             DO_ACTION="${2:-}"; shift 2 ;;
+    --do)             MODE=do; DO_ACTION="${2:-}"; shift 2 ;;
     --path)           DO_PATH="${2:-}"; shift 2 ;;
     --type)           DO_TYPE="${2:-}"; shift 2 ;;
     --id)             DO_ID="${2:-}"; shift 2 ;;
     --name)           DO_NAME="${2:-}"; shift 2 ;;
-    --ask)            ASK="${2:-}"; shift 2 ;;
-    --show)           SHOW=1; shift ;;
-    --answer)         ANSWER="${2:-}"; shift 2 ;;
+    --ask)            MODE=ask; ASK="${2:-}"; shift 2 ;;
+    --show)           MODE=show; shift ;;
+    --answer)         MODE=answer; ANSWER="${2:-}"; shift 2 ;;
     --query)          Q_TEXT="${2:-}"; shift 2 ;;
     --current)        Q_CUR="${2:-}"; shift 2 ;;
     --state)          STATE_DIR="${2:-}"; [ -n "$STATE_DIR" ] || die "--state needs a path"; shift 2 ;;
@@ -162,10 +175,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# --sessions and --do carry their own target, so the repo comes from it.
-[ -n "$SESSIONS_OF" ] && [ -z "$REPO_ARG" ] && REPO_ARG="$SESSIONS_OF"
-[ -n "$DO_ACTION" ] && [ -z "$REPO_ARG" ] && [ -d "$DO_PATH" ] && REPO_ARG="$DO_PATH"
-{ [ -n "$ASK" ] || [ -n "$ANSWER" ] || [ "$SHOW" -eq 1 ]; } && [ -z "$REPO_ARG" ] && [ -d "$DO_PATH" ] && REPO_ARG="$DO_PATH"
+# The internal modes carry their own target, so the repo comes from it rather
+# than from wherever fzf happened to spawn the callback.
+if [ -z "$REPO_ARG" ]; then
+  case "$MODE" in
+    sessions)          REPO_ARG="$SESSIONS_OF" ;;
+    do|ask|answer|show) [ -d "$DO_PATH" ] && REPO_ARG="$DO_PATH" ;;
+  esac
+fi
 
 for c in git fzf; do have "$c" || die "missing dependency: $c"; done
 
@@ -273,6 +290,13 @@ counts_file="$tmpdir/counts"       # worktree \t resumable-total \t resumable-sh
 expand_file="$tmpdir/expanded"     # worktree \t how many resumables to show there
 collapse_file="$tmpdir/collapsed"  # one worktree path per line: its rows are folded
 status_file="$tmpdir/status"       # worktree \t git badge, one full refresh's worth
+# What the footer question is waiting on, as JSON. It used to be a TSV line
+# read with `IFS=$'\t' read`, and tab is IFS whitespace: an empty field
+# collapsed and shifted every column after it, which is how deleting an
+# orphan session silently did nothing. jq has no such ambiguity.
+CONFIRM_FILE="$tmpdir/confirm"     # {y,n,path,type,id}
+LAST_FILE="$tmpdir/last"           # whatever the last action printed
+FOOTER_FILE="$tmpdir/footer"       # what transform-footer reads back
 # Helper scripts fzf calls back into. Named here so a child spawned by a
 # binding, which only gets --state, can point at them too. No parentheses in
 # FOOTER: it is passed inside change-footer( ).
@@ -335,6 +359,18 @@ state_clear() {  # $1 = worktree path
 # Results are cached under $CACHE_DIR, keyed by the md5 of the tail we read.
 
 slugify() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
+
+# The pending footer question. Written as JSON so an empty field stays a
+# field; read back through jq's @sh, which quotes every value for the shell.
+confirm_write() {  # $1 = y-action, $2 = n-action, $3 = path, $4 = type, $5 = id
+  jq -nc --arg y "$1" --arg n "$2" --arg path "$3" --arg type "$4" --arg id "$5" \
+     '{y:$y, n:$n, path:$path, type:$type, id:$id}' > "$CONFIRM_FILE"
+}
+confirm_read() {   # prints shell assignments: ya na cpath ctype cid
+  [ -s "$CONFIRM_FILE" ] || { printf 'ya= na= cpath= ctype= cid=\n'; return 0; }
+  jq -r '@sh "ya=\(.y) na=\(.n) cpath=\(.path) ctype=\(.type) cid=\(.id)"' \
+     "$CONFIRM_FILE" 2>/dev/null || printf 'ya= na= cpath= ctype= cid=\n'
+}
 
 # Folding a worktree hides its session rows. left folds, right unfolds.
 is_collapsed()   { grep -qxF "$1" "$collapse_file" 2>/dev/null; }
@@ -476,6 +512,9 @@ refresh_sessions() {
     fi
     # The last message beats the process start time: a session idle since
      # yesterday should not read as "0m" because you just reopened it.
+    # No field of a row may be empty: the readers split on tab, and tab is
+    # IFS whitespace, so an empty one would shift the columns after it.
+    [ -n "$status" ] || status="?"
     [ -n "$lastts" ] && started="$lastts"
     [ "${started:-0}" -gt 0 ] 2>/dev/null && status="$status $(age_of "$started")"
     printf '%s\t%s\t%s\t%s\t%s\tlive\t%s\n' \
@@ -1014,7 +1053,7 @@ run_claude_term() {  # $1 = worktree path, rest = extra claude args
 # which is the thing you actually want to see before resuming one. fzf's
 # preview is output-only -- no keystroke reaches it -- so this is as close to
 # "Claude in the preview" as fzf can get.
-if [ "$SHOW" -eq 1 ]; then
+mode_show() {
   case "$DO_TYPE" in
     session|orphan)
       [ -n "$DO_ID" ] || exit 0
@@ -1049,28 +1088,15 @@ if [ "$SHOW" -eq 1 ]; then
       ;;
   esac
   exit 0
-fi
+}
 
-# --ask / --answer: the two halves of a question posed in the footer.
-#
-# fzf cannot draw a dialog over its own list, but it can rewrite the footer
-# and swap which keys are live. --ask prints the fzf actions that put the
-# question up and remembers what y and n should do; --answer carries it out.
-# Nothing hands the terminal to another process, so the list never moves.
-# y-action \t n-action \t path \t type \t id. "-" stands for "nothing to do":
-# tab is IFS whitespace, so `read` would swallow an empty field and shift
-# every column after it.
-CONFIRM_FILE="$tmpdir/confirm"
-LAST_FILE="$tmpdir/last"           # whatever the last action printed
-FOOTER_FILE="$tmpdir/footer"       # what transform-footer reads back
-
-if [ -n "$ASK" ]; then
+mode_ask() {
   case "$ASK" in
     delete)
       case "$DO_TYPE" in
         session|orphan)
           t=$(awk -F'\t' -v i="$DO_ID" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
-          printf 'delete-session\t-\t%s\t%s\t%s\n' "$DO_PATH" "$DO_TYPE" "$DO_ID" > "$CONFIRM_FILE"
+          confirm_write delete-session "" "$DO_PATH" "$DO_TYPE" "$DO_ID"
           printf 'delete  %s  for good?\n  y  yes      esc  cancel\n' \
                  "${t:-${DO_ID:0:8}}" > "$FOOTER_FILE"
           printf 'change-prompt(delete? )+transform-footer(%q)' "$FOOT_SH"
@@ -1080,11 +1106,11 @@ if [ -n "$ASK" ]; then
           n=$(awk -F'\t' -v w="$DO_PATH" '$1==w{k++} END{print k+0}' "$owned_file" 2>/dev/null)
           live=$(awk -F'\t' -v w="$DO_PATH" '$1==w && $5=="live"{k++} END{print k+0}' "$owned_file" 2>/dev/null)
           if [ "${n:-0}" -eq 0 ]; then
-            printf 'delete-wt\t-\t%s\twt\t-\n' "$DO_PATH" > "$CONFIRM_FILE"
+            confirm_write delete-wt "" "$DO_PATH" wt ""
             printf 'remove worktree  %s ?\n  y  yes      esc  cancel\n' "${DO_PATH##*/}" > "$FOOTER_FILE"
             printf 'change-prompt(remove? )+transform-footer(%q)' "$FOOT_SH"
           else
-            printf 'delete-all\tdelete-wt\t%s\twt\t-\n' "$DO_PATH" > "$CONFIRM_FILE"
+            confirm_write delete-all delete-wt "$DO_PATH" wt ""
             extra=""; [ "${live:-0}" -gt 0 ] && extra=", $live running"
             printf 'remove  %s  and its %s session%s?\n  y  yes, delete them too      n  no, keep them      esc  cancel\n' \
                    "${DO_PATH##*/}" "$n$extra" "$( [ "$n" -gt 1 ] && printf s )" > "$FOOTER_FILE"
@@ -1100,7 +1126,7 @@ if [ -n "$ASK" ]; then
       case "$DO_TYPE" in
         more|orphans) printf 'ignore'; exit 0 ;;
       esac
-      printf 'branch\t-\t%s\t%s\t%s\n' "$DO_PATH" "$DO_TYPE" "$DO_ID" > "$CONFIRM_FILE"
+      confirm_write branch "" "$DO_PATH" "$DO_TYPE" "$DO_ID"
       printf 'type a new branch name, or pick one below\n  enter  create the worktree      esc  cancel\n' > "$FOOTER_FILE"
       printf 'change-prompt(branch> )+transform-footer(%q)' "$FOOT_SH"
       printf '+reload(git -C %q for-each-ref --sort=-committerdate --format=%%\(refname:short\) refs/heads)' "$repo_dir"
@@ -1147,16 +1173,12 @@ if [ -n "$ASK" ]; then
     *) printf 'ignore\n' ;;
   esac
   exit 0
-fi
+}
 
-if [ -n "$ANSWER" ]; then
+mode_answer() {
   [ -f "$CONFIRM_FILE" ] || exit 0
-  IFS=$'\t' read -r ya na cpath ctype cid < "$CONFIRM_FILE"
+  eval "$(confirm_read)"
   : > "$CONFIRM_FILE"
-  [ "$ya" = "-" ] && ya=""
-  [ "$na" = "-" ] && na=""
-  [ "$cid" = "-" ] && cid=""
-  [ "$ctype" = "-" ] && ctype=""
   case "$ANSWER" in
     y) act="$ya" ;;
     n) act="$na" ;;
@@ -1170,12 +1192,12 @@ if [ -n "$ANSWER" ]; then
   [ -n "$act" ] || exit 0
   exec "$0" --state "$tmpdir" --repo "$repo_dir" --do "$act" \
             --path "$cpath" --type "$ctype" --id "$cid"
-fi
+}
 
 # --do <action>: the interactive half of a key, run by fzf's execute() so the
 # picker stays up. Everything it prints goes to the terminal, never to the
 # list; the binding pairs it with a reload.
-if [ -n "$DO_ACTION" ]; then
+mode_do() {
   case "$DO_ACTION" in
     delete-session)
       title=$(awk -F'\t' -v i="$DO_ID" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
@@ -1198,22 +1220,22 @@ if [ -n "$DO_ACTION" ]; then
     *) die "unknown --do action: $DO_ACTION" ;;
   esac
   exit 0
-fi
+}
 
 # --sessions <path>: one line per session of that worktree, "<id>\t<label>",
 # newest first. zrush_session -l turns this into a picker, so the choice of
 # which conversation to resume can also be made from the editor's terminal.
-if [ -n "$SESSIONS_OF" ]; then
+mode_sessions() {
   refresh_sessions
   build_menu full
   awk -F'\t' -v w="$SESSIONS_OF" '
     $1 == w { printf "%s\t%s %s  (%s)\n", $2, ($5 == "live" ? "●" : "◌"), $3, $4 }
   ' "$owned_file"
   exit 0
-fi
+}
 
 # --menu: print the menu once, for fzf's reload binding, and leave.
-if [ "$MENU_ONLY" -eq 1 ]; then
+mode_menu() {
   [ -n "$FOLD_PATH" ]   && collapse_set   "$FOLD_PATH"
   [ -n "$UNFOLD_PATH" ] && collapse_unset "$UNFOLD_PATH"
   if [ -n "$MORE_PATH" ]; then
@@ -1254,7 +1276,32 @@ if [ "$MENU_ONLY" -eq 1 ]; then
   fi
   cat "$menu"
   exit 0
-fi
+}
+
+# ------------------------------------------------------------- dispatch ----
+# The only place that decides what runs. Everything above is definitions;
+# every mode but `pick` is a callback fzf makes into this same script.
+case "$MODE" in
+  show)     mode_show;     exit 0 ;;
+  ask)      mode_ask;      exit 0 ;;
+  answer)   mode_answer;   exit 0 ;;
+  do)       mode_do;       exit 0 ;;
+  sessions) mode_sessions; exit 0 ;;
+  menu)     mode_menu;     exit 0 ;;
+esac
+
+
+# --ask / --answer: the two halves of a question posed in the footer.
+#
+# fzf cannot draw a dialog over its own list, but it can rewrite the footer
+# and swap which keys are live. --ask prints the fzf actions that put the
+# question up and remembers what y and n should do; --answer carries it out.
+# Nothing hands the terminal to another process, so the list never moves.
+
+
+
+
+
 
 # fzf runs a bind's command through sh, so hand it a script instead of a
 # quoted one-liner: no escaping to get wrong, whatever the repo path holds.
