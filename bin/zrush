@@ -279,8 +279,8 @@ status_file="$tmpdir/status"       # worktree \t git badge, one full refresh's w
 reload_sh="$tmpdir/reload"; RELOAD_SH="$reload_sh"
 act_sh="$tmpdir/act";       ACT_SH="$act_sh"
 do_sh="$tmpdir/do"
-ask_sh="$tmpdir/ask"
 ans_sh="$tmpdir/ans";       ANS_SH="$ans_sh"
+ask_sh="$tmpdir/ask";       ASK_SH="$ask_sh"
 show_sh="$tmpdir/show"
 FOOTER='enter open  ^o claude  ^w worktree  ^d delete  ^l reload  ←→ fold  esc quit'
 [ -n "$STATE_DIR" ] || { : > "$expand_file"; : > "$collapse_file"; : > "$status_file"; }
@@ -1058,6 +1058,7 @@ fi
 # tab is IFS whitespace, so `read` would swallow an empty field and shift
 # every column after it.
 CONFIRM_FILE="$tmpdir/confirm"
+LAST_FILE="$tmpdir/last"           # whatever the last action printed
 
 if [ -n "$ASK" ]; then
   case "$ASK" in
@@ -1103,9 +1104,8 @@ if [ -n "$ASK" ]; then
       # highlighted line is the answer; otherwise dispatch on the row type.
       if [ "${FZF_PROMPT:-}" = "branch> " ]; then
         name="${Q_CUR:-$Q_TEXT}"
-        printf 'execute-silent(%q branch %q)+change-prompt(worktree> )+change-footer(%s)' \
-               "$ANS_SH" "$name" "$FOOTER"
-        printf '+unbind(y,n,c)+rebind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,left,right)+reload(%q)\n' "$RELOAD_SH"
+        printf 'execute-silent(%q branch %q)+transform(%q done)+reload(%q)\n' \
+               "$ANS_SH" "$name" "$ASK_SH" "$RELOAD_SH"
         exit 0
       fi
       case "$DO_TYPE" in
@@ -1115,6 +1115,20 @@ if [ -n "$ASK" ]; then
         orphans)    printf 'ignore\n' ;;
         *)          printf 'accept\n' ;;
       esac
+      ;;
+    # After an action: restore the normal bindings and report what happened.
+    # execute-silent does NOT shield the screen -- anything the command prints
+    # lands on the terminal and corrupts the frame -- so the command writes to
+    # a file and its last line comes back here, as footer text.
+    done)
+      msg=""
+      if [ -s "$LAST_FILE" ]; then
+        msg=$(grep -v '^[[:space:]]*$' "$LAST_FILE" | tail -1 \
+              | tr -d '()' | cut -c1-120)
+      fi
+      : > "$LAST_FILE"
+      printf 'change-prompt(worktree> )+change-footer(%s)' "${msg:-$FOOTER}"
+      printf '+unbind(y,n,c)+rebind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,left,right)\n'
       ;;
     *) printf 'ignore\n' ;;
   esac
@@ -1267,7 +1281,7 @@ fi
 {
   printf '#!/bin/sh\nexec'
   printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir"
-  printf ' --answer "$1" --name "$2"\n'
+  printf ' --answer "$1" --name "$2" >%q 2>&1\n' "$tmpdir/last"
 } > "$ans_sh" && chmod +x "$ans_sh"
 
 # What the preview pane draws, per row type.
@@ -1349,8 +1363,8 @@ while :; do
         --bind="ctrl-d:transform($ask_sh delete {2} {3} {4})" \
         --bind="ctrl-w:transform($ask_sh branch {2} {3} {4})" \
         --bind="enter:transform($ask_sh enter {2} {3} {4} {q} {})" \
-        --bind="y:execute-silent($ans_sh y)+$restore+reload($reload_sh)" \
-        --bind="n:execute-silent($ans_sh n)+$restore+reload($reload_sh)" \
+        --bind="y:execute-silent($ans_sh y)+transform($ask_sh done)+reload($reload_sh)" \
+        --bind="n:execute-silent($ans_sh n)+transform($ask_sh done)+reload($reload_sh)" \
         --bind="c:$restore" \
         --bind="esc:transform:[ ! \"\$FZF_PROMPT\" = 'worktree> ' ] && echo \"$restore\" || echo abort" \
         ${pos_bind[@]+"${pos_bind[@]}"} \

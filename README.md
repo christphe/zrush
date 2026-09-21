@@ -415,6 +415,9 @@ exactly where it is and the row you aimed at stays highlighted:
 ```
 
 The prompt says which mode you are in, and escape cancels without leaving.
+Once the action has run, the footer reports what happened —
+`zrush: deleted 2 transcripts`, or git's refusal when the worktree is dirty —
+before going back to the key reminder.
 
 `yes` also deletes those sessions' transcript files under
 `~/.claude/projects/`. Running sessions are skipped with a warning — stop them
