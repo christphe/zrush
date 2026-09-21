@@ -37,16 +37,26 @@ pub struct Zrush {
     /// route through the agent recorded against the session, so a worktree
     /// bound under another agent still resumes correctly.
     active: usize,
+    /// Several agents are installed and nothing said which to use. The
+    /// interface asks before it lists anything.
+    must_choose: bool,
+    /// The config named an agent that is not installed here. Not fatal —
+    /// a config travels between machines — but never silently swallowed.
+    missing_configured: Option<String>,
     host: Box<dyn Host>,
 }
 
 impl Zrush {
+    /// `requested` is the command line's word on it, and outranks the
+    /// config. The order is: what was asked for, then the configured
+    /// default, then the only agent installed, then ask.
     pub fn new(
         dirs: Dirs,
         cfg: Config,
         repo: PathBuf,
         agents: Vec<Box<dyn Agent>>,
         host: Box<dyn Host>,
+        requested: Option<&str>,
     ) -> Result<Self> {
         // The main worktree is the first porcelain entry, whichever worktree
         // git is run from.
@@ -55,13 +65,44 @@ impl Zrush {
             .next()
             .map(|w| w.path)
             .ok_or_else(|| ZrushError::NotARepo(repo.clone()))?;
+
+        let find = |id: &str| agents.iter().position(|a| a.id() == id);
+
+        // Asked for by name: a typo is an error, not a shrug.
+        if let Some(want) = requested {
+            let at = find(want).ok_or_else(|| ZrushError::msg(format!("no such agent: {want}")))?;
+            return Ok(Self {
+                dirs,
+                cfg,
+                repo,
+                main_root,
+                agents,
+                active: at,
+                must_choose: false,
+                missing_configured: None,
+                host,
+            });
+        }
+
+        let (active, must_choose, missing_configured) = match cfg.agent.as_deref() {
+            Some(want) => match find(want) {
+                Some(at) => (at, false, None),
+                // Configured, but not on this machine. Fall back to asking,
+                // and let the interface say why.
+                None => (0, agents.len() > 1, Some(want.to_string())),
+            },
+            None => (0, agents.len() > 1, None),
+        };
+
         Ok(Self {
             dirs,
             cfg,
             repo,
             main_root,
             agents,
-            active: 0,
+            active,
+            must_choose,
+            missing_configured,
             host,
         })
     }
@@ -98,6 +139,7 @@ impl Zrush {
             .position(|a| a.id() == id)
             .ok_or_else(|| ZrushError::msg(format!("no such agent: {id}")))?;
         self.active = at;
+        self.must_choose = false;
         Ok(())
     }
 
@@ -105,6 +147,17 @@ impl Zrush {
     /// interface must not ask which one.
     pub fn has_agent_choice(&self) -> bool {
         self.agents.len() > 1
+    }
+
+    /// The interface must ask which agent before listing anything.
+    pub fn must_choose_agent(&self) -> bool {
+        self.must_choose
+    }
+
+    /// An agent the config asked for that is not installed here, for the
+    /// interface to mention once.
+    pub fn missing_configured_agent(&self) -> Option<&str> {
+        self.missing_configured.as_deref()
     }
 
     fn agent(&self, id: &str) -> Result<&dyn Agent> {
@@ -331,14 +384,69 @@ mod tests {
     }
 
     fn zrush(td: &tempfile::TempDir, repo: PathBuf) -> Zrush {
+        with(td, repo, Config::default(), crate::agent::all(), None)
+    }
+
+    fn with(
+        td: &tempfile::TempDir,
+        repo: PathBuf,
+        cfg: Config,
+        agents: Vec<Box<dyn Agent>>,
+        requested: Option<&str>,
+    ) -> Zrush {
         Zrush::new(
             crate::config::dirs_under(td.path()),
-            Config::default(),
+            cfg,
             repo,
-            crate::agent::all(),
+            agents,
             Box::new(RecordingHost::default()),
+            requested,
         )
         .unwrap()
+    }
+
+    /// A second agent, so the choosing rules have something to choose
+    /// between. It is never asked for anything.
+    struct Stub;
+
+    impl Agent for Stub {
+        fn id(&self) -> &'static str {
+            "stub"
+        }
+        fn display_name(&self) -> &'static str {
+            "Stub"
+        }
+        fn available(&self) -> bool {
+            true
+        }
+        fn valid_id(&self, id: &str) -> bool {
+            !id.is_empty()
+        }
+        fn live(&self, _d: &Dirs, _c: &Config) -> Vec<Session> {
+            Vec::new()
+        }
+        fn resumable(&self, _d: &Dirs, _c: &Config, _s: &Scope<'_>) -> Vec<Session> {
+            Vec::new()
+        }
+        fn history_count(&self, _d: &Dirs, _w: &Path) -> usize {
+            0
+        }
+        fn preview(&self, _d: &Dirs, _i: &str, _t: usize) -> Vec<Turn> {
+            Vec::new()
+        }
+        fn delete(&self, _d: &Dirs, _i: &str) -> Result<usize> {
+            Ok(0)
+        }
+        fn resume_command(&self, id: &str) -> Vec<String> {
+            vec!["stub".into(), id.into()]
+        }
+        fn start_command(&self) -> Vec<String> {
+            vec!["stub".into()]
+        }
+    }
+
+    fn two() -> Vec<Box<dyn Agent>> {
+        vec![Box::new(crate::agent::claude::ClaudeCode), Box::new(Stub)]
     }
 
     #[test]
@@ -393,6 +501,7 @@ mod tests {
             repo.clone(),
             crate::agent::all(),
             Box::new(ArcHost(host.clone())),
+            None,
         )
         .unwrap();
         let dest = z.create_worktree("feature").unwrap();
@@ -464,6 +573,93 @@ mod tests {
     }
 
     #[test]
+    fn one_installed_agent_is_taken_without_asking() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch(&td));
+        assert!(!z.must_choose_agent());
+        assert_eq!(z.active_agent().map(Agent::id), Some("claude"));
+    }
+
+    #[test]
+    fn several_installed_and_nothing_configured_means_ask() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = with(&td, scratch(&td), Config::default(), two(), None);
+        assert!(z.must_choose_agent());
+    }
+
+    #[test]
+    fn a_configured_default_settles_it() {
+        let td = tempfile::TempDir::new().unwrap();
+        let cfg = Config {
+            agent: Some("stub".into()),
+            ..Config::default()
+        };
+        let z = with(&td, scratch(&td), cfg, two(), None);
+        assert!(!z.must_choose_agent());
+        assert_eq!(z.active_agent().map(Agent::id), Some("stub"));
+    }
+
+    #[test]
+    fn the_command_line_outranks_the_configured_default() {
+        let td = tempfile::TempDir::new().unwrap();
+        let cfg = Config {
+            agent: Some("stub".into()),
+            ..Config::default()
+        };
+        let z = with(&td, scratch(&td), cfg, two(), Some("claude"));
+        assert_eq!(z.active_agent().map(Agent::id), Some("claude"));
+    }
+
+    #[test]
+    fn an_agent_asked_for_by_name_that_does_not_exist_is_an_error() {
+        let td = tempfile::TempDir::new().unwrap();
+        let r = Zrush::new(
+            crate::config::dirs_under(td.path()),
+            Config::default(),
+            scratch(&td),
+            two(),
+            Box::new(RecordingHost::default()),
+            Some("nope"),
+        );
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn a_configured_agent_missing_here_falls_back_to_asking_and_says_so() {
+        // A config travels between machines. Neither fatal nor swallowed.
+        let td = tempfile::TempDir::new().unwrap();
+        let cfg = Config {
+            agent: Some("codex".into()),
+            ..Config::default()
+        };
+        let z = with(&td, scratch(&td), cfg, two(), None);
+        assert!(z.must_choose_agent());
+        assert_eq!(z.missing_configured_agent(), Some("codex"));
+    }
+
+    #[test]
+    fn with_one_agent_a_stale_configured_name_just_uses_it() {
+        let td = tempfile::TempDir::new().unwrap();
+        let cfg = Config {
+            agent: Some("codex".into()),
+            ..Config::default()
+        };
+        let z = with(&td, scratch(&td), cfg, crate::agent::all(), None);
+        assert!(!z.must_choose_agent());
+        assert_eq!(z.active_agent().map(Agent::id), Some("claude"));
+        assert_eq!(z.missing_configured_agent(), Some("codex"));
+    }
+
+    #[test]
+    fn choosing_settles_the_question() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut z = with(&td, scratch(&td), Config::default(), two(), None);
+        assert!(z.must_choose_agent());
+        z.set_active_agent("stub").unwrap();
+        assert!(!z.must_choose_agent());
+    }
+
+    #[test]
     fn one_installed_agent_means_nothing_to_choose_between() {
         let td = tempfile::TempDir::new().unwrap();
         let z = zrush(&td, scratch(&td));
@@ -480,6 +676,7 @@ mod tests {
             repo,
             Vec::new(),
             Box::new(RecordingHost::default()),
+            None,
         )
         .unwrap();
         assert!(z.active_agent().is_none());

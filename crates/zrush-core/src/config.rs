@@ -44,6 +44,9 @@ impl Dirs {
 #[serde(default)]
 pub struct Config {
     pub default_repo: Option<PathBuf>,
+    /// Which agent to start on. Unset means ask, unless only one is
+    /// installed, in which case there is nothing to ask.
+    pub agent: Option<String>,
     pub editor: String,
     pub editor_cmd: Vec<String>,
     pub terminal: Vec<String>,
@@ -60,6 +63,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             default_repo: None,
+            agent: None,
             editor: "zed".into(),
             editor_cmd: Vec::new(),
             terminal: Vec::new(),
@@ -105,6 +109,9 @@ impl Config {
     pub fn apply_env(&mut self, get: impl Fn(&str) -> Option<String>) {
         if let Some(v) = get("ZRUSH_DEFAULT_REPO").filter(|v| !v.is_empty()) {
             self.default_repo = Some(PathBuf::from(v));
+        }
+        if let Some(v) = get("ZRUSH_AGENT").filter(|v| !v.is_empty()) {
+            self.agent = Some(v);
         }
         if let Some(v) = get("ZRUSH_EDITOR").filter(|v| !v.is_empty()) {
             self.editor = v;
@@ -214,6 +221,14 @@ mod tests {
         assert_eq!(c.preview_turns, 14);
         assert!(c.titles);
         assert!(c.status);
+    }
+
+    #[test]
+    fn the_default_agent_comes_from_the_file_or_the_environment() {
+        let mut c = Config::default();
+        assert_eq!(c.agent, None);
+        c.apply_env(|k| (k == "ZRUSH_AGENT").then(|| "codex".to_string()));
+        assert_eq!(c.agent.as_deref(), Some("codex"));
     }
 
     #[test]
