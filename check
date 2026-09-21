@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Everything CI runs, in the order that fails fastest.
+#
+#   ./check          format, lint, test
+#   ./check -f       fix the formatting instead of complaining about it
+set -uo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
+rc=0
+step() {
+  printf '\n\033[1m%s\033[0m\n' "$1"; shift
+  if "$@"; then printf '  ok\n'; else printf '  FAILED\n'; rc=1; fi
+}
+
+if [ "${1:-}" = "-f" ]; then
+  step "fmt" cargo fmt
+else
+  step "fmt" cargo fmt --check
+fi
+step "clippy" cargo clippy --all-targets --all-features -- -D warnings
+step "test" cargo test --workspace
+
+printf '\n%s\n' "$( [ "$rc" -eq 0 ] && echo 'all green' || echo 'SOMETHING FAILED' )"
+exit "$rc"
