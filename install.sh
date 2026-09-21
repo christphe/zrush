@@ -25,11 +25,22 @@ echo "building (release)…"
 cargo build --release --locked --manifest-path "$here/Cargo.toml" -p zrush
 
 mkdir -p "$bin_dir" "$cfg_dir"
+
+# A previous install left symlinks here, pointing into a checkout. Writing
+# through one edits that checkout instead of installing, so unlink first.
+for f in zrush zrush_session; do
+  if [ -L "$bin_dir/$f" ]; then
+    echo "removing the old symlink $bin_dir/$f -> $(readlink "$bin_dir/$f")"
+    rm -f "$bin_dir/$f"
+  fi
+done
+
 install -m 755 "$here/target/release/zrush" "$bin_dir/zrush"
 echo "installed $bin_dir/zrush"
 
 # The bash version shipped two commands. `zrush_session` is now a subcommand,
 # so a shim keeps existing editor settings working rather than breaking them.
+rm -f "$bin_dir/zrush_session"
 cat > "$bin_dir/zrush_session" <<'SHIM'
 #!/bin/sh
 # Kept for editor settings that still name it. `zrush session` is the real
