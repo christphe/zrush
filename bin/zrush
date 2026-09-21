@@ -112,6 +112,10 @@ MENU_ONLY=0
 RENDER_ONLY=0
 STATE_DIR=""
 SESSIONS_OF=""
+DO_ACTION=""
+DO_PATH=""
+DO_TYPE=""
+DO_ID=""
 FOLD_PATH=""
 UNFOLD_PATH=""
 MORE_PATH=""
@@ -128,6 +132,12 @@ while [ $# -gt 0 ]; do
     --menu)           MENU_ONLY=1; shift ;;
     --render)         RENDER_ONLY=1; shift ;;
     --sessions)       SESSIONS_OF="${2:-}"; [ -n "$SESSIONS_OF" ] || die "--sessions needs a path"; shift 2 ;;
+    # Internal, run by fzf's execute(): the prompts happen on the real
+    # terminal while the picker waits, instead of quitting and coming back.
+    --do)             DO_ACTION="${2:-}"; shift 2 ;;
+    --path)           DO_PATH="${2:-}"; shift 2 ;;
+    --type)           DO_TYPE="${2:-}"; shift 2 ;;
+    --id)             DO_ID="${2:-}"; shift 2 ;;
     --state)          STATE_DIR="${2:-}"; [ -n "$STATE_DIR" ] || die "--state needs a path"; shift 2 ;;
     --fold)           FOLD_PATH="${2:-}"; shift 2 ;;
     --unfold)         UNFOLD_PATH="${2:-}"; shift 2 ;;
@@ -140,8 +150,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# --sessions carries its own target, so the repo comes from it.
+# --sessions and --do carry their own target, so the repo comes from it.
 [ -n "$SESSIONS_OF" ] && [ -z "$REPO_ARG" ] && REPO_ARG="$SESSIONS_OF"
+[ -n "$DO_ACTION" ] && [ -z "$REPO_ARG" ] && [ -d "$DO_PATH" ] && REPO_ARG="$DO_PATH"
 
 for c in git fzf; do have "$c" || die "missing dependency: $c"; done
 
@@ -983,6 +994,36 @@ run_claude_term() {  # $1 = worktree path, rest = extra claude args
     || { warn "${ZRUSH_TERMINAL[0]} could not open a terminal"; rm -rf "$dir"; return 1; }
 }
 
+# --do <action>: the interactive half of a key, run by fzf's execute() so the
+# picker stays up. Everything it prints goes to the terminal, never to the
+# list; the binding pairs it with a reload.
+if [ -n "$DO_ACTION" ]; then
+  case "$DO_ACTION" in
+    delete)
+      if [ "$DO_TYPE" = "session" ] || [ "$DO_TYPE" = "orphan" ]; then
+        title=$(awk -F'\t' -v i="$DO_ID" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
+        kind=$(awk -F'\t' -v i="$DO_ID" '$2==i{print $5; exit}' "$owned_file" 2>/dev/null)
+        [ "$DO_TYPE" = "orphan" ] && DO_PATH=""
+        delete_session "$DO_ID" "$DO_PATH" "${title:-${DO_ID:0:8}}" "$kind" || true
+      else
+        delete_worktree "$DO_PATH" || true
+      fi
+      ;;
+    newwt)
+      if newp=$(create_worktree) && [ -n "$newp" ]; then
+        if { [ "$DO_TYPE" = "session" ] || [ "$DO_TYPE" = "orphan" ]; } && [ -n "$DO_ID" ]; then
+          state_write "$newp" "$DO_ID"
+        else
+          state_clear "$newp"
+        fi
+        open_editor "$newp"
+      fi
+      ;;
+    *) die "unknown --do action: $DO_ACTION" ;;
+  esac
+  exit 0
+fi
+
 # --sessions <path>: one line per session of that worktree, "<id>\t<label>",
 # newest first. zrush_session -l turns this into a picker, so the choice of
 # which conversation to resume can also be made from the editor's terminal.
@@ -1061,6 +1102,15 @@ act_sh="$tmpdir/act"
   printf ' "$1" "$2"\n'
 } > "$act_sh" && chmod +x "$act_sh"
 
+# The interactive half, run by execute(): "$1 $2 $3 $4" are the action, the
+# path, the row type and the session id, all quoted by fzf.
+do_sh="$tmpdir/do"
+{
+  printf '#!/bin/sh\nexec'
+  printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir"
+  printf ' --do "$1" --path "$2" --type "$3" --id "$4"\n'
+} > "$do_sh" && chmod +x "$do_sh"
+
 # fzf runs this after every reload; it prints a pos() action when the child
 # left one behind, and nothing otherwise.
 pos_sh="$tmpdir/posact"
@@ -1114,12 +1164,19 @@ while :; do
         ${height_opt[@]+"${height_opt[@]}"} --reverse --border \
         --prompt="worktree> " \
         --footer=$'enter open  ^o claude  ^w worktree  ^d delete  ^l reload  ←→ fold  esc quit' \
-        --expect=ctrl-o,ctrl-w,ctrl-d,ctrl-q \
+        --expect=ctrl-o,ctrl-q \
         --bind="ctrl-l:reload($reload_sh)" \
         --bind="left:reload($act_sh --fold {2})" \
         --bind="load:transform($pos_sh)" \
         --bind="right:reload($act_sh --unfold {2})" \
-        --bind="enter:transform:[ {3} = more ] && echo \"reload($act_sh --more {2})\" || echo accept" \
+        --bind="ctrl-d:execute($do_sh delete {2} {3} {4})+reload($reload_sh)" \
+        --bind="ctrl-w:execute($do_sh newwt {2} {3} {4})+reload($reload_sh)" \
+        --bind="enter:transform:case {3} in \
+            more)        echo \"reload($act_sh --more {2})\" ;; \
+            new|orphan)  echo \"execute($do_sh newwt {2} {3} {4})+reload($reload_sh)\" ;; \
+            orphans)     echo ignore ;; \
+            *)           echo accept ;; \
+          esac" \
         ${pos_bind[@]+"${pos_bind[@]}"} \
         --preview='[ -d {2} ] && { git -C {2} status --short --branch 2>/dev/null | head -15; echo; git -C {2} log --oneline --decorate -n 10 2>/dev/null; }' \
         --preview-window=right:50%:wrap \
@@ -1136,22 +1193,6 @@ while :; do
   sessid=$(printf '%s' "$line" | awk -F'\t' '{print $4}')
   [ "$key" = "ctrl-q" ] && break
   cursor_key=$(printf '%s\t%s\t%s' "$path" "$rtype" "$sessid")
-
-  # The "new worktree" row: no path to act on, it makes one.
-  if [ "$rtype" = "new" ]; then
-    case "$key" in
-      *)
-        if newp=$(create_worktree) && [ -n "$newp" ]; then
-          cursor_key=$(printf '%s\t%s\t' "$newp" "wt")
-          state_clear "$newp"
-          [ "$PRINT_ONLY" -eq 1 ] && { printf '%s\n' "$newp"; break; }
-          open_editor "$newp"
-        fi
-        ;;
-    esac
-    [ "$LOOP" -eq 1 ] || break
-    continue
-  fi
 
   # The "[...more]" row is not an action: it raises this worktree's cap and
   # redraws, so enter after enter keeps unfolding it.
@@ -1171,33 +1212,8 @@ while :; do
     continue
   fi
 
-  # Orphan rows: the node itself does nothing, and a session under it has no
-  # worktree to act in. The one useful move is to give it one.
-  if [ "$rtype" = "orphans" ]; then
-    [ "$LOOP" -eq 1 ] || break
-    continue
-  fi
-  if [ "$rtype" = "orphan" ]; then
-    case "$key" in
-      ctrl-d)
-        title=$(awk -F'\t' -v i="$sessid" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
-        kind=$(awk -F'\t' -v i="$sessid" '$2==i{print $5; exit}' "$owned_file" 2>/dev/null)
-        delete_session "$sessid" "" "${title:-${sessid:0:8}}" "$kind" || true
-        ;;
-      ctrl-o)
-        warn "that session's worktree is gone; ctrl-w gives it a new one"
-        ;;
-      *)  # enter and ctrl-w both mean: make it a worktree and hand it over
-        if newp=$(create_worktree) && [ -n "$newp" ]; then
-          state_write "$newp" "$sessid"
-          cursor_key=$(printf '%s\t%s\t' "$newp" "wt")
-          open_editor "$newp"
-        fi
-        ;;
-    esac
-    [ "$LOOP" -eq 1 ] || break
-    continue
-  fi
+  # Rows handled entirely inside fzf (execute/reload): nothing to do here.
+  case "$rtype" in new|orphan|orphans) [ "$LOOP" -eq 1 ] || break; continue ;; esac
 
   [ -n "$path" ] || break
   if [ ! -d "$path" ]; then
@@ -1211,30 +1227,7 @@ while :; do
   fi
 
   case "$key" in
-    # ctrl-w: make a worktree and, on a session row, hand that session to it.
-    # Lets a dead session be resumed somewhere other than where it ran.
-    ctrl-w)
-      if newp=$(create_worktree) && [ -n "$newp" ]; then
-        if [ "$rtype" = "session" ] && [ -n "$sessid" ]; then
-          state_write "$newp" "$sessid"
-        else
-          state_clear "$newp"
-        fi
-        cursor_key=$(printf '%s\t%s\t' "$newp" "wt")
-        open_editor "$newp"
-      fi
-      ;;
     ctrl-o) run_claude_term "$path" ;;
-    ctrl-d)
-      if [ "$rtype" = "session" ]; then
-        title=$(awk -F'\t' -v i="$sessid" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
-        kind=$(awk -F'\t' -v i="$sessid" '$2==i{print $5; exit}' "$owned_file" 2>/dev/null)
-        delete_session "$sessid" "$path" "${title:-${sessid:0:8}}" "$kind" \
-          && cursor_key=$(printf '%s\t%s\t' "$path" "wt")
-      else
-        delete_worktree "$path" && cursor_key=""
-      fi
-      ;;
     # enter: a WORKTREE always means a new session -- the association is
     # dropped, and zrush_session starts a fresh claude. A SESSION means resume
     # that one: its id is written down for zrush_session to pick up.

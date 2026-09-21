@@ -74,8 +74,15 @@ list` reports the whole set from any of them. Outside a repo, `zrush` falls back
 
 The picker **loops**: opening the editor, or quitting `claude`, brings you back
 to the refreshed list, cursor still on the row you acted on. Only `esc` /
-`ctrl-c` / `ctrl-q` leave `zrush`. Folding and `[…more]` never leave fzf at all —
-they go through its `reload`, so they redraw instead of restarting the picker.
+`ctrl-c` / `ctrl-q` leave `zrush`.
+
+Most keys never leave fzf at all. Folding and `[…more]` go through its
+`reload`; the ones that ask something — `ctrl-d`, `ctrl-w`, and `enter` on the
+last row or an orphan — go through `execute`, which lends the terminal to the
+prompt and takes it back. The picker is the same process throughout, so a
+confirmation costs a redraw rather than a restart. Only `enter` on a worktree
+or a session and `ctrl-o` step out, because they hand you over to the editor
+or a new terminal anyway.
 
 | key | on a **worktree** row | on a **session** row |
 | --- | --- | --- |
