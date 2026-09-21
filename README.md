@@ -218,9 +218,16 @@ falling back to `cmd /c start`. Treat it as best effort.
 
 ## Shell helper (optional)
 
+`--list` prints tab-separated fields: label, session badge, git badge, path.
+Only worktree rows carry a path.
+
 ```sh
-# cd into a worktree picked with zrush
-zcd() { cd "$(zrush --list | head -1)" || return; }
+# cd into one of this repo's worktrees, picked with fzf
+zcd() {
+  local p
+  p=$(zrush --list | awk -F'\t' '$4 != "" {print $4}' | fzf) || return
+  cd "$p" || return
+}
 ```
 
 ## License
