@@ -86,6 +86,11 @@ pub struct App {
     pub live: Vec<Session>,
     pub resumable: Vec<Session>,
     pub scanned: bool,
+    /// Previews already fetched, and the ones a worker is fetching. Both
+    /// are keyed by `preview_key`, so moving the cursor back onto a row
+    /// costs nothing.
+    pub previews: HashMap<String, crate::ui::preview::Preview>,
+    pub preview_pending: HashSet<String>,
 
     /// Every agent installed here, and which one is being listed. The
     /// header shows it, and `:agent` picks from it.
@@ -120,11 +125,28 @@ impl App {
             live: Vec::new(),
             resumable: Vec::new(),
             scanned: false,
+            previews: HashMap::new(),
+            preview_pending: HashSet::new(),
             agent_names: Vec::new(),
             active_agent: String::new(),
             more_step,
             resumable_max,
             anchor: None,
+        }
+    }
+
+    /// Identifies a row for the preview cache: a session by its id, a
+    /// worktree by its path. Stable across a reload.
+    pub fn preview_key(row: &Row) -> Option<String> {
+        match row.kind {
+            RowKind::Session | RowKind::Orphan => {
+                row.session_id.as_ref().map(|id| format!("s:{id}"))
+            }
+            RowKind::Worktree => match &row.node {
+                NodeId::Worktree(p) => Some(format!("w:{}", p.display())),
+                NodeId::Orphans => None,
+            },
+            RowKind::Orphans | RowKind::More => None,
         }
     }
 

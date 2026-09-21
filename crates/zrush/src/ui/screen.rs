@@ -166,42 +166,47 @@ pub fn rebuild(app: &mut App, z: &Zrush) {
     app.set_rows(rows);
 }
 
-/// What the preview pane should draw for the row under the cursor.
-pub fn preview_for(app: &App, z: &Zrush) -> Preview {
-    let Some(row) = app.current() else {
-        return Preview::Empty;
+/// What the preview pane should draw for the row under the cursor: whatever
+/// has been fetched for it, and nothing while a worker is still on it.
+pub fn preview_for(app: &App) -> Preview {
+    app.current()
+        .and_then(App::preview_key)
+        .and_then(|k| app.previews.get(&k).cloned())
+        .unwrap_or(Preview::Empty)
+}
+
+/// Ask for the preview of the row under the cursor, once.
+pub fn want_preview(app: &mut App, z: &Arc<Zrush>, probes: &crate::probe::Probes) {
+    let Some(row) = app.current().cloned() else {
+        return;
     };
-    match row.kind {
+    let Some(key) = App::preview_key(&row) else {
+        return;
+    };
+    if app.previews.contains_key(&key) || !app.preview_pending.insert(key.clone()) {
+        return;
+    }
+    let job = match row.kind {
         RowKind::Session | RowKind::Orphan => {
-            let Some(id) = row.session_id.as_deref() else {
-                return Preview::Empty;
+            let Some(id) = row.session_id.clone() else {
+                return;
             };
             let agent = app
                 .live
                 .iter()
                 .chain(app.resumable.iter())
                 .find(|s| s.id == id)
-                .map_or(app.active_agent.as_str(), |s| s.agent);
-            Preview::Conversation(z.preview(agent, id))
+                .map_or(app.active_agent.as_str(), |s| s.agent)
+                .to_string();
+            crate::probe::PreviewJob::Conversation { agent, id }
         }
-        RowKind::Worktree => {
-            let NodeId::Worktree(p) = &row.node else {
-                return Preview::Empty;
-            };
-            let mut lines: Vec<String> = Vec::new();
-            if let Ok(out) = zrush_core::git::run(p, &["status", "--short", "--branch"]) {
-                lines.extend(out.lines().take(15).map(str::to_string));
-            }
-            lines.push(String::new());
-            if let Ok(out) =
-                zrush_core::git::run(p, &["log", "--oneline", "--decorate", "-n", "10"])
-            {
-                lines.extend(out.lines().map(str::to_string));
-            }
-            Preview::Worktree(lines)
-        }
-        RowKind::Orphans | RowKind::More => Preview::Empty,
-    }
+        RowKind::Worktree => match row.node {
+            NodeId::Worktree(p) => crate::probe::PreviewJob::Worktree(p),
+            NodeId::Orphans => return,
+        },
+        RowKind::Orphans | RowKind::More => return,
+    };
+    probes.request_preview(z, key, job);
 }
 
 /// Apply one event. Returns false when the interface should stop.
@@ -224,6 +229,9 @@ pub fn apply(
         E::Worktrees(_, w) => {
             app.worktrees = w;
             app.scanned = false;
+            // Whatever was fetched described the previous state of the repo.
+            app.previews.clear();
+            app.preview_pending.clear();
             rebuild(app, z);
         }
         E::Status(_, p, s) => {
@@ -242,6 +250,10 @@ pub fn apply(
             app.resumable = s;
             app.scanned = true;
             rebuild(app, z);
+        }
+        E::Preview(_, key, preview) => {
+            app.preview_pending.remove(&key);
+            app.previews.insert(key, preview);
         }
         E::Failed(_, e) => app.flash(e),
     }
@@ -415,7 +427,8 @@ pub fn run(mut app: App, z: &Arc<Zrush>) -> zrush_core::error::Result<()> {
     probes.refresh(z, false);
 
     let out = loop {
-        let prev = preview_for(&app, z);
+        want_preview(&mut app, z, &probes);
+        let prev = preview_for(&app);
         if let Err(e) = term.draw(|f| draw(f, &app, z, &prev)) {
             break Err(e.into());
         }
@@ -464,7 +477,7 @@ mod tests {
     /// under test rather than the terminal.
     fn frame(app: &App, z: &Zrush, w: u16, h: u16) -> String {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
-        let prev = preview_for(app, z);
+        let prev = preview_for(app);
         term.draw(|f| draw(f, app, z, &prev)).unwrap();
         crate::ui::tests_support::flatten(term.backend())
     }
@@ -616,9 +629,48 @@ mod tests {
     }
 
     #[test]
-    fn the_preview_shows_the_git_log_for_a_worktree() {
+    fn a_preview_that_has_not_arrived_yet_leaves_the_pane_empty() {
+        // It is fetched on a worker; the frame must not wait for it.
         let td = tempfile::TempDir::new().unwrap();
         let (z, app) = loaded(&td);
-        assert!(frame(&app, &z, 140, 24).contains("init"));
+        assert!(frame(&app, &z, 140, 24).contains("Preview"));
+    }
+
+    #[test]
+    fn a_fetched_preview_is_drawn() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, mut app) = loaded(&td);
+        let key = App::preview_key(app.current().unwrap()).unwrap();
+        app.previews
+            .insert(key, Preview::Worktree(vec!["## main...origin/main".into()]));
+        assert!(frame(&app, &z, 140, 24).contains("origin/main"));
+    }
+
+    #[test]
+    fn a_row_is_only_asked_for_once() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, mut app) = loaded(&td);
+        let (tx, _rx) = mpsc::channel();
+        let probes = crate::probe::Probes::new(tx);
+        want_preview(&mut app, &z, &probes);
+        assert_eq!(app.preview_pending.len(), 1);
+        want_preview(&mut app, &z, &probes);
+        assert_eq!(app.preview_pending.len(), 1, "asked twice for the same row");
+    }
+
+    #[test]
+    fn a_worktree_preview_is_actually_fetched() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, mut app) = loaded(&td);
+        let (tx, rx) = mpsc::channel();
+        let probes = crate::probe::Probes::new(tx);
+        want_preview(&mut app, &z, &probes);
+        drop(probes);
+        let events: Vec<_> = rx.iter().collect();
+        let found = events.iter().any(|e| {
+            matches!(e, crate::probe::Event::Preview(_, _, Preview::Worktree(lines))
+                if lines.iter().any(|l| l.contains("init")))
+        });
+        assert!(found, "the git log never came back: {events:?}");
     }
 }

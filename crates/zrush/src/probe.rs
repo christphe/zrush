@@ -36,6 +36,9 @@ pub enum Event {
     History(u64, PathBuf, usize),
     Live(u64, Vec<Session>),
     Resumable(u64, Vec<Session>),
+    /// What the preview pane should draw for one row, keyed the way the
+    /// interface asked for it.
+    Preview(u64, String, crate::ui::preview::Preview),
     /// A probe gave up. Not fatal: the row simply has no badge.
     Failed(u64, String),
 }
@@ -51,6 +54,7 @@ impl Event {
             | Self::History(g, ..)
             | Self::Live(g, _)
             | Self::Resumable(g, _)
+            | Self::Preview(g, ..)
             | Self::Failed(g, _) => Some(*g),
         }
     }
@@ -134,6 +138,46 @@ impl Probes {
         });
 
         round
+    }
+}
+
+/// What the preview pane draws, fetched off the drawing thread.
+///
+/// A worktree preview costs two `git` processes. Running them while the
+/// frame is being built would mean every cursor move waits on git, which is
+/// the very thing this rewrite set out to remove.
+pub enum PreviewJob {
+    Worktree(PathBuf),
+    Conversation { agent: String, id: String },
+}
+
+impl Probes {
+    pub fn request_preview(&self, z: &Arc<Zrush>, key: String, job: PreviewJob) {
+        let round = self.generation();
+        let tx = self.tx.clone();
+        let z = Arc::clone(z);
+        std::thread::spawn(move || {
+            let preview = match job {
+                PreviewJob::Worktree(path) => {
+                    let mut lines: Vec<String> = Vec::new();
+                    if let Ok(out) = zrush_core::git::run(&path, &["status", "--short", "--branch"])
+                    {
+                        lines.extend(out.lines().take(15).map(str::to_string));
+                    }
+                    lines.push(String::new());
+                    if let Ok(out) =
+                        zrush_core::git::run(&path, &["log", "--oneline", "--decorate", "-n", "10"])
+                    {
+                        lines.extend(out.lines().map(str::to_string));
+                    }
+                    crate::ui::preview::Preview::Worktree(lines)
+                }
+                PreviewJob::Conversation { agent, id } => {
+                    crate::ui::preview::Preview::Conversation(z.preview(&agent, &id))
+                }
+            };
+            let _ = tx.send(Event::Preview(round, key, preview));
+        });
     }
 }
 
