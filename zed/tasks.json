@@ -1,0 +1,23 @@
+// wt tasks for Zed — copied to ~/.config/zed/tasks.json by ./install.sh
+// Run with: cmd-shift-p > "task: spawn", or bind a key (see README).
+[
+  {
+    "label": "wt: worktrees (global)",
+    "command": "wt",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "reveal": "always",
+    "reveal_target": "center",
+    "hide": "never"
+  },
+  {
+    "label": "wt: worktrees (this project)",
+    "command": "wt",
+    "args": ["--repo", "$ZED_WORKTREE_ROOT"],
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "reveal": "always",
+    "reveal_target": "center",
+    "hide": "never"
+  }
+]
