@@ -823,6 +823,35 @@ open_editor() {  # $1 = worktree path
   "${ZRUSH_EDITOR_CMD[@]}" "$1" || warn "could not open $1"
 }
 
+# These two run inside fzf's execute(), which hands over the whole terminal,
+# so a nested fzf is fine -- and a list you arrow through beats a y/n typed
+# blind at a prompt you cannot see the context of.
+
+# Prints the key of the chosen line, nothing when cancelled.
+ask() {  # $1 = prompt, $2 = header, rest = "key<TAB>label"
+  local prompt="$1" header="$2"
+  shift 2
+  printf '%s\n' "$@" \
+    | fzf --ansi --delimiter=$'\t' --with-nth=2 --no-sort --no-info \
+          --height=~40% --border=rounded --reverse --pointer='>' \
+          --prompt="$prompt" --header="$header" 2>/dev/null \
+    | cut -f1
+}
+
+# A branch name: type a new one, or pick one that already exists. --print-query
+# puts the typed text on line 1 and the selection, if any, on line 2.
+ask_branch() {
+  local out q sel
+  out=$(git -C "$repo_dir" for-each-ref --sort=-committerdate \
+          --format='%(refname:short)' refs/heads 2>/dev/null \
+        | fzf --print-query --no-info --height=~50% --border=rounded --reverse \
+              --pointer='>' --prompt='branch> ' \
+              --header='type a new branch name, or pick one to check out' 2>/dev/null)
+  q=$(printf '%s' "$out" | sed -n '1p')
+  sel=$(printf '%s' "$out" | sed -n '2p')
+  printf '%s' "${sel:-$q}"
+}
+
 # Remote default branch, the base every new branch is cut from. No fetch:
 # zrush never touches the network.
 default_base() {
@@ -841,8 +870,7 @@ default_base() {
 # Prints the new path on stdout, everything else goes to stderr.
 create_worktree() {
   local name dest base
-  printf 'branch name (empty to cancel): ' >&2
-  IFS= read -r name || { printf '\n' >&2; return 1; }
+  name=$(ask_branch)
   name="${name#"${name%%[![:space:]]*}"}"
   name="${name%"${name##*[![:space:]]}"}"
   [ -n "$name" ] || return 1
@@ -888,9 +916,10 @@ delete_session() {  # $1 = id, $2 = worktree path, $3 = title, $4 = kind
     warn "session $id is running; stop it first"
     return 1
   fi
-  printf 'delete session "%s" (%s)? [y/N] ' "$title" "${id:0:8}" >&2
-  IFS= read -r ans || return 1
-  case "$ans" in y|Y|yes) ;; *) return 1 ;; esac
+  ans=$(ask 'delete? ' "$title  (${id:0:8})" \
+            "yes"$'\t'"delete this conversation, for good" \
+            "no"$'\t'"cancel")
+  [ "$ans" = "yes" ] || return 1
 
   gone=$(purge_session "$id")
   if [ "${gone:-0}" -eq 0 ]; then
@@ -914,7 +943,7 @@ delete_session() {  # $1 = id, $2 = worktree path, $3 = title, $4 = kind
 # Deleting a session means deleting Claude Code's own transcript file under
 # ~/.claude/projects/. Running sessions are never touched.
 delete_worktree() {  # $1 = worktree path
-  local p="$1" rows n live ans id kind gone=0
+  local p="$1" rows n live ans hdr id kind gone=0
   [ -n "$p" ] || return 1
   if [ "$p" = "$main_root" ]; then
     warn "refusing to remove the main worktree"
@@ -926,20 +955,18 @@ delete_worktree() {  # $1 = worktree path
   live=$(printf '%s' "$rows" | awk -F'\t' '$2=="live"{k++} END{print k+0}')
 
   if [ "${n:-0}" -eq 0 ]; then
-    printf 'remove worktree %s? [y/N] ' "$p" >&2
-    IFS= read -r ans || return 1
-    case "$ans" in y|Y|yes) ;; *) return 1 ;; esac
-    ans=n
+    ans=$(ask 'remove? ' "${p##*/}  (no sessions)" \
+              "n"$'\t'"remove this worktree" \
+              "cancel"$'\t'"cancel")
+    [ "$ans" = "n" ] || return 1
   else
-    printf '%s has %s session(s)' "$p" "$n" >&2
-    [ "${live:-0}" -gt 0 ] && printf ', %s of them running' "$live" >&2
-    printf '.\nremove the worktree and delete those sessions? [y]es / [n]o, keep them / [c]ancel ' >&2
-    IFS= read -r ans || return 1
-    case "$ans" in
-      y|Y|yes) ans=y ;;
-      n|N|no)  ans=n ;;
-      *)       return 1 ;;
-    esac
+    hdr="${p##*/}  —  $n session(s)"
+    [ "${live:-0}" -gt 0 ] && hdr="$hdr, $live running"
+    ans=$(ask 'remove? ' "$hdr" \
+              "y"$'\t'"remove the worktree and delete its sessions" \
+              "n"$'\t'"remove the worktree, keep the sessions" \
+              "cancel"$'\t'"cancel")
+    case "$ans" in y|n) ;; *) return 1 ;; esac
   fi
 
   git -C "$repo_dir" worktree remove "$p" >&2 || {

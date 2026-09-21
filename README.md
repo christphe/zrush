@@ -102,7 +102,8 @@ refuses for lack of one.
 The key reminder sits in a one-line footer at the bottom, so it survives a
 narrow window.
 
-The **last row creates a worktree**: `enter` asks for a branch name and runs
+The **last row creates a worktree**: `enter` opens a branch picker — type a
+new name, or pick one of the repo's branches, newest first — and runs
 `git worktree add` under `<main worktree>/.claude/worktrees/<name>`, beside the
 ones `claude --worktree` makes. An existing branch is checked out as-is; a new
 one is cut from `origin/HEAD` with `--no-track`, so a later
@@ -378,12 +379,18 @@ says so and keeps it.
 
 When sessions belong to that worktree it asks a three-way question, because
 "remove the worktree" and "delete the conversations that happened in it" are
-not the same decision:
+not the same decision. The question is itself an fzf list, so you read the
+options instead of guessing which letter does what:
 
 ```
-<path> has 3 session(s), 1 of them running.
-remove the worktree and delete those sessions? [y]es / [n]o, keep them / [c]ancel
+  remove? > remove the worktree and delete its sessions
+            remove the worktree, keep the sessions
+            cancel
+  ──────────────────────────────────────────────────────
+  2427 — 3 session(s), 1 running
 ```
+
+Escape cancels, as does the last line.
 
 `yes` also deletes those sessions' transcript files under
 `~/.claude/projects/`. Running sessions are skipped with a warning — stop them
