@@ -11,6 +11,7 @@
 
 pub mod host;
 pub mod probe;
+pub mod ui;
 
 #[cfg(test)]
 pub mod testing;
