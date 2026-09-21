@@ -75,10 +75,10 @@ pub fn meta_cached(dirs: &Dirs, path: &Path, id: &str, known_mtime: Option<i64>)
     let stamp = stamp_of(path, known_mtime)?;
     let cached = read_entry(&entry_path);
 
-    if let Some((s, _, meta)) = &cached {
-        if *s == stamp {
-            return Some(meta.clone());
-        }
+    if let Some((s, _, meta)) = &cached
+        && *s == stamp
+    {
+        return Some(meta.clone());
     }
 
     let text = std::fs::read_to_string(path).ok()?;
@@ -87,11 +87,11 @@ pub fn meta_cached(dirs: &Dirs, path: &Path, id: &str, known_mtime: Option<i64>)
     let tail = lines[start..].join("\n");
     let hash = format!("{:016x}", xxhash_rust::xxh3::xxh3_64(tail.as_bytes()));
 
-    if let Some((_, h, meta)) = &cached {
-        if *h == hash {
-            write_entry(&entry_path, &stamp, &hash, meta);
-            return Some(meta.clone());
-        }
+    if let Some((_, h, meta)) = &cached
+        && *h == hash
+    {
+        write_entry(&entry_path, &stamp, &hash, meta);
+        return Some(meta.clone());
     }
 
     let meta = transcript::read_meta(path, TAIL_LINES)?;

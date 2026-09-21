@@ -9,19 +9,18 @@ One binary, no daemon, no database. The only persistent state is one file per
 worktree, inside that worktree's own gitdir. No secrets stored.
 
 ```
- Repo       wt                            <enter> open       <ctrl-o> new session   ╱╴ ╭─╮ ╭─╮ ╷ ╷ ╭─╴ ╷ ╷
- Branch     main                          <ctrl-w> worktree  <ctrl-d> delete        ╱  ╭╯  ├┬╯ │ │ ╰─╮ ├─┤
- Agent      claude                        </> filter         <?> help               ╱  ╰─╴ ╵╰╴ ╰─╯ ╶─╯ ╵ ╵
- Worktrees  2  ● 2 live  ◌ 17 resumable
-
-╭ Worktrees(2) ──────────────────────────────────────╮╭ Preview ──────────────────────────────────╮
-│ ▾ main [root]          ◌ 12 resumable  ~3 ?1       ││ you  port it to rust                      │
-│   ├─ ● refonte picker  busy 4m                     ││                                           │
-│   └─ ◌ fix CI zip      resumable 2d                ││   ·  Compris. Je tranche les trois points  │
-│▌▾ rust                 ● 1 live        ~12 ↑2      ││      moi-même.                            │
-│   └─ ● port ratatui    busy 0m                     ││                                           │
-╰────────────────────────────────────────────────────╯╰───────────────────────────────────────────╯
- <esc> quit                                            worktree 'rust' bound to f3a91c2e
+Repo       wt                          <enter> open     <^o> new session
+Branch     main                        <^w> worktree    <^d> delete
+Agent      claude                      </> filter       <?> help
+Worktrees  2 · ●2 live · ◌1 resumable
+╭ Worktrees(2) ────────────────────────────────────╮╭ Preview ─────────────────────────────────────────╮
+│ ▾ main [root]              ● 1 live        ~/wt  ││you port it to rust                               │
+│    ├─ ● refonte du picker  busy 4m               ││                                                  │
+│    └─ ◌ fix CI zip         resumable 2d          ││  · Le port est fait. 243 tests, clippy propre.   │
+│ ▾ rust                     ● 1 live        …/rust││                                                  │
+│    └─ ● port ratatui       busy 0m               ││                                                  │
+╰──────────────────────────────────────────────────╯╰──────────────────────────────────────────────────╯
+ <esc> quit
 ```
 
 ## How the pieces fit
@@ -245,8 +244,18 @@ end implements it differently and never spawns an editor.
 ./check -f     # fix the formatting instead of complaining about it
 ```
 
-CI runs the same three on Linux, macOS and Windows, plus `cargo deny` and a
-build against the MSRV, and produces a binary per platform.
+`./check` also runs two things CI would otherwise be the first to try, when
+they are available locally:
+
+- the Windows half of the platform code, with `rustup target add
+  x86_64-pc-windows-msvc` — `cargo clippy --target` needs no linker;
+- a build against the MSRV, with `rustup toolchain install 1.88`.
+
+Both are skipped when not installed, so `./check` still works on a bare
+setup — it just stops catching those two.
+
+CI runs the same on Linux, macOS and Windows, plus `cargo deny` and a build
+against the MSRV, and produces a binary per platform.
 
 ## Windows
 

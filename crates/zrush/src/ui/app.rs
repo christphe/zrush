@@ -99,6 +99,10 @@ pub struct App {
     /// header shows it, and `:agent` picks from it.
     pub agent_names: Vec<String>,
     pub active_agent: String,
+    /// Shown as `~` in the path column. Held here rather than read from the
+    /// environment inside the renderer: drawing should not depend on what
+    /// the process happens to be able to see.
+    pub home: Option<PathBuf>,
 
     pub more_step: usize,
     pub resumable_max: usize,
@@ -133,6 +137,7 @@ impl App {
             preview_pending: HashSet::new(),
             agent_names: Vec::new(),
             active_agent: String::new(),
+            home: std::env::var_os("HOME").map(PathBuf::from),
             more_step,
             resumable_max,
             anchor: None,
@@ -164,14 +169,13 @@ impl App {
     pub fn set_rows(&mut self, rows: Vec<Row>) {
         self.rows = rows;
         self.refilter();
-        if let Some((node, id)) = &self.anchor {
-            if let Some(at) = self
+        if let Some((node, id)) = &self.anchor
+            && let Some(at) = self
                 .visible
                 .iter()
                 .position(|&i| &self.rows[i].node == node && &self.rows[i].session_id == id)
-            {
-                self.cursor = at;
-            }
+        {
+            self.cursor = at;
         }
         self.clamp();
     }
@@ -480,10 +484,10 @@ impl App {
                 Action::Reload
             }
             KeyCode::Char(' ') => {
-                if let Some(&i) = self.visible.get(self.cursor) {
-                    if !self.marked.insert(i) {
-                        self.marked.remove(&i);
-                    }
+                if let Some(&i) = self.visible.get(self.cursor)
+                    && !self.marked.insert(i)
+                {
+                    self.marked.remove(&i);
                 }
                 self.move_by(1);
                 Action::Redraw

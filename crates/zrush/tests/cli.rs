@@ -60,20 +60,10 @@ fn sandbox() -> Sandbox {
     git(&repo, &["branch", "-M", "main"]);
     git(&repo, &["push", "-q", "-u", "origin", "main"]);
 
-    // A stub editor that logs instead of opening anything.
+    // A stub editor that logs instead of opening anything. Written for
+    // whichever shell will run it: no test may reach a real editor.
     let log = base.join("log");
-    let ed = base.join("ed");
-    std::fs::write(
-        &ed,
-        format!(
-            "#!/bin/sh\nprintf 'EDITOR %s\\n' \"$1\" >> {}\n",
-            log.display()
-        ),
-    )
-    .expect("write");
-    let mut perms = std::fs::metadata(&ed).expect("stat").permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&ed, perms).expect("chmod");
+    let ed = stub_editor(&base, &log);
 
     std::fs::write(
         home.join(".config/zrush/config.toml"),
@@ -87,6 +77,31 @@ fn sandbox() -> Sandbox {
         repo,
         log,
     }
+}
+
+/// Writes the stub and returns the path to invoke it by.
+#[cfg(unix)]
+fn stub_editor(base: &Path, log: &Path) -> PathBuf {
+    let ed = base.join("ed");
+    std::fs::write(
+        &ed,
+        format!(
+            "#!/bin/sh\nprintf 'EDITOR %s\\n' \"$1\" >> {}\n",
+            log.display()
+        ),
+    )
+    .expect("write");
+    let mut perms = std::fs::metadata(&ed).expect("stat").permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&ed, perms).expect("chmod");
+    ed
+}
+
+#[cfg(windows)]
+fn stub_editor(base: &Path, log: &Path) -> PathBuf {
+    let ed = base.join("ed.cmd");
+    std::fs::write(&ed, format!("@echo EDITOR %1>>\"{}\"\r\n", log.display())).expect("write");
+    ed
 }
 
 fn zrush(sb: &Sandbox) -> Command {

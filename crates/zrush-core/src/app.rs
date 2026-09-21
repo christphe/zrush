@@ -310,10 +310,10 @@ impl Zrush {
         if gone == 0 {
             return Err(ZrushError::msg(format!("no transcript found for {id}")));
         }
-        if let Some(p) = bound_to {
-            if self.binding(p).is_some_and(|b| b.id == id) {
-                state::clear(p)?;
-            }
+        if let Some(p) = bound_to
+            && self.binding(p).is_some_and(|b| b.id == id)
+        {
+            state::clear(p)?;
         }
         Ok(gone)
     }

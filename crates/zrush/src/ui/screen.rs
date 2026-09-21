@@ -15,11 +15,6 @@ use super::app::{Action, App, Mode};
 use super::preview::Preview;
 use super::{header, modal, preview, table, theme};
 
-/// The user's home directory, shown as `~` in the path column.
-fn dirs_home() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(std::path::PathBuf::from)
-}
-
 /// How wide the preview pane is. Below this the terminal is too narrow for
 /// two panes and the list takes it all.
 const PREVIEW_PERCENT: u16 = 50;
@@ -89,7 +84,6 @@ pub fn draw(f: &mut Frame, app: &App, z: &Zrush, prev: &Preview) {
         .filter(|(_, i)| app.marked.contains(i))
         .map(|(shown, _)| shown)
         .collect();
-    let home = dirs_home();
     let title = match app.mode {
         Mode::Purge => format!("Purge — {} marked", app.marked.len()),
         _ => format!("Worktrees({})", app.worktrees.len()),
@@ -100,7 +94,7 @@ pub fn draw(f: &mut Frame, app: &App, z: &Zrush, prev: &Preview) {
         &table::View {
             rows: &visible,
             matched: &app.matched,
-            home: home.as_deref(),
+            home: app.home.as_deref(),
             cursor: app.cursor,
             marked: &marked,
             offset: app.offset,

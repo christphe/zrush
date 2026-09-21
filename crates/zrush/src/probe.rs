@@ -195,12 +195,11 @@ fn spawn_status(z: &Arc<Zrush>, tx: &Sender<Event>, round: u64, worktrees: &[Wor
                 if tx.send(Event::History(round, p.clone(), n)).is_err() {
                     return;
                 }
-                if want_status {
-                    if let Ok(s) = z.status(&p) {
-                        if tx.send(Event::Status(round, p, s)).is_err() {
-                            return;
-                        }
-                    }
+                if want_status
+                    && let Ok(s) = z.status(&p)
+                    && tx.send(Event::Status(round, p, s)).is_err()
+                {
+                    return;
                 }
             }
         });

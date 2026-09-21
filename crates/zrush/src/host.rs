@@ -106,7 +106,10 @@ fn script_name() -> &'static str {
     "session.command"
 }
 
+/// Nothing to do: Windows decides by extension, and the script is a
+/// `.cmd`. The `Result` is here to match the unix one, which can fail.
 #[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)]
 fn make_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
