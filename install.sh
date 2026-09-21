@@ -93,14 +93,26 @@ fi
 
 if [ "$editor" = "zed" ]; then
   mkdir -p "$zed_dir"
+  skipped=""
   for f in tasks.json keymap.json; do
     if [ -f "$zed_dir/$f" ]; then
       echo "note: $zed_dir/$f exists; merge $here/zed/$f yourself"
+      skipped="$skipped $f"
     else
       cp "$here/zed/$f" "$zed_dir/$f"
       echo "wrote $zed_dir/$f"
     fi
   done
+  # The keybinding names a task by its label, so half an install leaves a
+  # key bound to nothing.
+  case " $skipped " in
+    *" tasks.json "*)
+      case " $skipped " in
+        *" keymap.json "*) ;;
+        *) echo "note: the keybinding just written needs the task in $here/zed/tasks.json" ;;
+      esac
+      ;;
+  esac
   cat <<'NOTE'
 
 One thing left, in your Zed settings.json, so the terminal panel resumes

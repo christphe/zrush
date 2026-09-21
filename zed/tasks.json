@@ -2,7 +2,7 @@
 // Run with: cmd-shift-p > "task: spawn", or bind a key (see zed/keymap.json).
 [
   {
-    "label": "Claude session",
+    "label": "zrush: session here",
     "command": "zrush",
     "args": ["session"],
     "cwd": "$ZED_WORKTREE_ROOT",
