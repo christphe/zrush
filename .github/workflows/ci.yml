@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # transform-footer needs fzf >= 0.65, which the distro packages do not carry.
+  FZF_VERSION: "0.74.4"
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install fzf ${{ env.FZF_VERSION }}
+        run: |
+          set -euo pipefail
+          case "${{ runner.os }}-$(uname -m)" in
+            Linux-x86_64)  asset=linux_amd64  ;;
+            Linux-aarch64) asset=linux_arm64  ;;
+            macOS-arm64)   asset=darwin_arm64 ;;
+            macOS-x86_64)  asset=darwin_amd64 ;;
+            *) echo "unsupported runner: $(uname -sm)" >&2; exit 1 ;;
+          esac
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-${asset}.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin" fzf
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Versions
+        run: |
+          bash --version | head -1
+          fzf --version
+          shellcheck --version | sed -n '2p'
+          jq --version
+          python3 --version
+          git --version
+
+      # tests/run is the whole gate: bash -n, shellcheck, then every test file.
+      # The picker tests drive fzf on a pty, so they are timing-sensitive; a CI
+      # runner is slower than a laptop, hence the longer warmup.
+      - name: Checks and tests
+        env:
+          WARMUP: "7"
+        run: ./tests/run
+
+  package:
+    name: zip
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build the zip
+        id: zip
+        run: |
+          set -euo pipefail
+          name="zrush-$(git rev-parse --short HEAD)"
+          mkdir -p "dist/$name"
+          cp -R bin zed install.sh README.md LICENSE "dist/$name/"
+          (cd dist && zip -qr "$name.zip" "$name")
+          unzip -l "dist/$name.zip"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.zip.outputs.name }}
+          path: dist/${{ steps.zip.outputs.name }}.zip
+          if-no-files-found: error
+          retention-days: 30
