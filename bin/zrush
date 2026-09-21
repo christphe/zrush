@@ -24,7 +24,7 @@
 #                           -> zrush_session resumes it
 #            on [...more]   load more of that worktree's older sessions
 #   ctrl-o   start a new `claude` session for the worktree, in a new terminal
-#   ctrl-w   create a worktree; on a session row, bind that session to it
+#   ctrl-w   create a worktree; on a session row, hand that session to it
 #   ctrl-d   on a SESSION delete that conversation; on a WORKTREE remove it,
 #            and optionally delete the sessions that belong to it
 #   ctrl-p   purge: unfold everything, mark rows with space, remove the lot
@@ -98,14 +98,14 @@ keys inside fzf:
            [...more]: load more of that worktree's older sessions
   ctrl-o   start a NEW claude session for this worktree, in its own terminal
            (association and editor untouched)
-  ctrl-w   create a worktree; on a session row, bind that session to it
+  ctrl-w   create a worktree, asking for a branch name
+           on a session row, hand that session to the new worktree
   ctrl-d   on a session: delete that conversation
            on a worktree: remove it, and optionally delete its sessions
   ctrl-p   purge: unfold everything, mark rows with space, enter to remove
            them all in one go
   ctrl-l   reload the list
   left     fold this worktree's rows   (right unfolds)
-  last row create a new worktree (asks for a name)
   esc / ctrl-c / ctrl-q            quit zrush
 EOF
 }
@@ -902,10 +902,6 @@ build_menu() {
     fi
   fi
 
-  # Last row: create a worktree. No path, so every consumer keys off type.
-  r_type+=("new"); r_path+=(""); r_id+=("")
-  r_c1+=("  + new worktree…"); r_c2+=(""); r_c3+=("")
-
   local w=0 v=0 x=0 k col loc
   for k in "${!r_c1[@]}"; do
     [ "${#r_c1[$k]}" -gt "$w" ] && w=${#r_c1[$k]}
@@ -917,7 +913,6 @@ build_menu() {
   for k in "${!r_c1[@]}"; do
     case "${r_type[$k]}" in
       wt)  col=$'\033[1;36m'; loc="${r_path[$k]}" ;;
-      new)     col=$'\033[1;32m'; loc="$new_root/<name>" ;;
       more)    col=$'\033[2;35m'; loc="" ;;
       orphans) col=$'\033[1;31m'; loc="worktree gone" ;;
       orphan)  col=$'\033[0;35m'; loc="" ;;
@@ -1213,7 +1208,7 @@ mode_ask() {
       IFS=$'\t' read -r _lbl DO_PATH DO_TYPE DO_ID <<<"${ROWS[0]:-}"
       case "$DO_TYPE" in
         more)       printf 'reload(%q --more %q)\n' "$ACT_SH" "$DO_PATH" ;;
-        new|orphan) exec "$0" --state "$tmpdir" --repo "$repo_dir" --ask branch \
+        orphan)     exec "$0" --state "$tmpdir" --repo "$repo_dir" --ask branch \
                          --path "$DO_PATH" --type "$DO_TYPE" --id "$DO_ID" ;;
         orphans)    printf 'ignore\n' ;;
         *)          printf 'accept\n' ;;
@@ -1621,7 +1616,7 @@ while :; do
   fi
 
   # Rows handled entirely inside fzf (execute/reload): nothing to do here.
-  case "$rtype" in new|orphan|orphans) [ "$LOOP" -eq 1 ] || break; continue ;; esac
+  case "$rtype" in orphan|orphans) [ "$LOOP" -eq 1 ] || break; continue ;; esac
 
   [ -n "$path" ] || break
   if [ ! -d "$path" ]; then
