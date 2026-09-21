@@ -55,4 +55,25 @@ ok "empty n-action does not shift the columns" \
 ok "and the action is still readable"        "$(jq -r '.y'  "$d/confirm")" delete-session
 
 sandbox_destroy
+
+echo "  a repo with no remote still works"
+sandbox_create noremote noremote
+ok "no remote configured" "$(git -C "$REPO" remote | wc -l | tr -d ' ')" 0
+
+# creating a worktree must not insist on origin/HEAD
+"$ZRUSH" --repo "$REPO" --do newwt --path "$REPO" --type wt --id '' --name feature-x \
+  >"$SB/out" 2>&1
+contains "it branches off the local default" "$(cat "$SB/out")" "branching feature-x off main"
+ok "the worktree exists" \
+   "$(git -C "$REPO" worktree list | grep -c feature-x || true)" 1
+
+# and when there is no main either, off HEAD
+git -C "$REPO" branch -m dev
+"$ZRUSH" --repo "$REPO" --do newwt --path "$REPO" --type wt --id '' --name feature-y \
+  >"$SB/out2" 2>&1
+contains "it falls back to HEAD" "$(cat "$SB/out2")" "branching feature-y off HEAD"
+ok "that worktree exists too" \
+   "$(git -C "$REPO" worktree list | grep -c feature-y || true)" 1
+
+sandbox_destroy
 report

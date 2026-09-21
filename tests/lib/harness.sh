@@ -30,18 +30,22 @@ contains() {  # $1 = what, $2 = haystack, $3 = needle
   esac
 }
 
-sandbox_create() {  # $1 = name -> sets SB, REPO, HOMEDIR, LOG
+sandbox_create() {  # $1 = name, $2 = "noremote" to skip the remote
   SB="$BASE/$1"; REPO="$SB/repo"; LOG="$SB/log"
   mkdir -p "$SB/xdg/zrush"
-  git init -q --bare "$SB/remote.git"
-  git clone -q "$SB/remote.git" "$REPO" 2>/dev/null
+  if [ "${2:-}" = noremote ]; then
+    git init -q "$REPO"
+  else
+    git init -q --bare "$SB/remote.git"
+    git clone -q "$SB/remote.git" "$REPO" 2>/dev/null
+  fi
   git -C "$REPO" config user.email t@example.invalid
   git -C "$REPO" config user.name  "zrush tests"
   echo seed > "$REPO/f.txt"
   git -C "$REPO" add f.txt
   git -C "$REPO" commit -qm init
   git -C "$REPO" branch -M main
-  git -C "$REPO" push -q -u origin main
+  [ "${2:-}" = noremote ] || git -C "$REPO" push -q -u origin main
   # shellcheck disable=SC2016  # "$1" belongs to the stub being written
   printf '#!/bin/sh\nprintf "EDITOR %%s\\n" "$1" >> %s\n' "$LOG" > "$SB/xdg/ed"
   # shellcheck disable=SC2016  # same here

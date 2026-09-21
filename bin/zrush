@@ -951,17 +951,22 @@ open_editor() {  # $1 = worktree path
 # so a nested fzf is fine -- and a list you arrow through beats a y/n typed
 # blind at a prompt you cannot see the context of.
 
-# Remote default branch, the base every new branch is cut from. No fetch:
-# zrush never touches the network.
+# What a new branch is cut from. The remote default branch when there is one,
+# because it is the base that is actually up to date; otherwise the local
+# default branch, and failing that the main worktree's HEAD. A repo with no
+# remote is perfectly normal and must still work. No fetch either way: zrush
+# never touches the network.
 default_base() {
   local b
   b=$(git -C "$repo_dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) \
     && [ -n "$b" ] && { printf '%s' "$b"; return 0; }
-  for b in origin/main origin/master; do
+  for b in origin/main origin/master main master; do
     git -C "$repo_dir" rev-parse --verify --quiet "$b" >/dev/null 2>&1 \
       && { printf '%s' "$b"; return 0; }
   done
-  return 1
+  # Unborn HEAD (a repo with no commit yet) has nothing to branch from.
+  git -C "$repo_dir" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || return 1
+  printf 'HEAD'
 }
 
 # Ask for a name and add the worktree under $new_root. An existing branch is
@@ -983,7 +988,7 @@ create_worktree() {  # $1 = branch name, already chosen by the footer
   if git -C "$repo_dir" show-ref --verify --quiet "refs/heads/$name"; then
     git -C "$repo_dir" worktree add "$dest" "$name" >&2 || return 1
   else
-    base=$(default_base) || { warn "no remote default branch (origin/HEAD)"; return 1; }
+    base=$(default_base) || { warn "nothing to branch from: the repo has no commit yet"; return 1; }
     printf '%s: branching %s off %s\n' "$PROG" "$name" "$base" >&2
     # --no-track: the branch starts at $base but owns no upstream, so a later
     # `git push -u origin HEAD` sets the right one instead of pointing at main.

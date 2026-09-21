@@ -114,9 +114,14 @@ The **last row creates a worktree**: `enter` opens a branch picker — type a
 new name, or pick one of the repo's branches, newest first — and runs
 `git worktree add` under `<main worktree>/.claude/worktrees/<name>`, beside the
 ones `claude --worktree` makes. An existing branch is checked out as-is; a new
-one is cut from `origin/HEAD` with `--no-track`, so a later
-`git push -u origin HEAD` sets the right upstream instead of pointing at main.
-`zrush` never touches the network.
+one is cut with `--no-track`, so a later `git push -u origin HEAD` sets the
+right upstream instead of pointing at main.
+
+The base is `origin/HEAD` when there is a remote, because that is the one
+actually up to date; otherwise the local default branch, and failing that the
+current `HEAD`. A repo with no remote is ordinary and works the same. Either
+way `zrush` never touches the network — `origin/HEAD` is as fresh as your last
+`git fetch`.
 
 Flags: `-C/--repo`, `-p/--print`, `-l/--list`, `-n/--no-sessions`,
 `-S/--no-status`, `-1/--once`, `-h`.
