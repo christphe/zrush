@@ -12,6 +12,10 @@ permissions:
 env:
   # transform-footer needs fzf >= 0.65, which the distro packages do not carry.
   FZF_VERSION: "0.74.4"
+  # Pinned: the runners ship 0.9.0 (Linux) or nothing at all (macOS), and 0.9.0
+  # reports SC2015 on guards of the form `[ a ] && [ b ] || fallback`, where the
+  # fallback running on a true-then-false is precisely the point.
+  SHELLCHECK_VERSION: "0.11.0"
 
 jobs:
   test:
@@ -37,6 +41,21 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-${asset}.tar.gz" \
             | tar -xz -C "$HOME/.local/bin" fzf
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install shellcheck ${{ env.SHELLCHECK_VERSION }}
+        run: |
+          set -euo pipefail
+          case "${{ runner.os }}-$(uname -m)" in
+            Linux-x86_64)  asset=linux.x86_64    ;;
+            Linux-aarch64) asset=linux.aarch64   ;;
+            macOS-arm64)   asset=darwin.aarch64  ;;
+            macOS-x86_64)  asset=darwin.x86_64   ;;
+            *) echo "unsupported runner: $(uname -sm)" >&2; exit 1 ;;
+          esac
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.${asset}.tar.xz" \
+            | tar -xJ -C "$HOME/.local/bin" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Versions
