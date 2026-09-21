@@ -1,0 +1,9 @@
+// zrush keymap for Zed — installed into ~/.config/zed/keymap.json by ./install.sh
+[
+  {
+    "context": "Workspace",
+    "bindings": {
+      "cmd-shift-j": ["task::Spawn", { "task_name": "Claude session" }]
+    }
+  }
+]

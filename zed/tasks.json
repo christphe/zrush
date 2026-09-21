@@ -1,6 +1,15 @@
-// zrush tasks for Zed — copied to ~/.config/zed/tasks.json by ./install.sh
-// Run with: cmd-shift-p > "task: spawn", or bind a key (see README).
+// zrush tasks for Zed — installed into ~/.config/zed/tasks.json by ./install.sh
+// Run with: cmd-shift-p > "task: spawn", or bind a key (see zed/keymap.json).
 [
+  {
+    "label": "Claude session",
+    "command": "zrush_session",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": true,
+    "reveal": "always",
+    "hide": "never"
+  },
   {
     "label": "zrush: worktrees (global)",
     "command": "zrush",
