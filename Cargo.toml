@@ -21,7 +21,7 @@ nucleo-matcher = "0.3.1"
 ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-thiserror = "2.0.20"
+thiserror = "2.0.12"
 toml = "1.1.6"
 unicode-width = "0.2.2"
 xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
