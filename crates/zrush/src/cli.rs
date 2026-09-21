@@ -28,10 +28,6 @@ pub struct Cli {
     #[arg(short = 'a', long = "agent", value_name = "ID")]
     pub agent: Option<String>,
 
-    /// Colours: auto, dark or light. Outranks the configured theme.
-    #[arg(long = "theme", value_name = "NAME")]
-    pub theme: Option<String>,
-
     /// Print the rows and exit, without drawing anything.
     #[arg(short = 'l', long = "list")]
     pub list: bool,
@@ -107,10 +103,6 @@ pub fn main() -> Result<()> {
         }
         None => {}
     }
-
-    crate::ui::theme::set(crate::ui::theme::parse(
-        cli.theme.as_deref().unwrap_or(&cfg.theme),
-    ));
 
     let repo = locate(&cli, &cfg)?;
     let host: Box<dyn Host> = if cli.list {

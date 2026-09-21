@@ -1,106 +1,36 @@
 //! One place for every colour, so a change is a change here and nowhere
 //! else.
 //!
-//! Two rules learned the hard way:
+//! ## Nothing is painted, and nothing needs configuring
 //!
-//! - Nothing load-bearing is drawn in `DarkGray`. On a dark background it
-//!   is close enough to invisible that labels, borders and paths simply
-//!   vanish, leaving the coloured fragments floating with no structure.
-//! - The selected row is drawn in ONE style. Reversing each span
+//! k9s paints its own background so it looks the same everywhere. zrush
+//! does not: the version this replaced inherited the terminal's, and looked
+//! at home on whatever theme the user had. Every colour here is a named
+//! ANSI one, which a terminal theme has already tuned to be readable on its
+//! own background.
+//!
+//! Two of them cannot be named that way, because which name reads depends
+//! on which way the background goes: `Gray` (ANSI 7) vanishes on white,
+//! `DarkGray` (ANSI 8) vanishes on black. Both are avoided rather than
+//! chosen between — there is a colour that works on both by construction,
+//! and it is the terminal's own:
+//!
+//! - **Muted text** — labels, paths, key descriptions — is the default
+//!   foreground with `DIM`. A terminal that ignores `DIM` draws ordinary
+//!   text, which is worse-looking and still perfectly readable; naming a
+//!   colour risks invisible.
+//! - **The cursor bar** is `REVERSED`, which swaps the terminal's own two
+//!   colours. Applied to the whole row at once — reversing each column
 //!   separately turns every column's colour into a different background,
 //!   which reads as a row of coloured blocks rather than a cursor.
 //!
-//! Everything resolves through `ratatui::style::Color`, and nothing uses an
-//! indexed colour past the first sixteen: a terminal with a small palette
-//! degrades rather than breaks.
+//! So there is no dark theme and no light theme, and nothing to pick
+//! between them.
 //!
-//! ## No forced background
-//!
-//! k9s paints its own background so it looks the same everywhere. zrush
-//! does not: the version this replaced inherited the terminal's background
-//! and looked at home on whatever theme the user had chosen, and taking
-//! that over would flatten it. Named ANSI colours are used instead — a
-//! terminal theme has already tuned those to be readable on its own
-//! background.
-//!
-//! Two choices still depend on which way that background goes, and they are
-//! the whole of `Variant`.
-
-use std::sync::atomic::{AtomicU8, Ordering};
+//! Nothing uses an indexed colour past the first sixteen: a terminal with a
+//! small palette degrades rather than breaks.
 
 use ratatui::style::{Color, Modifier, Style};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Variant {
-    Dark,
-    Light,
-}
-
-static VARIANT: AtomicU8 = AtomicU8::new(0);
-
-pub fn set(variant: Variant) {
-    VARIANT.store(u8::from(variant == Variant::Light), Ordering::Relaxed);
-}
-
-/// `auto` reads the terminal, anything else is taken at its word. An
-/// unknown name is `auto`: a typo should not force a theme.
-pub fn parse(name: &str) -> Variant {
-    match name.trim().to_lowercase().as_str() {
-        "dark" => Variant::Dark,
-        "light" => Variant::Light,
-        _ => detect(),
-    }
-}
-
-pub fn variant() -> Variant {
-    if VARIANT.load(Ordering::Relaxed) == 0 {
-        Variant::Dark
-    } else {
-        Variant::Light
-    }
-}
-
-/// `COLORFGBG` is what terminals that report anything report: `fg;bg`, with
-/// the background as an ANSI index. 0-6 and 8 are dark, 7 and 15 are light.
-/// Nothing says it, which is most terminals, means dark: that is what a
-/// developer's terminal almost always is, and it is the case that was
-/// tested.
-pub fn detect() -> Variant {
-    detect_from(std::env::var("COLORFGBG").ok().as_deref())
-}
-
-pub fn detect_from(colorfgbg: Option<&str>) -> Variant {
-    let Some(v) = colorfgbg else {
-        return Variant::Dark;
-    };
-    match v
-        .rsplit(';')
-        .next()
-        .and_then(|b| b.trim().parse::<u8>().ok())
-    {
-        Some(7 | 15) => Variant::Light,
-        _ => Variant::Dark,
-    }
-}
-
-fn pick(dark: Color, light: Color) -> Color {
-    match variant() {
-        Variant::Dark => dark,
-        Variant::Light => light,
-    }
-}
-
-/// Secondary text: labels, paths, key descriptions. The one colour that
-/// genuinely flips — `Gray` reads on dark, `DarkGray` reads on light, and
-/// each is close to invisible on the other.
-fn muted() -> Color {
-    pick(Color::Gray, Color::DarkGray)
-}
-
-/// The text on the cursor bar, over `SELECT_BG`.
-fn select_fg() -> Color {
-    pick(Color::Black, Color::White)
-}
 
 /// Worktrees read as structure, sessions as content, trouble as trouble.
 pub const WORKTREE: Color = Color::Cyan;
@@ -111,13 +41,8 @@ pub const BADGE: Color = Color::Yellow;
 pub const GIT: Color = Color::Green;
 
 pub const BORDER: Color = Color::Blue;
-pub const TITLE: Color = Color::White;
 pub const HEADER_KEY: Color = Color::Cyan;
-pub const HEADER_VALUE: Color = Color::White;
 pub const LOGO: Color = Color::Blue;
-
-/// The cursor row: one background, one foreground, for the whole line.
-pub const SELECT_BG: Color = Color::Cyan;
 pub const MARKED: Color = Color::Yellow;
 pub const DANGER: Color = Color::Red;
 
@@ -146,16 +71,14 @@ pub fn git() -> Style {
 }
 
 pub fn path() -> Style {
-    Style::default().fg(muted())
+    muted()
 }
 
 /// One style for the whole row, so the cursor is a bar and not a row of
-/// coloured blocks.
+/// coloured blocks. Reversed rather than coloured: it borrows the
+/// terminal's own two colours, so it reads on any background.
 pub fn cursor() -> Style {
-    Style::default()
-        .bg(SELECT_BG)
-        .fg(select_fg())
-        .add_modifier(Modifier::BOLD)
+    Style::default().add_modifier(Modifier::REVERSED)
 }
 
 /// The characters a filter matched. Underlined rather than recoloured, so
@@ -170,13 +93,17 @@ pub fn marked() -> Style {
 }
 
 pub fn header_label() -> Style {
-    Style::default().fg(muted())
+    muted()
+}
+
+/// The default foreground, dimmed: readable on any background, because a
+/// terminal guarantees its own foreground is readable on its own.
+fn muted() -> Style {
+    Style::default().add_modifier(Modifier::DIM)
 }
 
 pub fn header_value() -> Style {
-    Style::default()
-        .fg(HEADER_VALUE)
-        .add_modifier(Modifier::BOLD)
+    Style::default().add_modifier(Modifier::BOLD)
 }
 
 pub fn header_key() -> Style {
@@ -192,7 +119,7 @@ pub fn border() -> Style {
 }
 
 pub fn title() -> Style {
-    Style::default().fg(TITLE).add_modifier(Modifier::BOLD)
+    Style::default().add_modifier(Modifier::BOLD)
 }
 
 pub fn modal_border() -> Style {
@@ -204,48 +131,38 @@ pub fn danger() -> Style {
 }
 
 pub fn dim() -> Style {
-    Style::default().fg(muted())
+    muted()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// `DarkGray` on a dark background is what made the first version read
-    /// as debris: the structure was drawn, and none of it could be seen.
+    /// `Gray` and `DarkGray` are the two that flip: each is close to
+    /// invisible on the background the other suits. Naming either one is
+    /// how the first version ended up unreadable.
     #[test]
-    fn nothing_load_bearing_is_invisible_on_a_dark_background() {
-        set(Variant::Dark);
+    fn neither_of_the_two_background_dependent_greys_is_named() {
         for (what, style) in [
             ("border", border()),
             ("header label", header_label()),
+            ("header value", header_value()),
             ("path", path()),
             ("dim", dim()),
             ("title", title()),
+            ("cursor", cursor()),
         ] {
-            assert_ne!(
-                style.fg,
-                Some(Color::DarkGray),
-                "{what} is invisible on a dark theme"
+            assert!(
+                !matches!(style.fg, Some(Color::Gray | Color::DarkGray)),
+                "{what} names a grey that depends on the background"
             );
         }
     }
 
+    /// Painting a background would flatten whatever theme the terminal has,
+    /// which the version this replaced never did.
     #[test]
-    fn the_muted_colour_flips_with_the_background() {
-        set(Variant::Dark);
-        let dark = path().fg;
-        set(Variant::Light);
-        let light = path().fg;
-        set(Variant::Dark);
-        assert_ne!(dark, light, "the one colour that must differ does not");
-    }
-
-    /// Painting our own background would flatten whatever theme the
-    /// terminal has, which the version this replaced never did.
-    #[test]
-    fn only_the_cursor_paints_a_background() {
-        set(Variant::Dark);
+    fn nothing_paints_a_background() {
         for (what, style) in [
             ("worktree", worktree()),
             ("session", session()),
@@ -256,45 +173,24 @@ mod tests {
             ("header label", header_label()),
             ("header value", header_value()),
             ("title", title()),
+            ("cursor", cursor()),
         ] {
             assert_eq!(style.bg, None, "{what} paints over the terminal background");
         }
-        assert!(cursor().bg.is_some());
     }
 
     #[test]
-    fn a_name_is_taken_at_its_word() {
-        assert_eq!(parse("light"), Variant::Light);
-        assert_eq!(parse(" DARK "), Variant::Dark);
+    fn muted_text_borrows_the_terminals_own_foreground() {
+        // Not a named colour: the terminal's, dimmed.
+        assert_eq!(path().fg, None);
+        assert!(path().add_modifier.contains(Modifier::DIM));
     }
 
     #[test]
-    fn an_unknown_name_falls_back_to_looking_rather_than_guessing() {
-        assert_eq!(parse("solarised"), detect());
-        assert_eq!(parse("auto"), detect());
-    }
-
-    #[test]
-    fn a_terminal_that_says_nothing_is_assumed_dark() {
-        // Most say nothing, and a developer's terminal almost always is.
-        assert_eq!(detect_from(None), Variant::Dark);
-    }
-
-    #[test]
-    fn colorfgbg_is_read_when_it_is_there() {
-        assert_eq!(detect_from(Some("15;0")), Variant::Dark);
-        assert_eq!(detect_from(Some("0;15")), Variant::Light);
-        assert_eq!(detect_from(Some("default;7")), Variant::Light);
-        assert_eq!(detect_from(Some("nonsense")), Variant::Dark);
-    }
-
-    #[test]
-    fn the_cursor_sets_both_a_background_and_a_foreground() {
+    fn the_cursor_borrows_both_of_the_terminals_colours() {
         let c = cursor();
-        assert!(c.bg.is_some(), "without a background the row is not a bar");
-        assert!(
-            c.fg.is_some(),
-            "without a foreground the text keeps its own colour"
-        );
+        assert!(c.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(c.fg, None);
+        assert_eq!(c.bg, None);
     }
 }

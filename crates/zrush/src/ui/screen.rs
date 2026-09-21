@@ -317,10 +317,6 @@ fn handle(
             sessions,
         } => purge(app, z, probes, &worktrees, &sessions),
         Action::SwitchAgent(id) => switch_agent(app, z, probes, id),
-        Action::SwitchTheme(name) => {
-            crate::ui::theme::set(crate::ui::theme::parse(&name));
-            app.flash(format!("theme: {name}"));
-        }
     }
     true
 }

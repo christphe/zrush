@@ -90,7 +90,7 @@ Run `zrush` from anywhere inside a repository.
 | `ctrl-p` | purge: mark rows with `space`, `enter` removes the lot |
 | `ctrl-l` | reload |
 | `/` | filter, fuzzy by default. `'sub` `=exact` `^start` `end$` `!not`, as in fzf. A node and its children travel together, so the list stays a tree |
-| `:` | command bar — `:agent`, `:theme`, `:help`, `:q` |
+| `:` | command bar — `:agent`, `:help`, `:q` |
 | `?` | every key, in full |
 | `esc` | close a dialog, leave a mode, or quit |
 
@@ -101,7 +101,6 @@ zrush [OPTIONS] [COMMAND]
 
   -C, --repo <PATH>   use this repo instead of working it out from $PWD
   -a, --agent <ID>    which agent to list; outranks the configured default
-      --theme <NAME>  auto, dark or light; outranks the configured theme
   -l, --list          print the rows and exit, drawing nothing
   -n, --no-sessions   skip the session lookup entirely (faster)
   -S, --no-status     skip the git status column (faster on huge repos)
@@ -202,7 +201,6 @@ resumable_scan = 40                         # newest transcripts examined
 more_step = 20                              # rows added by one [...more]
 title_width = 48                            # truncate session titles here
 preview_turns = 14                          # turns shown in the preview
-theme = "auto"                              # auto | dark | light
 ```
 
 The shell-syntax `config` the previous version sourced is imported once, on
@@ -210,18 +208,19 @@ first run, and left in place.
 
 ### Colours
 
-zrush never paints its own background. k9s does, so that it looks the same
-everywhere; here the terminal's own theme shows through, which is how the
-version this replaced looked at home on whatever you had set. Named ANSI
-colours are used throughout, so a terminal theme has already tuned them.
+zrush never paints its own background, and has no dark or light theme to
+choose between. k9s paints one so it looks the same everywhere; here the
+terminal's own theme shows through, which is how the version this replaced
+looked at home on whatever you had set.
 
-Two choices do depend on which way the background goes — the muted text used
-for labels and paths, and the text on the cursor bar. `auto` reads
-`COLORFGBG` and assumes dark when the terminal says nothing, which most do.
-
-To pick one: `theme = "light"` in the config, `--theme light` for a run,
-`ZRUSH_THEME=light` for a shell, or `:theme` inside the picker, which flips
-between the two so you can see the difference without leaving.
+Every colour is a named ANSI one, which your terminal theme has already tuned
+to be readable on its own background — except the two that cannot be named
+that way, because which name reads depends on which way the background goes:
+`Gray` vanishes on white, `DarkGray` on black. Both are avoided rather than
+chosen between. Muted text is the terminal's own foreground with `DIM`, and
+the cursor bar is `REVERSED`, which swaps the terminal's own two colours.
+Both read on any background by construction, so there is nothing to
+configure.
 
 Cache: `~/.cache/zrush/sessions/`. Derived data only, safe to delete.
 

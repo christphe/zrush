@@ -54,9 +54,6 @@ pub enum Action {
         sessions: Vec<(String, String)>,
     },
     SwitchAgent(String),
-    /// Repaint in the named variant. Nothing is reloaded: only which of two
-    /// colours the muted text uses changes.
-    SwitchTheme(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -725,16 +722,6 @@ impl App {
                 self.modal = Some(Modal::Help);
                 Action::Redraw
             }
-            (Some("theme" | "t"), Some(name)) => Action::SwitchTheme(name.to_string()),
-            (Some("theme" | "t"), None) => {
-                // No argument means flip, which is what comparing them is.
-                let now = crate::ui::theme::variant();
-                let next = match now {
-                    crate::ui::theme::Variant::Dark => "light",
-                    crate::ui::theme::Variant::Light => "dark",
-                };
-                Action::SwitchTheme(next.to_string())
-            }
             (Some("agent" | "a"), Some(name)) => Action::SwitchAgent(name.to_string()),
             // `:agent` on its own offers the list rather than doing nothing.
             (Some("agent" | "a"), None) => {
@@ -1172,34 +1159,6 @@ mod tests {
         assert_eq!(
             a.on_key(code(KeyCode::Enter)),
             Action::SwitchAgent("codex".into())
-        );
-    }
-
-    #[test]
-    fn the_command_bar_sets_a_theme_by_name() {
-        let mut a = app();
-        a.on_key(key(':'));
-        for c in "theme light".chars() {
-            a.on_key(key(c));
-        }
-        assert_eq!(
-            a.on_key(code(KeyCode::Enter)),
-            Action::SwitchTheme("light".into())
-        );
-    }
-
-    #[test]
-    fn the_command_bar_with_no_theme_flips_to_the_other_one() {
-        // Comparing the two is the whole reason to type it.
-        crate::ui::theme::set(crate::ui::theme::Variant::Dark);
-        let mut a = app();
-        a.on_key(key(':'));
-        for c in "theme".chars() {
-            a.on_key(key(c));
-        }
-        assert_eq!(
-            a.on_key(code(KeyCode::Enter)),
-            Action::SwitchTheme("light".into())
         );
     }
 

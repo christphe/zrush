@@ -292,7 +292,13 @@ mod tests {
             l.spans.iter().all(|s| s.style == first),
             "the cursor row is not uniform"
         );
-        assert!(first.bg.is_some());
+        // Reversed, not coloured: it borrows the terminal's own two colours
+        // rather than naming a pair that only reads on one background.
+        assert!(
+            first
+                .add_modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
     }
 
     #[test]
