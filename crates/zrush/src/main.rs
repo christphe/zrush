@@ -1,5 +1,11 @@
 #![forbid(unsafe_code)]
 
 fn main() -> std::process::ExitCode {
-    std::process::ExitCode::SUCCESS
+    match zrush::cli::main() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("zrush: {e}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }

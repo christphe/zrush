@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::agent::{Agent, Scope, Turn};
 use crate::config::{Config, Dirs};
@@ -36,10 +37,13 @@ pub struct Zrush {
     /// It only decides what is *listed*. Opening, resuming and deleting
     /// route through the agent recorded against the session, so a worktree
     /// bound under another agent still resumes correctly.
-    active: usize,
+    /// Interior state: which agent is being looked at changes while the
+    /// interface holds the service through an `Arc`, and changing it
+    /// restructures nothing.
+    active: AtomicUsize,
     /// Several agents are installed and nothing said which to use. The
     /// interface asks before it lists anything.
-    must_choose: bool,
+    must_choose: AtomicBool,
     /// The config named an agent that is not installed here. Not fatal —
     /// a config travels between machines — but never silently swallowed.
     missing_configured: Option<String>,
@@ -77,8 +81,8 @@ impl Zrush {
                 repo,
                 main_root,
                 agents,
-                active: at,
-                must_choose: false,
+                active: AtomicUsize::new(at),
+                must_choose: AtomicBool::new(false),
                 missing_configured: None,
                 host,
             });
@@ -100,8 +104,8 @@ impl Zrush {
             repo,
             main_root,
             agents,
-            active,
-            must_choose,
+            active: AtomicUsize::new(active),
+            must_choose: AtomicBool::new(must_choose),
             missing_configured,
             host,
         })
@@ -127,19 +131,21 @@ impl Zrush {
     /// The agent currently being listed. `None` when no agent is installed:
     /// zrush is still a worktree router, it just has no sessions to show.
     pub fn active_agent(&self) -> Option<&dyn Agent> {
-        self.agents.get(self.active).map(AsRef::as_ref)
+        self.agents
+            .get(self.active.load(Ordering::SeqCst))
+            .map(AsRef::as_ref)
     }
 
     /// Switch which agent the interface lists. Unknown names are refused
     /// rather than silently ignored: it is typed, in a command bar.
-    pub fn set_active_agent(&mut self, id: &str) -> Result<()> {
+    pub fn set_active_agent(&self, id: &str) -> Result<()> {
         let at = self
             .agents
             .iter()
             .position(|a| a.id() == id)
             .ok_or_else(|| ZrushError::msg(format!("no such agent: {id}")))?;
-        self.active = at;
-        self.must_choose = false;
+        self.active.store(at, Ordering::SeqCst);
+        self.must_choose.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -151,7 +157,7 @@ impl Zrush {
 
     /// The interface must ask which agent before listing anything.
     pub fn must_choose_agent(&self) -> bool {
-        self.must_choose
+        self.must_choose.load(Ordering::SeqCst)
     }
 
     /// An agent the config asked for that is not installed here, for the
@@ -567,7 +573,7 @@ mod tests {
     #[test]
     fn switching_to_an_unknown_agent_is_refused() {
         let td = tempfile::TempDir::new().unwrap();
-        let mut z = zrush(&td, scratch(&td));
+        let z = zrush(&td, scratch(&td));
         assert!(z.set_active_agent("no-such-agent").is_err());
         assert_eq!(z.active_agent().map(Agent::id), Some("claude"));
     }
@@ -653,7 +659,7 @@ mod tests {
     #[test]
     fn choosing_settles_the_question() {
         let td = tempfile::TempDir::new().unwrap();
-        let mut z = with(&td, scratch(&td), Config::default(), two(), None);
+        let z = with(&td, scratch(&td), Config::default(), two(), None);
         assert!(z.must_choose_agent());
         z.set_active_agent("stub").unwrap();
         assert!(!z.must_choose_agent());

@@ -5,6 +5,7 @@ pub mod filter;
 pub mod header;
 pub mod modal;
 pub mod preview;
+pub mod screen;
 pub mod table;
 pub mod theme;
 
