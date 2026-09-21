@@ -90,7 +90,7 @@ Run `zrush` from anywhere inside a repository.
 | `ctrl-p` | purge: mark rows with `space`, `enter` removes the lot |
 | `ctrl-l` | reload |
 | `/` | filter, fuzzy by default. `'sub` `=exact` `^start` `end$` `!not`, as in fzf. A node and its children travel together, so the list stays a tree |
-| `:` | command bar — `:agent`, `:help`, `:q` |
+| `:` | command bar — `:agent`, `:theme`, `:help`, `:q` |
 | `?` | every key, in full |
 | `esc` | close a dialog, leave a mode, or quit |
 
@@ -101,6 +101,7 @@ zrush [OPTIONS] [COMMAND]
 
   -C, --repo <PATH>   use this repo instead of working it out from $PWD
   -a, --agent <ID>    which agent to list; outranks the configured default
+      --theme <NAME>  auto, dark or light; outranks the configured theme
   -l, --list          print the rows and exit, drawing nothing
   -n, --no-sessions   skip the session lookup entirely (faster)
   -S, --no-status     skip the git status column (faster on huge repos)
@@ -215,9 +216,12 @@ version this replaced looked at home on whatever you had set. Named ANSI
 colours are used throughout, so a terminal theme has already tuned them.
 
 Two choices do depend on which way the background goes — the muted text used
-for labels and paths, and the text on the cursor bar. `theme` picks; `auto`
-reads `COLORFGBG` and assumes dark when the terminal says nothing, which most
-do.
+for labels and paths, and the text on the cursor bar. `auto` reads
+`COLORFGBG` and assumes dark when the terminal says nothing, which most do.
+
+To pick one: `theme = "light"` in the config, `--theme light` for a run,
+`ZRUSH_THEME=light` for a shell, or `:theme` inside the picker, which flips
+between the two so you can see the difference without leaving.
 
 Cache: `~/.cache/zrush/sessions/`. Derived data only, safe to delete.
 

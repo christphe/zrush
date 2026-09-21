@@ -42,6 +42,16 @@ pub fn set(variant: Variant) {
     VARIANT.store(u8::from(variant == Variant::Light), Ordering::Relaxed);
 }
 
+/// `auto` reads the terminal, anything else is taken at its word. An
+/// unknown name is `auto`: a typo should not force a theme.
+pub fn parse(name: &str) -> Variant {
+    match name.trim().to_lowercase().as_str() {
+        "dark" => Variant::Dark,
+        "light" => Variant::Light,
+        _ => detect(),
+    }
+}
+
 pub fn variant() -> Variant {
     if VARIANT.load(Ordering::Relaxed) == 0 {
         Variant::Dark
@@ -250,6 +260,18 @@ mod tests {
             assert_eq!(style.bg, None, "{what} paints over the terminal background");
         }
         assert!(cursor().bg.is_some());
+    }
+
+    #[test]
+    fn a_name_is_taken_at_its_word() {
+        assert_eq!(parse("light"), Variant::Light);
+        assert_eq!(parse(" DARK "), Variant::Dark);
+    }
+
+    #[test]
+    fn an_unknown_name_falls_back_to_looking_rather_than_guessing() {
+        assert_eq!(parse("solarised"), detect());
+        assert_eq!(parse("auto"), detect());
     }
 
     #[test]
