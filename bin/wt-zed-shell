@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# wt-zed-shell — the shell Zed starts in its terminal panel.
+#
+# Normally it is a no-op: it execs your real login shell straight away.
+# But if `wt` left a one-shot flag for the project directory this terminal
+# opens in, it first runs Claude Code there (resuming the last conversation),
+# then hands the terminal back to your shell.
+#
+# Wire it up in ~/.config/zed/settings.json:
+#   "terminal": { "shell": { "with_arguments": {
+#       "program": "$HOME/.local/bin/wt-zed-shell", "args": [] } } }
+#
+# The flag is a file under ~/.config/wt/pending/, named after the directory,
+# whose content is the mode: continue | resume | new. It holds no secrets and
+# is consumed (deleted) before Claude starts, so it never fires twice.
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wt"
+PENDING_DIR="$CONFIG_DIR/pending"
+STALE_MINUTES=10          # ignore (and clean) flags older than this
+login_shell="${SHELL:-/bin/zsh}"
+
+# Fall back to a plain shell as early as possible on anything unexpected.
+run_shell() { exec "$login_shell" -l; }
+
+[ -d "$PENDING_DIR" ] || run_shell
+command -v claude >/dev/null 2>&1 || run_shell
+
+slug=$(printf '%s' "$PWD" | sed 's/[^A-Za-z0-9]/-/g')
+flag="$PENDING_DIR/$slug"
+[ -f "$flag" ] || run_shell
+
+# Stale flag (Zed opened long after wt ran, or the terminal was never opened):
+# drop it and behave like a normal shell.
+if [ -z "$(find "$flag" -maxdepth 0 -mmin "-$STALE_MINUTES" 2>/dev/null)" ]; then
+  rm -f "$flag"
+  run_shell
+fi
+
+mode=$(cat "$flag" 2>/dev/null)
+rm -f "$flag"                      # one-shot: consume before running anything
+
+case "$mode" in
+  resume) claude --resume ;;
+  new)    claude ;;
+  # Default: continue the most recent conversation of this directory;
+  # if there is none, `claude -c` exits non-zero, so start a fresh session.
+  *)      claude -c || claude ;;
+esac
+
+run_shell

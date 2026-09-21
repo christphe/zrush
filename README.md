@@ -2,7 +2,7 @@
 
 Git worktree switcher for **Zed** + **Claude Code**, driven by `fzf`.
 
-One shell script, no daemon, no state beyond `~/.config/wt/config`. No secrets stored.
+Two shell scripts, no daemon, no state beyond `~/.config/wt/`. No secrets stored.
 
 ## Install
 
@@ -10,8 +10,12 @@ One shell script, no daemon, no state beyond `~/.config/wt/config`. No secrets s
 ./install.sh
 ```
 
-Creates the symlink `~/.local/bin/wt` → `bin/wt` (so `git pull` updates the
-command), `~/.config/wt/config`, and `~/.config/zed/tasks.json` if absent.
+- symlinks `~/.local/bin/wt` and `~/.local/bin/wt-zed-shell` → `bin/*`
+  (so `git pull` updates the commands)
+- creates `~/.config/wt/config` and `~/.config/wt/pending/`
+- installs `~/.config/zed/tasks.json` if absent
+- points Zed's terminal at `wt-zed-shell` in `~/.config/zed/settings.json`
+  (backup kept, diff printed, skipped if a `"terminal"` key already exists)
 
 Dependencies: `git`, `fzf`, `zed`, `claude`. Optional: `jq` (live-session badges).
 
@@ -26,10 +30,11 @@ refreshed list. Only `esc` / `ctrl-c` / `ctrl-q` / `ctrl-y` leave `wt`.
 
 | key | action |
 | --- | --- |
-| `enter` | `zed <path>` |
-| `ctrl-o` | `claude` in that worktree (new session) |
-| `ctrl-r` | `claude --resume` in that worktree (official session picker) |
-| `ctrl-e` | Zed **+** `claude` |
+| `enter` | Zed **+** `claude -c` inside Zed's terminal panel |
+| `ctrl-z` | Zed only |
+| `ctrl-o` | `claude` in the current terminal (new session) |
+| `ctrl-r` | `claude --resume` in the current terminal |
+| `ctrl-e` | Zed **+** `claude` in the current terminal |
 | `ctrl-y` | print the path and exit |
 | `esc` / `ctrl-c` / `ctrl-q` | quit |
 
@@ -37,6 +42,27 @@ Flags: `-C/--repo`, `-p/--print`, `-l/--list`, `-n/--no-sessions`, `-1/--once`, 
 
 Each row shows: branch (plus `[main wt]`, `🔒` locked, `⚠` prunable) · session
 badge · path. The preview pane shows `git status -sb` and the last 10 commits.
+
+## Claude inside Zed's terminal (what `enter` does)
+
+Zed's CLI has no flag to spawn a terminal or a task — `zed --help` only offers
+`-n/-a/-e/-w`, `--diff`, `--dev-container`. So `wt` goes through the shell Zed
+starts in its terminal panel:
+
+1. `wt` writes a one-shot flag `~/.config/wt/pending/<sanitized-path>`
+   containing a mode (`continue` by default), then runs `zed <path>`.
+2. Zed's terminal runs `wt-zed-shell` (set in `~/.config/zed/settings.json`).
+3. The wrapper looks for a flag matching its `$PWD`. Found and fresh
+   (< 10 min) → it deletes it, runs `claude -c` (falling back to a new session
+   when the worktree has no conversation yet), then execs your login shell.
+   No flag → it execs your login shell immediately, so every other terminal
+   behaves exactly as before.
+
+**Press `ctrl-`` once** in a freshly opened worktree to show the terminal panel.
+Zed remembers the panel per project, so the next `enter` on that worktree opens
+Zed with Claude already running.
+
+Modes the flag understands: `continue` (default), `resume`, `new`.
 
 ### Session badges
 
@@ -48,9 +74,9 @@ badge · path. The preview pane shows `git status -sb` and the last 10 commits.
   `claude --resume`, which shows the real picker.
 - Without `jq`, live badges are skipped and everything else still works.
 
-## Zed integration
+## Zed tasks
 
-`~/.config/zed/tasks.json` gets two tasks:
+`~/.config/zed/tasks.json` carries two tasks:
 
 - **wt: worktrees (global)** — repo detected from the terminal's cwd
 - **wt: worktrees (this project)** — `wt --repo $ZED_WORKTREE_ROOT`

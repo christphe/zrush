@@ -5,10 +5,14 @@
 # The picker LOOPS: after Zed opens, or after you quit claude, you land back on
 # the (refreshed) list. Esc / ctrl-c / ctrl-q leaves wt.
 #
-#   enter    open worktree in Zed
-#   ctrl-o   run `claude` in the worktree (new session)
-#   ctrl-r   run `claude --resume` in the worktree (official session picker)
-#   ctrl-e   open in Zed *and* run claude
+#   enter    open the worktree in Zed, with Claude Code resuming its last
+#            conversation inside Zed's terminal panel (needs wt-zed-shell,
+#            see install.sh -- press ctrl-` once per worktree, Zed then
+#            reopens the panel by itself)
+#   ctrl-z   open in Zed only, no Claude
+#   ctrl-o   run `claude` here, in the current terminal (new session)
+#   ctrl-r   run `claude --resume` here, in the current terminal
+#   ctrl-e   open in Zed *and* run claude in the current terminal
 #   ctrl-y   print the path and exit  (e.g.  cd "$(wt -p)" )
 #
 # Deps: git, fzf, zed, claude. Optional: jq (live-session badges).
@@ -22,6 +26,7 @@ IFS=$'\n\t'
 PROG=${0##*/}
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wt"
 CONFIG_FILE="$CONFIG_DIR/config"
+PENDING_DIR="$CONFIG_DIR/pending"
 CLAUDE_PROJECTS="$HOME/.claude/projects"
 
 # ---------------------------------------------------------------- helpers ---
@@ -43,10 +48,11 @@ usage: $PROG [options]
   -h, --help          this help
 
 keys inside fzf:
-  enter    open in Zed             (then back to the list)
-  ctrl-o   claude                  (new session; back to the list when you quit)
-  ctrl-r   claude --resume         (existing sessions of that worktree)
-  ctrl-e   Zed + claude
+  enter    Zed + claude -c in Zed's terminal   (then back to the list)
+  ctrl-z   Zed only
+  ctrl-o   claude here             (new session; back to the list when you quit)
+  ctrl-r   claude --resume here    (existing sessions of that worktree)
+  ctrl-e   Zed + claude here
   ctrl-y   print path and exit
   esc / ctrl-c / ctrl-q            quit wt
 EOF
@@ -73,7 +79,7 @@ done
 for c in git fzf; do have "$c" || die "missing dependency: $c"; done
 
 # ---------------------------------------------------------------- config ----
-mkdir -p "$CONFIG_DIR"
+mkdir -p "$CONFIG_DIR" "$PENDING_DIR"
 WT_DEFAULT_REPO=""
 # shellcheck disable=SC1090
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
@@ -183,6 +189,16 @@ open_zed() {  # $1 = worktree path
   zed "$1" || warn "zed failed to open $1"
 }
 
+# Leave a one-shot flag that wt-zed-shell picks up the next time a Zed
+# terminal opens in that directory. Content = mode (continue|resume|new).
+# No secrets; consumed and deleted by the wrapper.
+arm_zed_claude() {  # $1 = worktree path, $2 = mode
+  local slug
+  slug=$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')
+  printf '%s\n' "$2" > "$PENDING_DIR/$slug" 2>/dev/null \
+    || warn "could not write the Claude flag for $1"
+}
+
 # Run claude in a subshell: wt keeps its own cwd and regains control on quit.
 run_claude() {  # $1 = worktree path, rest = extra claude args
   local p="$1"; shift
@@ -205,8 +221,8 @@ while :; do
         --delimiter=$'\t' --with-nth=1 \
         --height=80% --reverse --border \
         --prompt="worktree> " \
-        --header=$'enter: Zed  |  ctrl-o: claude  |  ctrl-r: resume  |  ctrl-e: Zed+claude  |  ctrl-y: path  |  esc: quit' \
-        --expect=ctrl-o,ctrl-r,ctrl-e,ctrl-y,ctrl-q \
+        --header=$'enter: Zed + claude -c inside Zed  |  ctrl-z: Zed only  |  ctrl-o: claude here  |  ctrl-r: resume here  |  ctrl-y: path  |  esc: quit' \
+        --expect=ctrl-z,ctrl-o,ctrl-r,ctrl-e,ctrl-y,ctrl-q \
         --preview='git -C {2} status --short --branch 2>/dev/null | head -15; echo; git -C {2} log --oneline --decorate -n 10 2>/dev/null' \
         --preview-window=right:50%:wrap \
         < "$menu"
@@ -230,10 +246,12 @@ while :; do
 
   case "$key" in
     ctrl-y) printf '%s\n' "$path"; break ;;
+    ctrl-z) open_zed "$path" ;;
     ctrl-o) run_claude "$path" ;;
     ctrl-r) run_claude "$path" --resume ;;
     ctrl-e) open_zed "$path"; run_claude "$path" ;;
-    *)      open_zed "$path" ;;
+    # enter: Claude runs *inside* Zed's terminal, via the wt-zed-shell flag.
+    *)      arm_zed_claude "$path" continue; open_zed "$path" ;;
   esac
 
   [ "$LOOP" -eq 1 ] || break
