@@ -15,12 +15,12 @@
 # The picker LOOPS: after Zed opens, or after you quit claude, you land back on
 # the (refreshed) list. Esc / ctrl-c / ctrl-q leaves zrush.
 #
-#   enter    on a WORKTREE  drop its session association, then open the editor
-#                           -> zrush_session starts a fresh Claude there
+#   enter    on a WORKTREE  always a new session: drop the association, open
+#                           the editor, zrush_session starts a fresh Claude
 #            on a SESSION   write that session id, then open the editor
 #                           -> zrush_session resumes it
 #            on [...more]   load more of that worktree's older sessions
-#   ctrl-o   run `claude` here, in the current terminal (new session)
+#   ctrl-o   start a new `claude` session for the worktree, in a new terminal
 #   ctrl-w   create a worktree; on a session row, bind that session to it
 #   ctrl-d   on a SESSION delete that conversation; on a WORKTREE remove it,
 #            and optionally delete the sessions that belong to it
@@ -35,6 +35,7 @@
 #           ZRUSH_DEFAULT_REPO="/path/to/main/repo"   # used when cwd is not a git repo
 #           ZRUSH_EDITOR=zed|cursor|code              # editor `enter` opens
 #           ZRUSH_EDITOR_CMD=(code --reuse-window)     # or the whole command line
+#           ZRUSH_TERMINAL=(open -a Ghostty)        # how ctrl-o opens a terminal
 #           ZRUSH_TITLES=0                            # skip the transcript probe
 #           ZRUSH_STATUS=0                            # skip the git status column
 #           ZRUSH_RESUMABLE_MAX=5                     # dead sessions listed per worktree
@@ -86,12 +87,13 @@ usage: $PROG [options]
   -h, --help          this help
 
 keys inside fzf:
-  enter    worktree: clear its session, open the editor (zrush_session starts a
-                     new Claude session there)
+  enter    worktree: always a new session -- open the editor, zrush_session
+                     starts a fresh Claude there
            session:  bind it to the worktree, open the editor (zrush_session
                      resumes it)
            [...more]: load more of that worktree's older sessions
-  ctrl-o   run claude here, in this terminal
+  ctrl-o   start a NEW claude session for this worktree, in its own terminal
+           (association and editor untouched)
   ctrl-w   create a worktree; on a session row, bind that session to it
   ctrl-d   on a session: delete that conversation
            on a worktree: remove it, and optionally delete its sessions
@@ -147,6 +149,11 @@ ZRUSH_DEFAULT_REPO="${ZRUSH_DEFAULT_REPO:-}"
 # ZRUSH_EDITOR_CMD overrides the whole command line, e.g. (code --reuse-window).
 ZRUSH_EDITOR="${ZRUSH_EDITOR:-zed}"
 declare -a ZRUSH_EDITOR_CMD=()
+# How ctrl-o opens a terminal for a new Claude session. Empty means `open`,
+# which hands the script to whatever app owns .command files -- Terminal.app
+# unless you point that at iTerm yourself. Anything else is run with the
+# script appended: (open -a Ghostty), (wezterm start), ...
+declare -a ZRUSH_TERMINAL=()
 # Defaults, overridable from the environment, then from the config file.
 ZRUSH_TITLES="${ZRUSH_TITLES:-1}"             # 0 disables the transcript probe
 ZRUSH_STATUS="${ZRUSH_STATUS:-1}"             # 0 disables the per-worktree git status
@@ -169,6 +176,13 @@ if [ "${#ZRUSH_EDITOR_CMD[@]}" -eq 1 ]; then
     *[[:space:]]*) IFS=$' \t\n' read -r -a ZRUSH_EDITOR_CMD <<<"${ZRUSH_EDITOR_CMD[0]}" ;;
   esac
 fi
+if [ "${#ZRUSH_TERMINAL[@]}" -eq 1 ]; then
+  case "${ZRUSH_TERMINAL[0]}" in
+    *[[:space:]]*) IFS=$' \t\n' read -r -a ZRUSH_TERMINAL <<<"${ZRUSH_TERMINAL[0]}" ;;
+  esac
+fi
+[ "${#ZRUSH_TERMINAL[@]}" -gt 0 ] && [ -n "${ZRUSH_TERMINAL[0]}" ] || ZRUSH_TERMINAL=(open)
+
 if [ "${#ZRUSH_EDITOR_CMD[@]}" -eq 0 ] || [ -z "${ZRUSH_EDITOR_CMD[0]}" ]; then
   case "$ZRUSH_EDITOR" in
     # -n on all three: a worktree nested inside another one is otherwise
@@ -848,11 +862,36 @@ EOF
   return 0
 }
 
-# Run claude in a subshell: zrush keeps its own cwd and regains control on quit.
-run_claude() {  # $1 = worktree path, rest = extra claude args
+# Start claude in a terminal of its own and come straight back to the picker.
+#
+# macOS has no way to hand a command to a specific terminal without
+# AppleScript, but `open` on an executable *.command file starts whichever app
+# owns that file type and runs it. So: write a throwaway script, open it, let
+# it delete itself when claude exits.
+#
+# The script also drops the CLAUDE_CODE_* markers, for the case where
+# ZRUSH_TERMINAL is a real command that inherits this environment rather than
+# `open`, which starts from a clean one.
+run_claude_term() {  # $1 = worktree path, rest = extra claude args
   local p="$1"; shift
   have claude || { warn "claude CLI not found"; return 1; }
-  ( cd "$p" && claude "$@" )
+  local cbin dir script
+  cbin=$(command -v claude) || return 1
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/zrush-term.XXXXXX") || { warn "mktemp failed"; return 1; }
+  script="$dir/session.command"
+  {
+    printf '#!/bin/sh\n'
+    printf 'unset CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID \\\n'
+    printf '      CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_MESSAGING_SOCKET \\\n'
+    printf '      CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_ENTRYPOINT \\\n'
+    printf '      CLAUDE_PID CLAUDECODE CLAUDE_EFFORT AI_AGENT\n'
+    printf 'cd %q || exit 1\n' "$p"
+    printf '%q' "$cbin"; [ "$#" -gt 0 ] && printf ' %q' "$@"; printf '\n'
+    printf 'rm -rf %q\n' "$dir"
+  } > "$script" || { rm -rf "$dir"; return 1; }
+  chmod +x "$script"
+  "${ZRUSH_TERMINAL[@]}" "$script" \
+    || { warn "${ZRUSH_TERMINAL[0]} could not open a terminal"; rm -rf "$dir"; return 1; }
 }
 
 # --menu: print the menu once, for fzf's reload binding, and leave.
@@ -1052,7 +1091,7 @@ while :; do
         open_editor "$newp"
       fi
       ;;
-    ctrl-o) run_claude "$path" ;;
+    ctrl-o) run_claude_term "$path" ;;
     ctrl-d)
       if [ "$rtype" = "session" ]; then
         title=$(awk -F'\t' -v i="$sessid" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
@@ -1063,8 +1102,9 @@ while :; do
         delete_worktree "$path" && cursor_key=""
       fi
       ;;
-    # enter: set (or drop) the worktree's session, then let Zed's zrush_session
-    # terminal do the actual resuming.
+    # enter: a WORKTREE always means a new session -- the association is
+    # dropped, and zrush_session starts a fresh claude. A SESSION means resume
+    # that one: its id is written down for zrush_session to pick up.
     *)
       if [ "$rtype" = "session" ] && [ -n "$sessid" ]; then
         state_write "$path" "$sessid"

@@ -55,8 +55,8 @@ they go through its `reload`, so they redraw instead of restarting the picker.
 
 | key | on a **worktree** row | on a **session** row |
 | --- | --- | --- |
-| `enter` | drop the association, open the editor → `zrush_session` starts a fresh session | bind that session, open the editor → `zrush_session` resumes it |
-| `ctrl-o` | `claude` in this terminal (new session) | — |
+| `enter` | **always a new session**: open the editor, `zrush_session` starts a fresh Claude | resume that one: its id is written down, the editor opens, `zrush_session` picks it up |
+| `ctrl-o` | a new session in a terminal of its own, association untouched | same, for that session's worktree |
 | `ctrl-w` | create a worktree | create a worktree **and bind this session to it** |
 | `ctrl-d` | remove the worktree, optionally delete its sessions | delete that one conversation |
 | `ctrl-l` | reload the list | |
@@ -253,6 +253,44 @@ To bind a key, add to `~/.config/zed/keymap.json`:
   }
 ]
 ```
+
+## Worktree or session
+
+The two row kinds mean two different things, and nothing in between:
+
+- a **worktree** row is always "start fresh here". `enter` opens the editor and
+  `zrush_session` runs a plain `claude`; `ctrl-o` does the same in a terminal
+  of its own, without touching the editor or the association.
+- a **session** row is "go back to this one". `enter` writes its id and the
+  editor's terminal resumes it.
+
+Nothing needs to be declared for a session to belong to a worktree. Claude
+Code records a `cwd` in the transcript and follows it, so a session that
+creates a worktree and moves into it is filed under that worktree on its own —
+57 of 126 transcripts here have changed directory at least once, most of them
+from the repo root into `.claude/worktrees/…`. Ask a session to make a
+worktree for a pull request and it shows up under the new one by itself.
+
+## Terminals
+
+`ctrl-o` starts a session in a terminal of its own and hands you straight back
+to the picker. macOS offers no way to give a command to a specific terminal
+without AppleScript, so `zrush` writes a throwaway `*.command` script and runs
+`open` on it: whichever app owns that file type runs it, and the script deletes
+itself when Claude exits. That is Terminal.app unless you point `.command`
+files at iTerm yourself (Finder → Get Info → Open with → Change All).
+
+`ZRUSH_TERMINAL` replaces the whole thing if you would rather not go through
+`open`:
+
+```sh
+ZRUSH_TERMINAL=(open -a Ghostty)
+ZRUSH_TERMINAL=(wezterm start --cwd)
+```
+
+The script clears the `CLAUDE_CODE_*` markers for the same reason
+`zrush_session` does, which matters when `ZRUSH_TERMINAL` is a real command
+inheriting this environment rather than `open`, which starts from a clean one.
 
 ## Editors
 
