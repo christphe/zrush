@@ -85,6 +85,10 @@ they go through its `reload`, so they redraw instead of restarting the picker.
 | `ctrl-d` | remove the worktree, optionally delete its sessions | delete that one conversation |
 | `ctrl-l` | reload the list | |
 | `←` / `→` | fold / unfold its rows | `←` folds the parent worktree |
+
+On an **orphaned** session row — one whose worktree is gone — `enter` and
+`ctrl-w` both create a worktree and hand the session to it, and `ctrl-o`
+refuses for lack of one.
 | `esc` / `ctrl-c` / `ctrl-q` | quit | |
 
 `enter` on a `[…more]` row loads more of that worktree's older sessions.
@@ -175,8 +179,13 @@ session. Running `zrush_session` by hand is the lighter option.
 
 Each row carries how long ago the session was last touched — `40m`, `6h`, `3d`,
 `5mo` — and under a worktree they are sorted **newest first**, running and
-resumable interleaved. Age comes from `startedAt` for a running session and
-from the transcript's mtime for a resumable one.
+resumable interleaved.
+
+That age is the timestamp of the **last entry in the transcript**, not the
+file's mtime. Claude Code rewrites transcripts in batches: ten conversations
+from different days can end up sharing one mtime to the minute, which made
+everything read as the same age. A running session falls back to `startedAt`,
+and a transcript with no parsable timestamp falls back to its mtime.
 
 **`●` running.** From `claude agents --json --all`, the official scriptable
 listing, matched to a worktree by the longest prefix of their `cwd`. That
@@ -261,6 +270,31 @@ directory it was **launched** from, which is not always where it runs — a
 `claude --worktree` session lives in the worktree but is filed under its parent.
 So `zrush_session` looks the id up across every project dir rather than guessing
 one. `claude --resume <id>` itself works from any directory.
+
+## Orphaned sessions
+
+A session whose worktree has been deleted still names it in its transcript.
+Since `<repo>/.claude/worktrees/<gone>` is under `<repo>`, longest-prefix
+matching would file it under the main worktree, among its hundred others. It
+goes under an **orphaned sessions** node instead, each row naming the worktree
+it was written for:
+
+```
+▾ orphaned sessions                                ◌ 6        worktree gone
+   ├─ ● Grafana MCP                       idle 2h        pr-736
+   ├─ ◌ Sync investigation                resumable 4d   chk-1574
+   └─ ◌ Last container PR                 resumable 4d   bin-search
+```
+
+`enter` or `ctrl-w` on one asks for a branch name, creates the worktree and
+hands the session to it. It leaves the orphan list once the session actually
+runs there and records the new directory. `ctrl-d` deletes the conversation.
+`ctrl-o` refuses: there is no worktree to start anything in.
+
+Only paths inside this repository become orphans. A session from another
+repository is not ours to show, and a worktree that lived beside the repo
+rather than under `.claude/worktrees/` cannot be told apart from any other
+directory once it is gone.
 
 ## Worktree or session
 

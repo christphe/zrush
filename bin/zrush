@@ -231,6 +231,8 @@ git -C "$repo_dir" rev-parse --git-dir >/dev/null 2>&1 || die "not a git reposit
 main_root=$(git -C "$repo_dir" worktree list --porcelain | awk '/^worktree /{sub(/^worktree /,""); print; exit}')
 # New worktrees land beside the ones `claude --worktree` makes.
 new_root="$main_root/.claude/worktrees"
+# Stands in for a worktree in the rows: it can never be a real path.
+ORPHANS="(orphaned)"
 
 # A child spawned by a reload binding is handed the parent's state directory
 # and must not delete it; only the process that created it cleans up.
@@ -378,11 +380,17 @@ session_meta_file() {  # $1 = path, $2 = id, [$3 = mtime]  ->  "<title>\t<cwd>"
     return 0
   fi
 
+  # Also the timestamp of the last entry. A transcript's mtime is useless as
+  # an age: Claude Code rewrites them in batches, so ten conversations from
+  # different days end up sharing one mtime to the minute.
   meta=$(jq -Rr 'fromjson? // empty
-                 | select(.aiTitle != null or .cwd != null)
-                 | [(.aiTitle // ""), (.cwd // "")] | @tsv' < "$blob" 2>/dev/null \
-    | awk -F'\t' '{ if ($1 != "") t = $1; if ($2 != "") c = $2 }
-                  END { gsub(/\t/, " ", t); printf "%s\t%s", t, c }')
+                 | select(.aiTitle != null or .cwd != null or .timestamp != null)
+                 | [(.aiTitle // ""), (.cwd // ""),
+                    ((.timestamp // "") | if . == "" then "" else
+                       (sub("\\.[0-9]+Z$"; "Z") | try fromdateiso8601 catch "") end | tostring)]
+                 | @tsv' < "$blob" 2>/dev/null \
+    | awk -F'\t' '{ if ($1 != "") t = $1; if ($2 != "") c = $2; if ($3 != "") s = $3 }
+                  END { gsub(/\t/, " ", t); printf "%s\t%s\t%s", t, c, s }')
 
   # The title is written once, early, so a long conversation pushes it out of
   # the tail window -- 7 of 125 transcripts here. Fall back to grepping the
@@ -409,13 +417,14 @@ refresh_sessions() {
   : > "$sessions_file"
   [ "$WANT_SESSIONS" -eq 1 ] || return 0
   have claude && have jq || return 0
-  local id cwd name status started meta title ecwd
+  local id cwd name status started meta title ecwd rest lastts
   while IFS=$'\t' read -r cwd id name status started; do  # cwd, id, name, status, startedAt
     [ -n "$id" ] || continue
-    title=""; ecwd=""
+    title=""; ecwd=""; lastts=""
     if meta=$(session_meta "$id" "$cwd"); then
       title=${meta%%$'\t'*}
-      ecwd=${meta#*$'\t'}
+      rest=${meta#*$'\t'}; ecwd=${rest%%$'\t'*}; lastts=${rest#*$'\t'}
+      case "$lastts" in ''|*[!0-9]*) lastts="" ;; esac
     fi
     # A name you set with `claude -n` beats the title Claude generated for
     # itself. Auto-generated names look like "<dir>-<2 hex>" (wms-e8, 2346-06),
@@ -430,6 +439,9 @@ refresh_sessions() {
     if [ "${#title}" -gt "$ZRUSH_TITLE_WIDTH" ]; then
       title="${title:0:$((ZRUSH_TITLE_WIDTH - 1))}…"
     fi
+    # The last message beats the process start time: a session idle since
+     # yesterday should not read as "0m" because you just reopened it.
+    [ -n "$lastts" ] && started="$lastts"
     [ "${started:-0}" -gt 0 ] 2>/dev/null && status="$status $(age_of "$started")"
     printf '%s\t%s\t%s\t%s\t%s\tlive\t%s\n' \
       "$ecwd" "$id" "$title" "$status" "$cwd" "${started:-0}" >> "$sessions_file"
@@ -454,7 +466,8 @@ assign_sessions() {
   : > "$owned_file"
   [ -s "$sessions_file" ] && [ -s "$wtlist" ] || return 0
   awk -F'\t' -v OFS='\t' -v maxr="${ZRUSH_RESUMABLE_MAX:-0}" \
-      -v ef="$expand_file" -v wl="$wtlist" -v cf="$counts_file" '
+      -v ef="$expand_file" -v wl="$wtlist" -v cf="$counts_file" \
+      -v nr="$new_root" -v orph="$ORPHANS" -v mr="$main_root" '
     function owner(cwd,   i, p, l, best, bl) {
       best = ""; bl = 0
       for (i = 1; i <= nwt; i++) {
@@ -463,19 +476,45 @@ assign_sessions() {
       }
       return best
     }
+    function islive(p,   i) {
+      for (i = 1; i <= nwt; i++) if (wp[i] == p) return 1
+      return 0
+    }
+    # The worktree a path was *meant* for, when that worktree is gone. A
+    # deleted <main>/.claude/worktrees/<name> still has <main> as a prefix, so
+    # owner() would quietly file the session under the main worktree with the
+    # other hundred. Name the dead one instead.
+    function dead(cwd,   rest, seg) {
+      if (substr(cwd, 1, length(nr) + 1) != nr "/") return ""
+      rest = substr(cwd, length(nr) + 2)
+      seg = rest; sub(/\/.*$/, "", seg)
+      if (seg == "" || islive(nr "/" seg)) return ""
+      return seg
+    }
+    function base(p) { sub(/\/$/, "", p); sub(/^.*\//, "", p); return p }
     FILENAME == ef { lim[$1] = $2 + 0; next }          # per-worktree overrides
     FILENAME == wl { wp[++nwt] = $2; next }
     {
-      o = owner($1)
-      if (o == "") o = owner($5)
-      if (o == "") next
+      from = dead($1)
+      if (from != "") {
+        o = orph
+      } else {
+        o = owner($1)
+        if (o == "") o = owner($5)
+        # Only paths inside this repo become orphans; a session from another
+        # repository is simply not ours to show.
+        if (o == "") {
+          if (substr($1, 1, length(mr) + 1) == mr "/") { o = orph; from = base($1) }
+          else next
+        }
+      }
       if ($6 == "resum") {
         total[o]++
         cap = (o in lim) ? lim[o] : maxr
         if (total[o] > cap) next
         shown[o]++
       }
-      print o, $2, $3, $4, $6
+      print o, $2, $3, $4, $6, from
     }
     END {
       for (o in total) print o, total[o], shown[o] + 0 > cf
@@ -558,7 +597,7 @@ refresh_resumable() {
   have jq || return 0
 
   local -a dirs=()
-  local d p f id meta title ecwd mt scan seen
+  local d p f id meta title ecwd mt ts rest scan seen
   # Project dirs that can hold this repo's sessions: the main worktree's slug
   # and everything filed under it (linked worktrees, `claude --worktree`),
   # plus each worktree's own slug for worktrees kept outside the repo.
@@ -589,7 +628,9 @@ refresh_resumable() {
     is_uuid "$id" || continue
     case " $seen " in *" $id "*) continue ;; esac
     meta=$(session_meta_file "$f" "$id" "m$mt") || continue
-    title=${meta%%$'\t'*}; ecwd=${meta#*$'\t'}
+    title=${meta%%$'\t'*}
+    rest=${meta#*$'\t'}; ecwd=${rest%%$'\t'*}; ts=${rest#*$'\t'}
+    case "$ts" in ''|*[!0-9]*) ts="$mt" ;; esac
     [ -n "$ecwd" ] || continue
     [ -n "$title" ] || title="${id:0:8}"
     if [ "${#title}" -gt "$ZRUSH_TITLE_WIDTH" ]; then
@@ -597,7 +638,7 @@ refresh_resumable() {
     fi
     seen="$seen $id"
     printf '%s\t%s\t%s\tresumable %s\t%s\tresum\t%s\n' \
-      "$ecwd" "$id" "$title" "$(age_of "${mt:-0}")" "$ecwd" "${mt:-0}" >> "$sessions_file"
+      "$ecwd" "$id" "$title" "$(age_of "${ts:-0}")" "$ecwd" "${ts:-0}" >> "$sessions_file"
   done < <(mtime_list "${dirs[@]}" | sort -rn | head -n "$scan")
 }
 
@@ -654,7 +695,7 @@ build_menu() {
   assign_sessions
 
   local -a r_type=() r_path=() r_id=() r_c1=() r_c2=() r_c3=()
-  local label path n i id name status kind dot mark tree hidden fold _owner
+  local label path n i id name status kind origin dot mark tree hidden fold _owner
 
   while IFS=$'\t' read -r label path; do
     [ -n "$path" ] || continue
@@ -678,7 +719,7 @@ build_menu() {
     [ "${n:-0}" -gt 0 ] || continue
     is_collapsed "$path" && continue
     i=0
-    while IFS=$'\t' read -r _owner id name status kind; do
+    while IFS=$'\t' read -r _owner id name status kind origin; do
       i=$((i+1))
       if [ "$i" -eq "$n" ] && [ "$hidden" -eq 0 ]; then tree="└─"; else tree="├─"; fi
       # ● running, ◌ resumable but not running
@@ -693,6 +734,36 @@ build_menu() {
       r_c1+=("   └─ […more]"); r_c2+=("+$hidden older"); r_c3+=("")
     fi
   done < "$wtlist"
+
+  # Sessions whose worktree is gone. They would otherwise land under the main
+  # worktree by prefix and vanish among its hundred, so they get their own
+  # node and each row says which worktree it was written for.
+  n=$(awk -F'\t' -v p="$ORPHANS" '$1==p{n++} END{print n+0}' "$owned_file" 2>/dev/null)
+  if [ "${n:-0}" -gt 0 ]; then
+    hidden=$(awk -F'\t' -v p="$ORPHANS" '$1==p{print ($2+0)-($3+0); exit}' "$counts_file" 2>/dev/null)
+    [ "${hidden:-0}" -gt 0 ] || hidden=0
+    if is_collapsed "$ORPHANS"; then fold="▸ "; else fold="▾ "; fi
+
+    r_type+=("orphans"); r_path+=("$ORPHANS"); r_id+=("")
+    r_c1+=("${fold}orphaned sessions"); r_c2+=("◌ $n"); r_c3+=("")
+
+    if ! is_collapsed "$ORPHANS"; then
+      i=0
+      while IFS=$'\t' read -r _owner id name status kind origin; do
+        i=$((i+1))
+        if [ "$i" -eq "$n" ] && [ "$hidden" -eq 0 ]; then tree="└─"; else tree="├─"; fi
+        [ "$kind" = "live" ] && dot="●" || dot="◌"
+        mark="$status"
+        [ -n "$origin" ] && mark="$mark  $origin"
+        r_type+=("orphan"); r_path+=("$ORPHANS"); r_id+=("$id")
+        r_c1+=("   $tree $dot $name"); r_c2+=("$mark"); r_c3+=("")
+      done < <(awk -F'\t' -v p="$ORPHANS" '$1==p' "$owned_file")
+      if [ "$hidden" -gt 0 ]; then
+        r_type+=("more"); r_path+=("$ORPHANS"); r_id+=("")
+        r_c1+=("   └─ […more]"); r_c2+=("+$hidden older"); r_c3+=("")
+      fi
+    fi
+  fi
 
   # Last row: create a worktree. No path, so every consumer keys off type.
   r_type+=("new"); r_path+=(""); r_id+=("")
@@ -709,8 +780,10 @@ build_menu() {
   for k in "${!r_c1[@]}"; do
     case "${r_type[$k]}" in
       wt)  col=$'\033[1;36m'; loc="${r_path[$k]}" ;;
-      new)  col=$'\033[1;32m'; loc="$new_root/<name>" ;;
-      more) col=$'\033[2;35m'; loc="" ;;
+      new)     col=$'\033[1;32m'; loc="$new_root/<name>" ;;
+      more)    col=$'\033[2;35m'; loc="" ;;
+      orphans) col=$'\033[1;31m'; loc="worktree gone" ;;
+      orphan)  col=$'\033[0;35m'; loc="" ;;
       *)   col=$'\033[0;35m'; loc="" ;;
     esac
     printf '%s%s\033[0m  \033[33m%s\033[0m  \033[0;32m%s\033[0m  \033[2m%s\033[0m\t%s\t%s\t%s\n' \
@@ -812,8 +885,11 @@ delete_session() {  # $1 = id, $2 = worktree path, $3 = title, $4 = kind
     return 1
   fi
   # Drop the association if this worktree pointed at the session just deleted.
-  bound=$(state_read "$p" 2>/dev/null) || bound=""
-  [ "$bound" = "$id" ] && state_clear "$p"
+  # An orphan has no worktree, so there is nothing to clear.
+  if [ -n "$p" ] && [ -d "$p" ]; then
+    bound=$(state_read "$p" 2>/dev/null) || bound=""
+    [ "$bound" = "$id" ] && state_clear "$p"
+  fi
   printf '%s: deleted %s file(s) for %s\n' "$PROG" "$gone" "${id:0:8}" >&2
   return 0
 }
@@ -934,6 +1010,10 @@ if [ "$MENU_ONLY" -eq 1 ]; then
   pos_of() {  # $1 = worktree path, $2 = row type
     awk -F'\t' -v p="$1" -v t="$2" '$2==p && $3==t {print NR; exit}' "$menu"
   }
+  pos_node() {  # the worktree row, or the orphaned-sessions node
+    local at; at=$(pos_of "$1" wt); [ -n "$at" ] || at=$(pos_of "$1" orphans)
+    printf '%s' "$at"
+  }
   if [ "$RENDER_ONLY" -eq 1 ]; then
     # State built by the parent: only lay the rows out again. `more` still
     # needs the transcript scan, the rest costs one `git worktree list`.
@@ -943,14 +1023,14 @@ if [ "$MENU_ONLY" -eq 1 ]; then
     build_menu full
   fi
   for _p in "$FOLD_PATH" "$UNFOLD_PATH"; do
-    [ -n "$_p" ] && pos_of "$_p" wt > "$tmpdir/pos"
+    [ -n "$_p" ] && pos_node "$_p" > "$tmpdir/pos"
   done
   if [ -n "$MORE_PATH" ]; then
     # Once everything is unfolded the "[...more]" row is gone; park the cursor
     # on the worktree rather than on its last session, so the next enter does
     # not silently bind a session nobody aimed at.
     _at=$(pos_of "$MORE_PATH" more)
-    [ -n "$_at" ] || _at=$(pos_of "$MORE_PATH" wt)
+    [ -n "$_at" ] || _at=$(pos_node "$MORE_PATH")
     [ -n "$_at" ] && printf '%s' "$_at" > "$tmpdir/pos"
   fi
   cat "$menu"
@@ -1085,6 +1165,34 @@ while :; do
       next_build=more          # first unfold: scan the transcripts uncapped
       scanned_all=1
     fi
+    [ "$LOOP" -eq 1 ] || break
+    continue
+  fi
+
+  # Orphan rows: the node itself does nothing, and a session under it has no
+  # worktree to act in. The one useful move is to give it one.
+  if [ "$rtype" = "orphans" ]; then
+    [ "$LOOP" -eq 1 ] || break
+    continue
+  fi
+  if [ "$rtype" = "orphan" ]; then
+    case "$key" in
+      ctrl-d)
+        title=$(awk -F'\t' -v i="$sessid" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
+        kind=$(awk -F'\t' -v i="$sessid" '$2==i{print $5; exit}' "$owned_file" 2>/dev/null)
+        delete_session "$sessid" "" "${title:-${sessid:0:8}}" "$kind" || true
+        ;;
+      ctrl-o)
+        warn "that session's worktree is gone; ctrl-w gives it a new one"
+        ;;
+      *)  # enter and ctrl-w both mean: make it a worktree and hand it over
+        if newp=$(create_worktree) && [ -n "$newp" ]; then
+          state_write "$newp" "$sessid"
+          cursor_key=$(printf '%s\t%s\t' "$newp" "wt")
+          open_editor "$newp"
+        fi
+        ;;
+    esac
     [ "$LOOP" -eq 1 ] || break
     continue
   fi
