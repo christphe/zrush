@@ -116,7 +116,7 @@ const HELP: &[(&str, &str)] = &[
     ("ctrl-d", "delete a session, or remove a worktree"),
     ("ctrl-p", "purge: mark rows with space, enter to remove"),
     ("ctrl-l", "reload"),
-    ("/", "filter"),
+    ("/", "filter — substring; ~ for fuzzy"),
     (":", "command bar — :agent, :help, :q"),
     ("?", "this"),
     ("esc", "close, or quit"),

@@ -89,7 +89,7 @@ Run `zrush` from anywhere inside a repository.
 | `ctrl-d` | delete a conversation, or remove a worktree |
 | `ctrl-p` | purge: mark rows with `space`, `enter` removes the lot |
 | `ctrl-l` | reload |
-| `/` | fuzzy filter. A matching session keeps its worktree, so the list stays a tree |
+| `/` | filter. Substring by default, `~needle` for fuzzy. Smart case. A node and its children travel together, so the list stays a tree |
 | `:` | command bar — `:agent`, `:help`, `:q` |
 | `?` | every key, in full |
 | `esc` | close a dialog, leave a mode, or quit |
@@ -139,6 +139,16 @@ only the newest `resumable_scan` files are examined, and at most
 
 Nothing here is ever used to resume: the agent's own resume command stays the
 only mechanism.
+
+### Filtering
+
+`/` matches the branch or the session title as a **substring**, with smart
+case. fzf can afford fuzzy matching because it ranks, putting the best match
+on top and leaving the rest as noise below; this list is a tree whose order
+means something, so there is nowhere to put the noise. `rust` would otherwise
+find `r`, `u`, `s` and `t` in order inside `z-rush agent orchestrator`.
+
+`~needle` asks for fuzzy explicitly.
 
 ## Agents
 

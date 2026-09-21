@@ -119,7 +119,7 @@ pub fn draw(f: &mut Frame, app: &App, z: &Zrush, prev: &Preview) {
 
 fn status_line(f: &mut Frame, area: Rect, app: &App) {
     let left = match app.mode {
-        Mode::Filter => format!("/{}▏", app.filter),
+        Mode::Filter => format!("/{}▏   substring · ~ for fuzzy", app.filter),
         Mode::Purge => "space marks · enter purges · esc cancels".into(),
         Mode::Normal if !app.filter.is_empty() => format!("/{}", app.filter),
         Mode::Normal => "<esc> quit".into(),

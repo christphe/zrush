@@ -39,6 +39,10 @@ pub struct Row {
     /// `▾ `, `▸ ` or two spaces for a node; the tree glyph for a child.
     pub glyph: String,
     pub label: String,
+    /// What a filter matches against: the branch, or the session title.
+    /// Separate from `label`, which carries tree glyphs and status dots —
+    /// matching those makes a fuzzy needle hit almost anything.
+    pub search: String,
     pub badge: String,
     pub status: String,
     pub location: String,
@@ -162,6 +166,7 @@ pub fn build(input: &TreeInput<'_>) -> Vec<Row> {
             session_id: None,
             glyph: fold_glyph(!children.is_empty(), collapsed),
             label: w.label(),
+            search: w.branch.clone(),
             badge: session_badge(children, input.history.get(&w.path).copied().unwrap_or(0)),
             status: input
                 .statuses
@@ -188,6 +193,7 @@ pub fn build(input: &TreeInput<'_>) -> Vec<Row> {
             session_id: None,
             glyph: fold_glyph(true, collapsed),
             label: "orphaned sessions".into(),
+            search: "orphaned sessions".into(),
             badge: format!("◌ {}", children.len()),
             status: String::new(),
             location: "worktree gone".into(),
@@ -281,6 +287,7 @@ fn push_children(
             session_id: Some(a.session.id.clone()),
             glyph: String::new(),
             label: format!("   {tree} {dot} {}", a.session.title),
+            search: a.session.title.clone(),
             badge: status,
             status: String::new(),
             location: String::new(),
@@ -293,6 +300,7 @@ fn push_children(
             session_id: None,
             glyph: String::new(),
             label: "   └─ […more]".into(),
+            search: String::new(),
             badge: format!("+{hidden} older"),
             status: String::new(),
             location: String::new(),

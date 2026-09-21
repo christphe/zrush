@@ -755,6 +755,7 @@ mod tests {
             session_id: id.map(str::to_string),
             glyph: String::new(),
             label: label.into(),
+            search: label.into(),
             badge: String::new(),
             status: String::new(),
             location: String::new(),

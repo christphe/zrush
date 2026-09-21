@@ -190,6 +190,7 @@ mod tests {
             session_id: None,
             glyph: glyph.into(),
             label: label.into(),
+            search: label.into(),
             badge: badge.into(),
             status: status.into(),
             location: String::new(),
