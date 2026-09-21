@@ -111,6 +111,7 @@ LIST_ONLY=0
 MENU_ONLY=0
 RENDER_ONLY=0
 STATE_DIR=""
+SESSIONS_OF=""
 FOLD_PATH=""
 UNFOLD_PATH=""
 MORE_PATH=""
@@ -126,6 +127,7 @@ while [ $# -gt 0 ]; do
     # directory and prints the new menu on stdout.
     --menu)           MENU_ONLY=1; shift ;;
     --render)         RENDER_ONLY=1; shift ;;
+    --sessions)       SESSIONS_OF="${2:-}"; [ -n "$SESSIONS_OF" ] || die "--sessions needs a path"; shift 2 ;;
     --state)          STATE_DIR="${2:-}"; [ -n "$STATE_DIR" ] || die "--state needs a path"; shift 2 ;;
     --fold)           FOLD_PATH="${2:-}"; shift 2 ;;
     --unfold)         UNFOLD_PATH="${2:-}"; shift 2 ;;
@@ -137,6 +139,9 @@ while [ $# -gt 0 ]; do
     *)                die "unknown option: $1 (try --help)" ;;
   esac
 done
+
+# --sessions carries its own target, so the repo comes from it.
+[ -n "$SESSIONS_OF" ] && [ -z "$REPO_ARG" ] && REPO_ARG="$SESSIONS_OF"
 
 for c in git fzf; do have "$c" || die "missing dependency: $c"; done
 
@@ -412,6 +417,14 @@ refresh_sessions() {
       title=${meta%%$'\t'*}
       ecwd=${meta#*$'\t'}
     fi
+    # A name you set with `claude -n` beats the title Claude generated for
+    # itself. Auto-generated names look like "<dir>-<2 hex>" (wms-e8, 2346-06),
+    # so anything else is yours and wins.
+    case "$name" in
+      "$(basename "$cwd")"-[0-9a-f][0-9a-f]) ;;          # auto, keep the title
+      "") ;;
+      *) title="$name" ;;                                 # yours, use it
+    esac
     [ -n "$title" ] || title="$name"
     [ -n "$ecwd" ]  || ecwd="$cwd"
     if [ "${#title}" -gt "$ZRUSH_TITLE_WIDTH" ]; then
@@ -641,12 +654,11 @@ build_menu() {
   assign_sessions
 
   local -a r_type=() r_path=() r_id=() r_c1=() r_c2=() r_c3=()
-  local label path bound n i id name status kind dot mark tree hidden fold _owner
+  local label path n i id name status kind dot mark tree hidden fold _owner
 
   while IFS=$'\t' read -r label path; do
     [ -n "$path" ] || continue
 
-    bound=$(state_read "$path" 2>/dev/null) || bound=""
     n=$(awk -F'\t' -v p="$path" '$1==p{n++} END{print n+0}' "$owned_file" 2>/dev/null)
 
     # Resumables held back by the per-worktree cap get a "[...more]" row.
@@ -672,7 +684,6 @@ build_menu() {
       # ● running, ◌ resumable but not running
       [ "$kind" = "live" ] && dot="●" || dot="◌"
       mark="$status"
-      [ -n "$bound" ] && [ "$bound" = "$id" ] && mark="$mark ← bound"
       r_type+=("session"); r_path+=("$path"); r_id+=("$id")
       r_c1+=("   $tree $dot $name"); r_c2+=("$mark"); r_c3+=("")
     done < <(awk -F'\t' -v p="$path" '$1==p' "$owned_file")
@@ -893,6 +904,18 @@ run_claude_term() {  # $1 = worktree path, rest = extra claude args
   "${ZRUSH_TERMINAL[@]}" "$script" \
     || { warn "${ZRUSH_TERMINAL[0]} could not open a terminal"; rm -rf "$dir"; return 1; }
 }
+
+# --sessions <path>: one line per session of that worktree, "<id>\t<label>",
+# newest first. zrush_session -l turns this into a picker, so the choice of
+# which conversation to resume can also be made from the editor's terminal.
+if [ -n "$SESSIONS_OF" ]; then
+  refresh_sessions
+  build_menu full
+  awk -F'\t' -v w="$SESSIONS_OF" '
+    $1 == w { printf "%s\t%s %s  (%s)\n", $2, ($5 == "live" ? "●" : "◌"), $3, $4 }
+  ' "$owned_file"
+  exit 0
+fi
 
 # --menu: print the menu once, for fzf's reload binding, and leave.
 if [ "$MENU_ONLY" -eq 1 ]; then

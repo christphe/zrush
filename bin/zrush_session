@@ -26,6 +26,23 @@
 # shell instead of losing the terminal panel. Set ZRUSH_SESSION_EXEC=1 to exec
 # Claude directly instead.
 
+PICK=0
+case "${1:-}" in
+  -l|--list) PICK=1 ;;
+  -h|--help)
+    cat <<EOF
+zrush_session — resume this worktree's Claude session, or start a new one
+
+usage: zrush_session [-l]
+
+  -l, --list   pick which of this worktree's sessions to resume, instead of
+               taking the one zrush bound to it
+EOF
+    exit 0 ;;
+  "") ;;
+  *) printf 'zrush_session: unknown option: %s\n' "$1" >&2; exit 2 ;;
+esac
+
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zrush"
 CONFIG_FILE="$CONFIG_DIR/config"
 CLAUDE_PROJECTS="$HOME/.claude/projects"
@@ -118,7 +135,23 @@ session_looks_resumable() {  # $1 = id
 # ------------------------------------------------------------------ run ----
 cd "$toplevel" || run_shell
 
-session_id=$(read_session_id) || session_id=""
+# -l: ask zrush for this worktree's sessions and let fzf choose. Beats the
+# recorded association, and picking nothing starts a fresh session.
+if [ "$PICK" -eq 1 ]; then
+  zrush_bin="$(dirname "$0")/zrush"
+  [ -x "$zrush_bin" ] || zrush_bin=$(command -v zrush) || zrush_bin=""
+  if [ -z "$zrush_bin" ] || ! command -v fzf >/dev/null 2>&1; then
+    warn "-l needs zrush and fzf on PATH"
+  else
+    picked=$("$zrush_bin" --sessions "$toplevel" 2>/dev/null \
+      | fzf --ansi --delimiter=$'\t' --with-nth=2 --reverse --border \
+            --prompt="session> " --height=40% \
+            --header="enter to resume, esc for a new session") || picked=""
+    session_id=${picked%%$'\t'*}
+  fi
+fi
+
+[ -n "${session_id:-}" ] || session_id=$(read_session_id) || session_id=""
 
 if [ -n "$session_id" ] && ! session_looks_resumable "$session_id"; then
   warn "session $session_id is gone — starting a new one"

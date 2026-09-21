@@ -28,19 +28,43 @@ takes the association with it.
 ## Install
 
 ```sh
-./install.sh
+./install.sh          # asks which editor, or keeps the one already configured
+./install.sh cursor   # no questions
 ```
 
-- symlinks `~/.local/bin/zrush` and `~/.local/bin/zrush_session` → `bin/*`
-  (so `git pull` updates the commands)
-- creates `~/.config/zrush/config`
-- installs `~/.config/zed/tasks.json` if absent
+It symlinks `zrush` and `zrush_session` into `~/.local/bin`, writes
+`ZRUSH_EDITOR` into `~/.config/zrush/config`, and for Zed installs a task and
+a keybinding.
 
-Your `~/.config/zed/settings.json` is **not** touched. Wiring `zrush_session` into
-Zed's terminal is opt-in, see below.
+### Zed
 
-Dependencies: `git`, `fzf`, `zed`, `claude`. Optional: `jq` (session rows and
-live badges — without it you still get the worktree list).
+`~/.config/zed/tasks.json` gets three tasks:
+
+| task | what it runs |
+| --- | --- |
+| **Claude session** | `zrush_session` in a new terminal, at `$ZED_WORKTREE_ROOT` |
+| **zrush: worktrees (global)** | `zrush`, repo taken from the terminal's cwd |
+| **zrush: worktrees (this project)** | `zrush --repo $ZED_WORKTREE_ROOT` |
+
+`~/.config/zed/keymap.json` binds **`cmd-shift-j`** to *Claude session*: it
+opens a terminal on the worktree and picks up the session bound to it. That
+is the lighter alternative to wiring `zrush_session` in as Zed's terminal
+shell — no session starts unless you ask for one.
+
+Both files are JSONC, so the installer will not reserialize them blindly:
+
+- absent → copied
+- written by a previous `./install.sh` (it carries a marker comment) → replaced, backup kept
+- strict JSON → the missing entries are merged in, backup kept
+- has comments and is not ours → left alone, and you are told what to add
+
+`settings.json` is never touched.
+
+### Cursor and Code
+
+Only `ZRUSH_EDITOR` is set; no editor-side task is installed. Run
+`zrush_session` in the editor's terminal to pick up the worktree's session.
+
 
 ## Use
 
@@ -82,9 +106,8 @@ scrollback comes back untouched on exit). `ZRUSH_FZF_HEIGHT="80%"` keeps it
 inline instead.
 
 Worktree rows show branch (plus `[main wt]`, `🔒` locked, `⚠` prunable) · session
-badge · git status · path. Session rows show the title, its status, and `← bound`
-on the one currently bound. The preview pane shows `git status -sb` and the last
-10 commits.
+badge · git status · path. Session rows show the title and its status. The
+preview pane shows `git status -sb` and the last 10 commits.
 
 ### The git status column
 
@@ -129,6 +152,11 @@ file is malformed, or the session is gone. Outside a repo, or without `git` /
 the shell, so quitting it leaves the panel alive; set `ZRUSH_SESSION_EXEC=1` for a
 plain `exec` instead.
 
+`zrush_session -l` asks which of the worktree's sessions to resume instead of
+taking the one `zrush` recorded — the same list as the picker's, in a small
+fzf, escape for a fresh session. Handy from the editor's terminal when you did
+not come through `zrush` at all.
+
 To make every Zed terminal do this on its own, add to
 `~/.config/zed/settings.json`:
 
@@ -167,8 +195,11 @@ worktree — a `claude --worktree` session is filed under the directory it was
 launched from — so `zrush` scans the main worktree's slug, everything filed below
 it, and each worktree's own slug.
 
-Titles and the recorded `cwd` come from the same transcripts, best effort and
-cached under `~/.cache/zrush/sessions/`. `ZRUSH_TITLES=0` turns the probe off.
+Titles come from the transcripts, best effort and cached under
+`~/.cache/zrush/sessions/`. `ZRUSH_TITLES=0` turns the probe off. A name you
+set yourself with `claude -n` wins over the title Claude generated for itself:
+auto names look like `<dir>-<2 hex>` (`wms-e8`, `2346-06`), so anything else is
+yours.
 
 A title is written once, early in a conversation, so a long one pushes it out
 of the 400-line window `zrush` reads — 7 of 125 transcripts here. When the window
@@ -231,45 +262,94 @@ directory it was **launched** from, which is not always where it runs — a
 So `zrush_session` looks the id up across every project dir rather than guessing
 one. `claude --resume <id>` itself works from any directory.
 
-## Installing
+## Worktree or session
+
+The two row kinds mean two different things, and nothing in between:
+
+- a **worktree** row is always "start fresh here". `enter` opens the editor and
+  `zrush_session` runs a plain `claude`; `ctrl-o` does the same in a terminal
+  of its own, without touching the editor or the association.
+- a **session** row is "go back to this one". `enter` writes its id and the
+  editor's terminal resumes it.
+
+Nothing needs to be declared for a session to belong to a worktree. Claude
+Code records its shell's `cwd` in the transcript, so a session that creates a
+worktree, `cd`s into it and stays there ends up filed under that worktree by
+itself — 57 of 126 transcripts here have moved at least once, mostly from the
+repo root into `.claude/worktrees/…`. Ask a session to make a worktree for a
+pull request and it shows up under the new one at the next refresh.
+
+The catch: that `cwd` is the shell's, not the work's. A session launched from
+the repo root that edits a worktree without moving into it stays filed under
+the root, whatever you called it.
+
+## Terminals
+
+`ctrl-o` starts a session in a terminal of its own and hands you straight back
+to the picker. macOS offers no way to give a command to a specific terminal
+without AppleScript, so `zrush` writes a throwaway `*.command` script and runs
+`open` on it: whichever app owns that file type runs it, and the script deletes
+itself when Claude exits. That is Terminal.app unless you point `.command`
+files at iTerm yourself (Finder → Get Info → Open with → Change All).
+
+`ZRUSH_TERMINAL` replaces the whole thing if you would rather not go through
+`open`:
 
 ```sh
-./install.sh          # asks which editor, or keeps the one already configured
-./install.sh cursor   # no questions
+ZRUSH_TERMINAL=(open -a Ghostty)
+ZRUSH_TERMINAL=(wezterm start --cwd)
 ```
 
-It symlinks `zrush` and `zrush_session` into `~/.local/bin`, writes
-`ZRUSH_EDITOR` into `~/.config/zrush/config`, and for Zed installs a task and
-a keybinding.
+The script clears the `CLAUDE_CODE_*` markers for the same reason
+`zrush_session` does, which matters when `ZRUSH_TERMINAL` is a real command
+inheriting this environment rather than `open`, which starts from a clean one.
 
-### Zed
+## Editors
 
-`~/.config/zed/tasks.json` gets three tasks:
+`ZRUSH_EDITOR` picks what `enter` opens: `zed`, `cursor` or `code`. Each is run as
+`<editor> -n <path>`. Anything else is run as-is with the path appended, and
+`ZRUSH_EDITOR_CMD` replaces the whole command line:
 
-| task | what it runs |
-| --- | --- |
-| **Claude session** | `zrush_session` in a new terminal, at `$ZED_WORKTREE_ROOT` |
-| **zrush: worktrees (global)** | `zrush`, repo taken from the terminal's cwd |
-| **zrush: worktrees (this project)** | `zrush --repo $ZED_WORKTREE_ROOT` |
+```sh
+ZRUSH_EDITOR=cursor
+ZRUSH_EDITOR_CMD=(code --reuse-window)   # or whatever you want
+```
 
-`~/.config/zed/keymap.json` binds **`cmd-shift-j`** to *Claude session*: it
-opens a terminal on the worktree and picks up the session bound to it. That
-is the lighter alternative to wiring `zrush_session` in as Zed's terminal
-shell — no session starts unless you ask for one.
+`-n` is the default for all three on purpose. **A worktree nested inside
+another one never gets its own window without it** — the editor treats it as a
+subpath of the parent project and focuses the parent instead. That is the case
+for anything under `<repo>/.claude/worktrees/`.
 
-Both files are JSONC, so the installer will not reserialize them blindly:
+Neither Zed nor the VS Code family offers a CLI way to *focus* the window that
+already holds a project, so `enter` on something already open gives you a
+second window. Measured on Zed 1.20.2 against its own workspace database:
+`cli_default_open_behavior: "new_window"` opens a duplicate,
+`"existing_window"` piles every worktree into the focused window's sidebar, and
+a `<path>/.` subpath looked like it focused but four calls in a row produced
+four windows.
 
-- absent → copied
-- written by a previous `./install.sh` (it carries a marker comment) → replaced, backup kept
-- strict JSON → the missing entries are merged in, backup kept
-- has comments and is not ours → left alone, and you are told what to add
+## Removing a worktree
 
-`settings.json` is never touched.
+`ctrl-d` removes the worktree with `git worktree remove`. It never touches the
+main worktree, and it never forces: if the worktree is dirty, git refuses, `zrush`
+says so and keeps it.
 
-### Cursor and Code
+When sessions belong to that worktree it asks a three-way question, because
+"remove the worktree" and "delete the conversations that happened in it" are
+not the same decision:
 
-Only `ZRUSH_EDITOR` is set; no editor-side task is installed. Run
-`zrush_session` in the editor's terminal to pick up the worktree's session.
+```
+<path> has 3 session(s), 1 of them running.
+remove the worktree and delete those sessions? [y]es / [n]o, keep them / [c]ancel
+```
+
+`yes` also deletes those sessions' transcript files under
+`~/.claude/projects/`. Running sessions are skipped with a warning — stop them
+first. `no` removes only the worktree. `cancel` does nothing.
+
+On a **session** row, `ctrl-d` deletes that one conversation instead: its
+transcript, its sidecar directory, its cached title, and the worktree's
+association if it pointed there. The worktree itself is untouched.
 
 ## Shell helper (optional)
 
