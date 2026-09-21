@@ -81,6 +81,7 @@ if [ ! -f "$cfg_dir/config.toml" ] && [ ! -f "$cfg_dir/config" ]; then
 # more_step = 20         # rows added by one [...more]
 # title_width = 48       # truncate session titles here
 # preview_turns = 14     # conversation turns in the preview pane
+# theme = "auto"         # auto | dark | light. zrush never paints a background.
 CFG
   echo "wrote $cfg_dir/config.toml"
 fi

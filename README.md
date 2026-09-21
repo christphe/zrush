@@ -179,10 +179,23 @@ resumable_scan = 40                         # newest transcripts examined
 more_step = 20                              # rows added by one [...more]
 title_width = 48                            # truncate session titles here
 preview_turns = 14                          # turns shown in the preview
+theme = "auto"                              # auto | dark | light
 ```
 
 The shell-syntax `config` the previous version sourced is imported once, on
 first run, and left in place.
+
+### Colours
+
+zrush never paints its own background. k9s does, so that it looks the same
+everywhere; here the terminal's own theme shows through, which is how the
+version this replaced looked at home on whatever you had set. Named ANSI
+colours are used throughout, so a terminal theme has already tuned them.
+
+Two choices do depend on which way the background goes — the muted text used
+for labels and paths, and the text on the cursor bar. `theme` picks; `auto`
+reads `COLORFGBG` and assumes dark when the terminal says nothing, which most
+do.
 
 Cache: `~/.cache/zrush/sessions/`. Derived data only, safe to delete.
 

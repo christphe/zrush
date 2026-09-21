@@ -15,6 +15,11 @@ use super::app::{Action, App, Mode};
 use super::preview::Preview;
 use super::{header, modal, preview, table, theme};
 
+/// The user's home directory, shown as `~` in the path column.
+fn dirs_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
 /// How wide the preview pane is. Below this the terminal is too narrow for
 /// two panes and the list takes it all.
 const PREVIEW_PERCENT: u16 = 50;
@@ -84,6 +89,7 @@ pub fn draw(f: &mut Frame, app: &App, z: &Zrush, prev: &Preview) {
         .filter(|(_, i)| app.marked.contains(i))
         .map(|(shown, _)| shown)
         .collect();
+    let home = dirs_home();
     let title = match app.mode {
         Mode::Purge => format!("Purge — {} marked", app.marked.len()),
         _ => format!("Worktrees({})", app.worktrees.len()),
@@ -93,6 +99,7 @@ pub fn draw(f: &mut Frame, app: &App, z: &Zrush, prev: &Preview) {
         body[0],
         &table::View {
             rows: &visible,
+            home: home.as_deref(),
             cursor: app.cursor,
             marked: &marked,
             offset: app.offset,
@@ -451,7 +458,7 @@ pub fn run(mut app: App, z: &Arc<Zrush>) -> zrush_core::error::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::testing::{git, scratch_repo, zrush};
     use crate::ui::app::App;
@@ -475,14 +482,14 @@ mod tests {
 
     /// A full frame as text, at a fixed size so the layout is the thing
     /// under test rather than the terminal.
-    fn frame(app: &App, z: &Zrush, w: u16, h: u16) -> String {
+    pub fn frame(app: &App, z: &Zrush, w: u16, h: u16) -> String {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
         let prev = preview_for(app);
         term.draw(|f| draw(f, app, z, &prev)).unwrap();
         crate::ui::tests_support::flatten(term.backend())
     }
 
-    fn loaded(td: &tempfile::TempDir) -> (Arc<Zrush>, App) {
+    pub fn loaded(td: &tempfile::TempDir) -> (Arc<Zrush>, App) {
         let repo = scratch_repo(td);
         git(
             &repo,
@@ -672,5 +679,19 @@ mod tests {
                 if lines.iter().any(|l| l.contains("init")))
         });
         assert!(found, "the git log never came back: {events:?}");
+    }
+}
+
+#[cfg(test)]
+mod look {
+    use super::tests::*;
+
+    /// Not an assertion — a way to look at the thing. `cargo test -p zrush
+    /// look -- --nocapture` prints the frame.
+    #[test]
+    fn print_a_frame() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, app) = loaded(&td);
+        println!("{}", frame(&app, &z, 150, 18));
     }
 }

@@ -104,6 +104,12 @@ pub fn main() -> Result<()> {
         None => {}
     }
 
+    crate::ui::theme::set(match cfg.theme.as_str() {
+        "dark" => crate::ui::theme::Variant::Dark,
+        "light" => crate::ui::theme::Variant::Light,
+        _ => crate::ui::theme::detect(),
+    });
+
     let repo = locate(&cli, &cfg)?;
     let host: Box<dyn Host> = if cli.list {
         Box::new(NullHost)

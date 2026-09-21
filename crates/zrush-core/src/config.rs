@@ -57,6 +57,10 @@ pub struct Config {
     pub more_step: usize,
     pub title_width: usize,
     pub preview_turns: usize,
+    /// `auto`, `dark` or `light`. Only decides the handful of colours that
+    /// depend on which way the terminal background goes; zrush never paints
+    /// a background of its own.
+    pub theme: String,
 }
 
 impl Default for Config {
@@ -74,6 +78,7 @@ impl Default for Config {
             more_step: 20,
             title_width: 48,
             preview_turns: 14,
+            theme: "auto".into(),
         }
     }
 }
