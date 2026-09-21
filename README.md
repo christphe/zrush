@@ -415,9 +415,12 @@ exactly where it is and the row you aimed at stays highlighted:
 ```
 
 The prompt says which mode you are in, and escape cancels without leaving.
-Once the action has run, the footer reports what happened —
-`zrush: deleted 2 transcripts`, or git's refusal when the worktree is dirty —
-before going back to the key reminder.
+Once the action has run, the footer reports what happened in front of the key
+reminder — `deleted 2 transcripts  ·  enter open  ^o claude …`. It sits there
+until the next action replaces it; the reminder itself never leaves.
+`change-footer` takes a single line and does not honour `\n`, and hanging the
+restore off fzf's `focus` event races with the reload that follows, so the two
+share one line rather than taking turns.
 
 `yes` also deletes those sessions' transcript files under
 `~/.claude/projects/`. Running sessions are skipped with a warning — stop them

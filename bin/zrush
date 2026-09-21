@@ -927,7 +927,8 @@ delete_session() {  # $1 = id, $2 = worktree path, $3 = title, $4 = kind
     bound=$(state_read "$p" 2>/dev/null) || bound=""
     [ "$bound" = "$id" ] && state_clear "$p"
   fi
-  printf '%s: deleted %s file(s) for %s\n' "$PROG" "$gone" "${id:0:8}" >&2
+  printf '%s: deleted %s file%s for %s\n' \
+         "$PROG" "$gone" "$( [ "$gone" -gt 1 ] && printf s )" "${id:0:8}" >&2
   return 0
 }
 
@@ -955,7 +956,7 @@ delete_worktree() {  # $1 = worktree path, $2 = y (with sessions) | n (without)
   case "$ans" in y|n) ;; *) return 1 ;; esac
 
   git -C "$repo_dir" worktree remove "$p" >&2 || {
-    warn "worktree kept; use 'git worktree remove --force' yourself if you mean it"
+    warn "worktree kept: it has changes git will not throw away"
     return 1
   }
 
@@ -970,7 +971,8 @@ delete_worktree() {  # $1 = worktree path, $2 = y (with sessions) | n (without)
   done <<EOF
 $rows
 EOF
-  [ "$gone" -gt 0 ] && printf '%s: deleted %s transcript(s)\n' "$PROG" "$gone" >&2
+  [ "$gone" -gt 0 ] \
+    && printf '%s: deleted %s transcript%s\n' "$PROG" "$gone" "$( [ "$gone" -gt 1 ] && printf s )" >&2
   return 0
 }
 
@@ -1121,13 +1123,18 @@ if [ -n "$ASK" ]; then
     # lands on the terminal and corrupts the frame -- so the command writes to
     # a file and its last line comes back here, as footer text.
     done)
+      # The result sits in front of the key reminder rather than replacing
+      # it: change-footer takes one line and does not honour \n, and hanging
+      # the restore off the focus event races with the reload that follows.
+      # So the keys never leave, and the message is gone at the next action.
       msg=""
       if [ -s "$LAST_FILE" ]; then
         msg=$(grep -v '^[[:space:]]*$' "$LAST_FILE" | tail -1 \
-              | tr -d '()' | cut -c1-120)
+              | sed 's/^zrush: //' | tr -d '()' | cut -c1-58)
       fi
       : > "$LAST_FILE"
-      printf 'change-prompt(worktree> )+change-footer(%s)' "${msg:-$FOOTER}"
+      [ -n "$msg" ] && msg="$msg  ·  "
+      printf 'change-prompt(worktree> )+change-footer(%s%s)' "$msg" "$FOOTER"
       printf '+unbind(y,n,c)+rebind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,left,right)\n'
       ;;
     *) printf 'ignore\n' ;;
