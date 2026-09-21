@@ -28,6 +28,15 @@ pub struct Zrush {
     repo: PathBuf,
     main_root: PathBuf,
     agents: Vec<Box<dyn Agent>>,
+    /// Which agent the interface is looking at, the way k9s looks at one
+    /// context. Listing every agent at once would cost one CLI call and one
+    /// transcript scan per agent on every refresh, and produce rows nobody
+    /// can tell apart without a column saying which is which.
+    ///
+    /// It only decides what is *listed*. Opening, resuming and deleting
+    /// route through the agent recorded against the session, so a worktree
+    /// bound under another agent still resumes correctly.
+    active: usize,
     host: Box<dyn Host>,
 }
 
@@ -52,6 +61,7 @@ impl Zrush {
             repo,
             main_root,
             agents,
+            active: 0,
             host,
         })
     }
@@ -71,6 +81,30 @@ impl Zrush {
 
     pub fn agents(&self) -> &[Box<dyn Agent>] {
         &self.agents
+    }
+
+    /// The agent currently being listed. `None` when no agent is installed:
+    /// zrush is still a worktree router, it just has no sessions to show.
+    pub fn active_agent(&self) -> Option<&dyn Agent> {
+        self.agents.get(self.active).map(AsRef::as_ref)
+    }
+
+    /// Switch which agent the interface lists. Unknown names are refused
+    /// rather than silently ignored: it is typed, in a command bar.
+    pub fn set_active_agent(&mut self, id: &str) -> Result<()> {
+        let at = self
+            .agents
+            .iter()
+            .position(|a| a.id() == id)
+            .ok_or_else(|| ZrushError::msg(format!("no such agent: {id}")))?;
+        self.active = at;
+        Ok(())
+    }
+
+    /// True when there is a choice to offer. With one agent installed, the
+    /// interface must not ask which one.
+    pub fn has_agent_choice(&self) -> bool {
+        self.agents.len() > 1
     }
 
     fn agent(&self, id: &str) -> Result<&dyn Agent> {
@@ -412,6 +446,57 @@ mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let z = zrush(&td, scratch(&td));
         assert!(z.delete_session("codex", "any", false, None).is_err());
+    }
+
+    #[test]
+    fn the_first_agent_is_the_one_listed() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch(&td));
+        assert_eq!(z.active_agent().map(Agent::id), Some("claude"));
+    }
+
+    #[test]
+    fn switching_to_an_unknown_agent_is_refused() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut z = zrush(&td, scratch(&td));
+        assert!(z.set_active_agent("no-such-agent").is_err());
+        assert_eq!(z.active_agent().map(Agent::id), Some("claude"));
+    }
+
+    #[test]
+    fn one_installed_agent_means_nothing_to_choose_between() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch(&td));
+        assert!(!z.has_agent_choice());
+    }
+
+    #[test]
+    fn with_no_agent_at_all_it_is_still_a_worktree_router() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let z = Zrush::new(
+            crate::config::dirs_under(td.path()),
+            Config::default(),
+            repo,
+            Vec::new(),
+            Box::new(RecordingHost::default()),
+        )
+        .unwrap();
+        assert!(z.active_agent().is_none());
+        assert!(z.live_sessions().is_empty());
+        assert_eq!(z.worktrees().unwrap().len(), 1);
+    }
+
+    /// An association written under another agent must survive the active
+    /// one being different: opening routes on the binding, not on the view.
+    #[test]
+    fn a_binding_records_the_agent_it_was_made_with() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch(&td));
+        let dest = z.create_worktree("feature").unwrap();
+        let id = "aaaaaaaa-1111-2222-3333-444455556666";
+        z.open(&dest, Some(("claude", id))).unwrap();
+        assert_eq!(z.binding(&dest).unwrap().agent.as_deref(), Some("claude"));
     }
 
     /// Lets a test keep a handle on the host the service owns.
