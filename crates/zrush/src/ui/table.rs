@@ -57,13 +57,19 @@ fn widths(rows: &[Row]) -> (usize, usize, usize) {
     (label, badge, status)
 }
 
+/// `$HOME` shown as `~`.
+///
+/// Compared as paths, not as strings: git reports `C:/Users/...` on Windows
+/// while the environment holds `C:\Users\...`, and a string comparison
+/// silently never matches.
 fn shorten(path: &str, home: Option<&std::path::Path>) -> String {
-    let Some(home) = home.map(|h| h.to_string_lossy().into_owned()) else {
+    let Some(home) = home else {
         return path.to_string();
     };
-    match path.strip_prefix(&home) {
-        Some(rest) => format!("~{rest}"),
-        None => path.to_string(),
+    match std::path::Path::new(path).strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        Err(_) => path.to_string(),
     }
 }
 
