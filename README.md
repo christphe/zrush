@@ -401,26 +401,33 @@ says so and keeps it.
 
 When sessions belong to that worktree it asks a three-way question, because
 "remove the worktree" and "delete the conversations that happened in it" are
-not the same decision. The question replaces the footer, so the list stays
-exactly where it is and the row you aimed at stays highlighted:
+not the same decision. The question takes the footer, so the list stays exactly
+where it is and the row you aimed at stays highlighted:
 
 ```
   remove? ▌ main [root]        …/wms
           ▌ 2427               …/wms/.claude/worktrees/2427
           ▌ + new worktree…
           ╭──────────────────────────────────────────────────────────╮
-          │ remove  2427  and its 3 sessions, 1 running?             │
-          │    y  yes, delete them too    n  no, keep them    esc  cancel │
+          │ remove  2427  and its 3, 1 running sessions?             │
+          │   y  yes, delete them too    n  no, keep them    esc  cancel │
           ╰──────────────────────────────────────────────────────────╯
 ```
 
 The prompt says which mode you are in, and escape cancels without leaving.
-Once the action has run, the footer reports what happened in front of the key
-reminder — `deleted 2 transcripts  ·  enter open  ^o claude …`. It sits there
-until the next action replaces it; the reminder itself never leaves.
-`change-footer` takes a single line and does not honour `\n`, and hanging the
-restore off fzf's `focus` event races with the reload that follows, so the two
-share one line rather than taking turns.
+Once the action has run, the result takes the first line and the key reminder
+the second, so nothing is ever traded away:
+
+```
+  ╭────────────────────────────────────────────────────────────────╮
+  │ deleted 2 transcripts                                          │
+  │ enter open  ^o claude  ^w worktree  ^d delete  ^l reload  …    │
+  ╰────────────────────────────────────────────────────────────────╯
+```
+
+The footer is driven by `transform-footer`, which takes a command and uses its
+output one screen line per line. `change-footer` cannot do this: it takes a
+single string and renders a literal `\n`.
 
 `yes` also deletes those sessions' transcript files under
 `~/.claude/projects/`. Running sessions are skipped with a warning — stop them

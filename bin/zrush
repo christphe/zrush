@@ -282,6 +282,7 @@ do_sh="$tmpdir/do"
 ans_sh="$tmpdir/ans";       ANS_SH="$ans_sh"
 ask_sh="$tmpdir/ask";       ASK_SH="$ask_sh"
 show_sh="$tmpdir/show"
+foot_sh="$tmpdir/foot";     FOOT_SH="$foot_sh"
 FOOTER='enter open  ^o claude  ^w worktree  ^d delete  ^l reload  ←→ fold  esc quit'
 [ -n "$STATE_DIR" ] || { : > "$expand_file"; : > "$collapse_file"; : > "$status_file"; }
 wtlist="$tmpdir/wtlist"            # label \t path
@@ -1061,6 +1062,7 @@ fi
 # every column after it.
 CONFIRM_FILE="$tmpdir/confirm"
 LAST_FILE="$tmpdir/last"           # whatever the last action printed
+FOOTER_FILE="$tmpdir/footer"       # what transform-footer reads back
 
 if [ -n "$ASK" ]; then
   case "$ASK" in
@@ -1069,8 +1071,9 @@ if [ -n "$ASK" ]; then
         session|orphan)
           t=$(awk -F'\t' -v i="$DO_ID" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
           printf 'delete-session\t-\t%s\t%s\t%s\n' "$DO_PATH" "$DO_TYPE" "$DO_ID" > "$CONFIRM_FILE"
-          printf 'change-prompt(delete? )+change-footer(delete  %s  for good?    y  yes    esc  cancel)' \
-                 "${t:-${DO_ID:0:8}}"
+          printf 'delete  %s  for good?\n  y  yes      esc  cancel\n' \
+                 "${t:-${DO_ID:0:8}}" > "$FOOTER_FILE"
+          printf 'change-prompt(delete? )+transform-footer(%q)' "$FOOT_SH"
           ;;
         wt)
           [ "$DO_PATH" = "$main_root" ] && { printf 'change-footer(the main worktree cannot be removed -- press any key)'; exit 0; }
@@ -1078,12 +1081,14 @@ if [ -n "$ASK" ]; then
           live=$(awk -F'\t' -v w="$DO_PATH" '$1==w && $5=="live"{k++} END{print k+0}' "$owned_file" 2>/dev/null)
           if [ "${n:-0}" -eq 0 ]; then
             printf 'delete-wt\t-\t%s\twt\t-\n' "$DO_PATH" > "$CONFIRM_FILE"
-            printf 'change-prompt(remove? )+change-footer(remove worktree  %s ?    y  yes    esc  cancel)' "${DO_PATH##*/}"
+            printf 'remove worktree  %s ?\n  y  yes      esc  cancel\n' "${DO_PATH##*/}" > "$FOOTER_FILE"
+            printf 'change-prompt(remove? )+transform-footer(%q)' "$FOOT_SH"
           else
             printf 'delete-all\tdelete-wt\t%s\twt\t-\n' "$DO_PATH" > "$CONFIRM_FILE"
             extra=""; [ "${live:-0}" -gt 0 ] && extra=", $live running"
-            printf 'change-prompt(remove? )+change-footer(remove  %s  and its %s session%s?    y  yes, delete them too    n  no, keep them    esc  cancel)' \
-                   "${DO_PATH##*/}" "$n$extra" "$( [ "$n" -gt 1 ] && printf s )"
+            printf 'remove  %s  and its %s session%s?\n  y  yes, delete them too      n  no, keep them      esc  cancel\n' \
+                   "${DO_PATH##*/}" "$n$extra" "$( [ "$n" -gt 1 ] && printf s )" > "$FOOTER_FILE"
+            printf 'change-prompt(remove? )+transform-footer(%q)' "$FOOT_SH"
           fi
           ;;
         *) printf 'ignore'; exit 0 ;;
@@ -1096,7 +1101,8 @@ if [ -n "$ASK" ]; then
         more|orphans) printf 'ignore'; exit 0 ;;
       esac
       printf 'branch\t-\t%s\t%s\t%s\n' "$DO_PATH" "$DO_TYPE" "$DO_ID" > "$CONFIRM_FILE"
-      printf 'change-prompt(branch> )+change-footer(type a new branch name, or pick one below.    enter  create the worktree    esc  cancel)'
+      printf 'type a new branch name, or pick one below\n  enter  create the worktree      esc  cancel\n' > "$FOOTER_FILE"
+      printf 'change-prompt(branch> )+transform-footer(%q)' "$FOOT_SH"
       printf '+reload(git -C %q for-each-ref --sort=-committerdate --format=%%\(refname:short\) refs/heads)' "$repo_dir"
       printf '+unbind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,left,right)\n'
       ;;
@@ -1130,11 +1136,12 @@ if [ -n "$ASK" ]; then
       msg=""
       if [ -s "$LAST_FILE" ]; then
         msg=$(grep -v '^[[:space:]]*$' "$LAST_FILE" | tail -1 \
-              | sed 's/^zrush: //' | tr -d '()' | cut -c1-58)
+              | sed 's/^zrush: //' | tr -d '()' | cut -c1-140)
       fi
       : > "$LAST_FILE"
-      [ -n "$msg" ] && msg="$msg  ·  "
-      printf 'change-prompt(worktree> )+change-footer(%s%s)' "$msg" "$FOOTER"
+      if [ -n "$msg" ]; then printf '%s\n%s\n' "$msg" "$FOOTER" > "$FOOTER_FILE"
+      else printf '%s\n' "$FOOTER" > "$FOOTER_FILE"; fi
+      printf 'change-prompt(worktree> )+transform-footer(%q)' "$FOOT_SH"
       printf '+unbind(y,n,c)+rebind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,left,right)\n'
       ;;
     *) printf 'ignore\n' ;;
@@ -1298,6 +1305,13 @@ fi
   printf ' --path "$1" --type "$2" --id "$3"\n'
 } > "$show_sh" && chmod +x "$show_sh"
 
+# transform-footer takes a command and uses its output, one screen line per
+# line -- which is how the footer gets two lines. change-footer cannot: it
+# takes a single string and renders a literal \n.
+printf '#!/bin/sh\ncat %q 2>/dev/null\n' "$FOOTER_FILE" > "$foot_sh"
+chmod +x "$foot_sh"
+printf '%s\n' "$FOOTER" > "$FOOTER_FILE"
+
 # fzf runs this after every reload; it prints a pos() action when the child
 # left one behind, and nothing otherwise.
 pos_sh="$tmpdir/posact"
@@ -1352,7 +1366,8 @@ while :; do
   # $FZF_PROMPT is the mode: "worktree> " normally, "delete? " or "branch> "
   # while a question is up. It is the one piece of state fzf exports back to
   # a transform, which is why the prompt carries it.
-  restore="change-prompt(worktree> )+change-footer($FOOTER)+unbind(y,n,c)"
+  printf '%s\n' "$FOOTER" > "$FOOTER_FILE"
+  restore="change-prompt(worktree> )+transform-footer($foot_sh)+unbind(y,n,c)"
   restore="$restore+rebind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,left,right)"
 
   sel=$(
