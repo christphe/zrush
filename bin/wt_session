@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+#
+# wt_session — the shell Zed starts in its terminal panel.
+#
+# Resumes the Claude Code session that `wt` associated with THIS worktree,
+# or starts a fresh one. The association lives in the worktree's own gitdir:
+#
+#     <git rev-parse --absolute-git-dir>/wt-session
+#
+# which is `repo/.git/worktrees/<name>` for a linked worktree and `repo/.git`
+# for the main one. Per-worktree by construction, so several Zed windows can
+# each hold their own session. No global state, no secrets.
+#
+# File format (shell-ish, one key per line, unknown keys ignored):
+#     session_id=<uuid>
+#
+# Wire it up in ~/.config/zed/settings.json:
+#   "terminal": { "shell": { "with_arguments": {
+#       "program": "$HOME/.local/bin/wt_session", "args": [] } } }
+#
+# It also clears the CLAUDE_CODE_* markers an editor may have inherited from a
+# Claude session that launched it; without that, Claude Code writes no
+# transcript and the session can never be resumed.
+#
+# Claude does NOT replace this shell: when you quit it you land in your login
+# shell instead of losing the terminal panel. Set WT_SESSION_EXEC=1 to exec
+# Claude directly instead.
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wt"
+CONFIG_FILE="$CONFIG_DIR/config"
+CLAUDE_PROJECTS="$HOME/.claude/projects"
+STATE_BASENAME="wt-session"
+
+login_shell="${SHELL:-/bin/zsh}"
+
+warn() { printf 'wt_session: %s\n' "$*" >&2; }
+
+# Always end in a usable shell. Guard against wt_session being someone's
+# $SHELL *and* their login shell re-invoking it.
+run_shell() { exec "$login_shell" -l; }
+[ -n "${WT_SESSION_ACTIVE:-}" ] && run_shell
+export WT_SESSION_ACTIVE=1
+
+# shellcheck disable=SC1090
+[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+
+# An editor launched from inside a Claude session inherits its environment,
+# and every terminal that editor opens inherits it in turn. Claude Code then
+# sees CLAUDE_CODE_CHILD_SESSION and turns transcript saving off:
+#
+#   Transcript saving is off - inherited CLAUDE_CODE_CHILD_SESSION marker
+#
+# A session with no transcript cannot be resumed and shows no title, which is
+# exactly what wt exists to provide. This terminal is a top-level session, so
+# drop the markers that say otherwise. WT_KEEP_CLAUDE_ENV=1 leaves them alone.
+if [ -z "${WT_KEEP_CLAUDE_ENV:-}" ]; then
+  unset CLAUDE_CODE_CHILD_SESSION \
+        CLAUDE_CODE_SESSION_ID \
+        CLAUDE_CODE_SESSION_ATTENDED \
+        CLAUDE_CODE_MESSAGING_SOCKET \
+        CLAUDE_CODE_MESSAGING_TOKEN \
+        CLAUDE_CODE_ENTRYPOINT \
+        CLAUDE_PID \
+        CLAUDECODE \
+        CLAUDE_EFFORT \
+        AI_AGENT
+fi
+
+# --------------------------------------------------------------- locate ----
+command -v git >/dev/null 2>&1 || run_shell
+command -v claude >/dev/null 2>&1 || run_shell
+[ -t 0 ] && [ -t 1 ] || run_shell          # not a terminal: just be a shell
+
+toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || run_shell
+[ -n "$toplevel" ] && [ -d "$toplevel" ] || run_shell
+
+gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null)
+state_file=""
+[ -n "$gitdir" ] && [ -d "$gitdir" ] && state_file="$gitdir/$STATE_BASENAME"
+
+# ----------------------------------------------------- read the session ----
+# First `session_id=` line wins. Anything that is not a UUID is discarded.
+read_session_id() {
+  [ -n "$state_file" ] && [ -f "$state_file" ] || return 1
+  local raw
+  raw=$(sed -n 's/^[[:space:]]*session_id[[:space:]]*=[[:space:]]*\([^[:space:]]*\).*/\1/p' \
+        "$state_file" 2>/dev/null | head -1)
+  raw=${raw#\"}; raw=${raw%\"}
+  case "$raw" in
+    [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+      printf '%s' "$raw"; return 0 ;;
+  esac
+  [ -n "$raw" ] && warn "ignoring malformed session id in $state_file"
+  return 1
+}
+
+# Best-effort pre-flight ONLY: Claude Code exposes no "does this session
+# exist" command, so we look for the transcript it keeps under
+# ~/.claude/projects/<slug>/<id>.jsonl.
+#
+# Which <slug> is NOT predictable from the worktree: a session started by
+# `claude --worktree` is filed under the directory it was launched from, while
+# it runs in the worktree. Session ids are UUIDs, so search every project dir
+# instead of guessing one. `claude --resume <id>` works from any directory, so
+# finding the file anywhere is enough.
+#
+# Never used to resume — `claude --resume <id>` stays the thing that resumes.
+# On any doubt we answer "yes" and let Claude decide.
+session_looks_resumable() {  # $1 = id
+  local hit
+  [ -d "$CLAUDE_PROJECTS" ] || return 0
+  hit=$(find "$CLAUDE_PROJECTS" -mindepth 2 -maxdepth 2 \
+          \( -name "$1.jsonl" -o -name "$1" \) -print -quit 2>/dev/null)
+  [ -n "$hit" ]
+}
+
+# ------------------------------------------------------------------ run ----
+cd "$toplevel" || run_shell
+
+session_id=$(read_session_id) || session_id=""
+
+if [ -n "$session_id" ] && ! session_looks_resumable "$session_id"; then
+  warn "session $session_id is gone — starting a new one"
+  session_id=""
+fi
+
+if [ -n "${WT_SESSION_EXEC:-}" ]; then
+  if [ -n "$session_id" ]; then exec claude --resume "$session_id"; else exec claude; fi
+fi
+
+if [ -n "$session_id" ]; then
+  claude --resume "$session_id"
+else
+  claude
+fi
+
+run_shell

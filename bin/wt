@@ -1,59 +1,103 @@
 #!/usr/bin/env bash
 #
-# wt — pick a git worktree with fzf, open it in Zed and/or run Claude Code there.
+# wt — pick a git worktree *or one of its Claude Code sessions* with fzf,
+#      then open it in Zed.
+#
+# The association worktree <-> session lives in the worktree's own gitdir:
+#
+#     <git rev-parse --absolute-git-dir>/wt-session      # session_id=<uuid>
+#
+# i.e. `repo/.git/worktrees/<name>` for a linked worktree, `repo/.git` for the
+# main one. Per-worktree by construction, so several Zed windows can each hold
+# their own session. No global state, no secrets. `wt_session`, the shell Zed
+# starts in its terminal panel, reads that file and resumes the session.
 #
 # The picker LOOPS: after Zed opens, or after you quit claude, you land back on
 # the (refreshed) list. Esc / ctrl-c / ctrl-q leaves wt.
 #
-#   enter    open the worktree in Zed, with Claude Code resuming its last
-#            conversation inside Zed's terminal panel (needs wt-zed-shell,
-#            see install.sh -- press ctrl-` once per worktree, Zed then
-#            reopens the panel by itself)
-#   ctrl-z   open in Zed only, no Claude
+#   enter    on a WORKTREE  drop its session association, then open the editor
+#                           -> wt_session starts a fresh Claude there
+#            on a SESSION   write that session id, then open the editor
+#                           -> wt_session resumes it
+#            on [...more]   load more of that worktree's older sessions
 #   ctrl-o   run `claude` here, in the current terminal (new session)
-#   ctrl-r   run `claude --resume` here, in the current terminal
-#   ctrl-e   open in Zed *and* run claude in the current terminal
-#   ctrl-y   print the path and exit  (e.g.  cd "$(wt -p)" )
+#   ctrl-w   create a worktree; on a session row, bind that session to it
+#   ctrl-d   on a SESSION delete that conversation; on a WORKTREE remove it,
+#            and optionally delete the sessions that belong to it
+#   left/right  fold / unfold a worktree's rows
+#   ctrl-l   reload the list
 #
-# Deps: git, fzf, zed, claude. Optional: jq (live-session badges).
+# The last line of the list creates a worktree: it asks for a name, runs
+# `git worktree add` under <main worktree>/.claude/worktrees/, and opens Zed.
+#
+# Deps: git, fzf, zed, claude. Optional: jq (session rows, titles, badges).
 # Config: ~/.config/wt/config   (shell syntax, sourced)
 #           WT_DEFAULT_REPO="/path/to/main/repo"   # used when cwd is not a git repo
+#           WT_EDITOR=zed|cursor|code              # editor `enter` opens
+#           WT_EDITOR_CMD=(code --reuse-window)     # or the whole command line
+#           WT_TITLES=0                            # skip the transcript probe
+#           WT_STATUS=0                            # skip the git status column
+#           WT_RESUMABLE_MAX=5                     # dead sessions listed per worktree
+#           WT_RESUMABLE_SCAN=40                   # newest transcripts examined
+#           WT_FZF_HEIGHT="80%"                    # inline instead of full screen
+#           WT_TITLE_WIDTH=48                      # truncate session titles here
+# Cache:  ~/.cache/wt/sessions/  (derived data only, safe to delete)
 # No secrets are ever stored.
 
 set -uo pipefail
 IFS=$'\n\t'
 
 PROG=${0##*/}
+# Absolute path to this script: fzf's reload binding re-runs it.
+SELF=$0
+case "$SELF" in */*) ;; *) SELF=$(command -v -- "$SELF" 2>/dev/null || printf %s "$SELF") ;; esac
+case "$SELF" in */*) SELF=$(cd -- "${SELF%/*}" 2>/dev/null && pwd)/${SELF##*/} ;; esac
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wt"
 CONFIG_FILE="$CONFIG_DIR/config"
-PENDING_DIR="$CONFIG_DIR/pending"
 CLAUDE_PROJECTS="$HOME/.claude/projects"
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/wt/sessions"
+STATE_BASENAME="wt-session"
+TAIL_LINES=400          # how far back we look in a transcript
 
 # ---------------------------------------------------------------- helpers ---
 die()  { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
 warn() { printf '%s: %s\n' "$PROG" "$*" >&2; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+is_uuid() {
+  case "$1" in
+    [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]-[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) return 0 ;;
+  esac
+  return 1
+}
+
 usage() {
   cat <<EOF
-$PROG — git worktree switcher for Zed + Claude Code
+$PROG — git worktree / Claude session switcher for Zed
 
 usage: $PROG [options]
 
   -C, --repo <path>   use this repo instead of auto-detecting from \$PWD
   -p, --print         print the selected path and exit (no action)
-  -l, --list          print the worktree table to stdout and exit (no fzf)
+  -l, --list          print the table to stdout and exit (no fzf)
   -n, --no-sessions   skip Claude session lookup (faster)
+  -S, --no-status     skip the git status column (faster on huge repos)
   -1, --once          act on one selection then exit (no loop)
   -h, --help          this help
 
 keys inside fzf:
-  enter    Zed + claude -c in Zed's terminal   (then back to the list)
-  ctrl-z   Zed only
-  ctrl-o   claude here             (new session; back to the list when you quit)
-  ctrl-r   claude --resume here    (existing sessions of that worktree)
-  ctrl-e   Zed + claude here
-  ctrl-y   print path and exit
+  enter    worktree: clear its session, open the editor (wt_session starts a
+                     new Claude session there)
+           session:  bind it to the worktree, open the editor (wt_session
+                     resumes it)
+           [...more]: load more of that worktree's older sessions
+  ctrl-o   run claude here, in this terminal
+  ctrl-w   create a worktree; on a session row, bind that session to it
+  ctrl-d   on a session: delete that conversation
+           on a worktree: remove it, and optionally delete its sessions
+  ctrl-l   reload the list
+  left     fold this worktree's rows   (right unfolds)
+  last row create a new worktree (asks for a name)
   esc / ctrl-c / ctrl-q            quit wt
 EOF
 }
@@ -62,6 +106,12 @@ EOF
 REPO_ARG=""
 PRINT_ONLY=0
 LIST_ONLY=0
+MENU_ONLY=0
+RENDER_ONLY=0
+STATE_DIR=""
+FOLD_PATH=""
+UNFOLD_PATH=""
+MORE_PATH=""
 WANT_SESSIONS=1
 LOOP=1
 while [ $# -gt 0 ]; do
@@ -69,7 +119,17 @@ while [ $# -gt 0 ]; do
     -C|--repo)        REPO_ARG="${2:-}"; [ -n "$REPO_ARG" ] || die "--repo needs a path"; shift 2 ;;
     -p|--print)       PRINT_ONLY=1; LOOP=0; shift ;;
     -l|--list)        LIST_ONLY=1; shift ;;
+    # Internal, for fzf's reload bindings: folding must not tear the picker
+    # down and build it again, so a child process mutates the shared state
+    # directory and prints the new menu on stdout.
+    --menu)           MENU_ONLY=1; shift ;;
+    --render)         RENDER_ONLY=1; shift ;;
+    --state)          STATE_DIR="${2:-}"; [ -n "$STATE_DIR" ] || die "--state needs a path"; shift 2 ;;
+    --fold)           FOLD_PATH="${2:-}"; shift 2 ;;
+    --unfold)         UNFOLD_PATH="${2:-}"; shift 2 ;;
+    --more)           MORE_PATH="${2:-}"; shift 2 ;;
     -n|--no-sessions) WANT_SESSIONS=0; shift ;;
+    -S|--no-status)   WT_STATUS=0; shift ;;
     -1|--once)        LOOP=0; shift ;;
     -h|--help)        usage; exit 0 ;;
     *)                die "unknown option: $1 (try --help)" ;;
@@ -79,10 +139,58 @@ done
 for c in git fzf; do have "$c" || die "missing dependency: $c"; done
 
 # ---------------------------------------------------------------- config ----
-mkdir -p "$CONFIG_DIR" "$PENDING_DIR"
-WT_DEFAULT_REPO=""
+mkdir -p "$CONFIG_DIR"
+WT_DEFAULT_REPO="${WT_DEFAULT_REPO:-}"
+# Which editor `enter` opens a worktree in. A known name gets the right
+# "new window" flag; anything else is run as-is with the path appended.
+#   zed | cursor | code   ->  <editor> -n <path>
+# WT_EDITOR_CMD overrides the whole command line, e.g. (code --reuse-window).
+WT_EDITOR="${WT_EDITOR:-zed}"
+declare -a WT_EDITOR_CMD=()
+# Defaults, overridable from the environment, then from the config file.
+WT_TITLES="${WT_TITLES:-1}"             # 0 disables the transcript probe
+WT_STATUS="${WT_STATUS:-1}"             # 0 disables the per-worktree git status
+WT_RESUMABLE_MAX="${WT_RESUMABLE_MAX:-5}"    # dead sessions listed per worktree (0 = none)
+WT_RESUMABLE_SCAN="${WT_RESUMABLE_SCAN:-40}" # newest transcripts examined, repo-wide
+WT_MORE_STEP="${WT_MORE_STEP:-20}"           # rows added by one "[...more]"
+# Empty = full screen: fzf takes the whole terminal on its alternate screen
+# and gives it back untouched on exit. Set e.g. "80%" to keep it inline.
+WT_FZF_HEIGHT="${WT_FZF_HEIGHT:-}"
+WT_TITLE_WIDTH="${WT_TITLE_WIDTH:-48}"
 # shellcheck disable=SC1090
+_wt_status_cli="$WT_STATUS"
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+# An explicit -S on the command line outranks the config file.
+[ "$_wt_status_cli" = "0" ] && WT_STATUS=0
+# Tolerate WT_EDITOR_CMD="code -n" (a plain string) in the config file:
+# assigning a string to an already-declared array just fills element 0.
+if [ "${#WT_EDITOR_CMD[@]}" -eq 1 ]; then
+  case "${WT_EDITOR_CMD[0]}" in
+    *[[:space:]]*) IFS=$' \t\n' read -r -a WT_EDITOR_CMD <<<"${WT_EDITOR_CMD[0]}" ;;
+  esac
+fi
+if [ "${#WT_EDITOR_CMD[@]}" -eq 0 ] || [ -z "${WT_EDITOR_CMD[0]}" ]; then
+  case "$WT_EDITOR" in
+    # -n on all three: a worktree nested inside another one is otherwise
+    # swallowed by the parent project's window.
+    zed|cursor|code) WT_EDITOR_CMD=("$WT_EDITOR" -n) ;;
+    "")              WT_EDITOR_CMD=(zed -n) ;;
+    *)               WT_EDITOR_CMD=("$WT_EDITOR") ;;
+  esac
+fi
+
+# Hash used as the session-metadata cache key. No hasher -> no cache, and the
+# probe simply runs every time.
+if have md5; then       hash_stdin() { md5 -q; }
+elif have md5sum; then  hash_stdin() { md5sum | cut -d' ' -f1; }
+else                    hash_stdin() { return 1; }
+fi
+
+if [ "$WT_TITLES" != "0" ] && [ "$WANT_SESSIONS" -eq 1 ]; then
+  mkdir -p "$CACHE_DIR" 2>/dev/null
+  # Derived data only: drop whatever has not been touched in a month.
+  find "$CACHE_DIR" -type f -mtime +30 -delete 2>/dev/null
+fi
 
 # ------------------------------------------------------- locate the repo ----
 # Any worktree works: `git worktree list` always reports the whole set,
@@ -102,26 +210,250 @@ git -C "$repo_dir" rev-parse --git-dir >/dev/null 2>&1 || die "not a git reposit
 
 # Absolute path of the main worktree (first porcelain entry), for display only.
 main_root=$(git -C "$repo_dir" worktree list --porcelain | awk '/^worktree /{sub(/^worktree /,""); print; exit}')
+# New worktrees land beside the ones `claude --worktree` makes.
+new_root="$main_root/.claude/worktrees"
 
-tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/wt.XXXXXX") || die "mktemp failed"
-trap 'rm -rf "$tmpdir"' EXIT
-sessions_file="$tmpdir/sessions"
-rows="$tmpdir/rows"
-menu="$tmpdir/menu"
+# A child spawned by a reload binding is handed the parent's state directory
+# and must not delete it; only the process that created it cleans up.
+if [ -n "$STATE_DIR" ]; then
+  [ -d "$STATE_DIR" ] || die "no such state directory: $STATE_DIR"
+  tmpdir="$STATE_DIR"
+else
+  tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/wt.XXXXXX") || die "mktemp failed"
+  trap 'rm -rf "$tmpdir"' EXIT
+fi
+sessions_file="$tmpdir/sessions"   # cwd \t id \t title \t status \t launch-cwd \t kind \t epoch
+owned_file="$tmpdir/owned"         # worktree \t id \t title \t status \t kind
+counts_file="$tmpdir/counts"       # worktree \t resumable-total \t resumable-shown
+expand_file="$tmpdir/expanded"     # worktree \t how many resumables to show there
+collapse_file="$tmpdir/collapsed"  # one worktree path per line: its rows are folded
+status_file="$tmpdir/status"       # worktree \t git badge, one full refresh's worth
+[ -n "$STATE_DIR" ] || { : > "$expand_file"; : > "$collapse_file"; : > "$status_file"; }
+wtlist="$tmpdir/wtlist"            # label \t path
+menu="$tmpdir/menu"                # display \t path \t type \t id
+
+# ---------------------------------------------- per-worktree session state --
+state_file() {  # $1 = worktree path
+  local gd
+  gd=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+  [ -n "$gd" ] && [ -d "$gd" ] || return 1
+  printf '%s/%s' "$gd" "$STATE_BASENAME"
+}
+
+state_read() {  # $1 = worktree path -> prints the session id, if any
+  local f
+  f=$(state_file "$1") || return 1
+  [ -f "$f" ] || return 1
+  sed -n 's/^[[:space:]]*session_id[[:space:]]*=[[:space:]]*\([^[:space:]]*\).*/\1/p' \
+      "$f" 2>/dev/null | head -1
+}
+
+state_write() {  # $1 = worktree path, $2 = session id
+  local f tmp
+  is_uuid "$2" || { warn "refusing to store a malformed session id"; return 1; }
+  f=$(state_file "$1") || { warn "no gitdir for $1"; return 1; }
+  tmp="$f.tmp.$$"
+  if printf 'session_id=%s\n' "$2" > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null
+  warn "could not write $f"
+  return 1
+}
+
+state_clear() {  # $1 = worktree path
+  local f
+  f=$(state_file "$1") || { warn "no gitdir for $1"; return 1; }
+  [ -f "$f" ] || return 0
+  rm -f "$f" 2>/dev/null || { warn "could not remove $f"; return 1; }
+}
+
+# ------------------------------------- best-effort transcript probe --------
+# `claude agents --json` reports the cwd a session was LAUNCHED in, not the one
+# it has since moved to, and no title at all. Both live in the transcript:
+#   {"type":"ai-title","aiTitle":…}   rewritten as the session goes on
+#   every assistant/user line carries .cwd and .gitBranch
+# So we read the tail of the transcript for them. Best-effort in every sense:
+# any failure falls back to the session's name and its launch cwd, and nothing
+# here is ever used to resume — `claude --resume <id>` stays the only way.
+# Results are cached under $CACHE_DIR, keyed by the md5 of the tail we read.
+
+slugify() { printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g'; }
+
+# Folding a worktree hides its session rows. left folds, right unfolds.
+is_collapsed()   { grep -qxF "$1" "$collapse_file" 2>/dev/null; }
+collapse_set()   { is_collapsed "$1" || printf '%s\n' "$1" >> "$collapse_file"; }
+collapse_unset() {
+  grep -vxF "$1" "$collapse_file" > "$collapse_file.new" 2>/dev/null
+  mv -f "$collapse_file.new" "$collapse_file" 2>/dev/null
+}
+
+# `stat` differs between BSD and GNU; settle on one once.
+if stat -f '%m' . >/dev/null 2>&1; then
+  mtime_of()  { stat -f '%m' "$1" 2>/dev/null; }
+  mtime_list() { find "$@" -maxdepth 1 -type f -name '*.jsonl' -exec stat -f '%m %N' {} + 2>/dev/null; }
+else
+  mtime_of()  { stat -c '%Y' "$1" 2>/dev/null; }
+  mtime_list() { find "$@" -maxdepth 1 -type f -name '*.jsonl' -exec stat -c '%Y %n' {} + 2>/dev/null; }
+fi
+
+# Compact age, for the session rows: 40m, 6h, 3d, 5mo.
+NOW=$(date +%s)          # one `date` for the whole run, not one per row
+age_of() {  # $1 = epoch seconds
+  local d
+  d=$(( NOW - ${1:-0} ))
+  [ "$d" -lt 0 ] && d=0
+  if   [ "$d" -lt 3600 ];    then printf '%dm'  $(( d / 60 ))
+  elif [ "$d" -lt 86400 ];   then printf '%dh'  $(( d / 3600 ))
+  elif [ "$d" -lt 2592000 ]; then printf '%dd'  $(( d / 86400 ))
+  else                            printf '%dmo' $(( d / 2592000 ))
+  fi
+}
+
+transcript_path() {  # $1 = launch cwd, $2 = session id
+  printf '%s/%s/%s.jsonl' "$CLAUDE_PROJECTS" "$(slugify "$1")" "$2"
+}
+
+# Two-level cache under $CACHE_DIR/<id>, one line:
+#     <size>-<mtime> \t <md5 of the tail> \t <title> \t <cwd>
+# A matching size+mtime answers without reading the transcript at all; a
+# matching md5 answers when the file was touched but its tail did not change.
+session_meta() {  # $1 = id, $2 = launch cwd  ->  prints "<title>\t<cwd>"
+  session_meta_file "$(transcript_path "$2" "$1")" "$1"
+}
+
+# Cache key for a transcript whose mtime the scan already read: the "m" keeps
+# it distinct from the "<size>-<mtime>" the live path builds.
+
+# $3, when given, is the file's mtime, already known from the directory scan.
+# Passing it keeps this function fork-free on a cache hit, which matters: the
+# scan calls it once per transcript and a repo can hold hundreds.
+session_meta_file() {  # $1 = path, $2 = id, [$3 = mtime]  ->  "<title>\t<cwd>"
+  [ "$WT_TITLES" != "0" ] || return 1
+  local f cache line st key meta blob c_st c_md5 c_title c_cwd _t
+  f="$1"; st="${3:-}"; set -- "$2"
+  [ -n "$st" ] || [ -f "$f" ] || return 1
+  cache="$CACHE_DIR/$1"
+  [ -n "$st" ] || st=$(stat -f '%z-%m' "$f" 2>/dev/null || stat -c '%s-%Y' "$f" 2>/dev/null) || st=""
+
+  c_st=""; c_md5=""; c_title=""; c_cwd=""
+  if [ -f "$cache" ]; then
+    line=""; IFS= read -r line < "$cache" 2>/dev/null || line=""
+    IFS=$'\t' read -r c_st c_md5 c_title c_cwd <<<"$line"
+    if [ -n "$st" ] && [ "$st" = "$c_st" ] && [ -n "$c_cwd" ]; then
+      printf '%s\t%s' "$c_title" "$c_cwd"
+      return 0
+    fi
+  fi
+
+  # Via a file, not a shell variable: 400 transcript lines run to megabytes,
+  # and pushing that through a command substitution costs more than the parse.
+  blob="$tmpdir/blob"
+  tail -n "$TAIL_LINES" "$f" > "$blob" 2>/dev/null || return 1
+  [ -s "$blob" ] || return 1
+  key=$(hash_stdin < "$blob" 2>/dev/null) || key=""
+
+  if [ -n "$key" ] && [ "$key" = "$c_md5" ] && [ -n "$c_cwd" ]; then
+    printf '%s\t%s\t%s\t%s\n' "$st" "$key" "$c_title" "$c_cwd" > "$cache" 2>/dev/null
+    printf '%s\t%s' "$c_title" "$c_cwd"
+    return 0
+  fi
+
+  meta=$(jq -Rr 'fromjson? // empty
+                 | select(.aiTitle != null or .cwd != null)
+                 | [(.aiTitle // ""), (.cwd // "")] | @tsv' < "$blob" 2>/dev/null \
+    | awk -F'\t' '{ if ($1 != "") t = $1; if ($2 != "") c = $2 }
+                  END { gsub(/\t/, " ", t); printf "%s\t%s", t, c }')
+
+  # The title is written once, early, so a long conversation pushes it out of
+  # the tail window -- 7 of 125 transcripts here. Fall back to grepping the
+  # whole file and parsing only the last line that carries one: one pass over
+  # the file, one tiny jq, and the result is cached like everything else.
+  if [ -z "${meta%%$'\t'*}" ]; then
+    _t=$(grep '"aiTitle"' "$f" 2>/dev/null | tail -1 \
+         | jq -r '.aiTitle // empty' 2>/dev/null | tr '\t' ' ')
+    [ -n "$_t" ] && meta="$_t"$'\t'"${meta#*$'\t'}"
+  fi
+  [ -n "${meta#	}" ] || return 1
+
+  [ -n "$key" ] && printf '%s\t%s\t%s\n' "$st" "$key" "$meta" > "$cache" 2>/dev/null
+  printf '%s' "$meta"
+}
 
 # --------------------------------------------------- live Claude sessions ---
 # Official, scriptable source of truth: `claude agents --json`.
-# Produces lines:  <cwd>\t<badge text>
+# Background sessions are dropped: they are reattached with `claude attach`,
+# not `--resume`, so they are not something wt can bind to a Zed terminal.
+# Each row is enriched with the transcript probe above:
+#   <effective cwd> \t <id> \t <label> \t <status> \t <launch cwd>
 refresh_sessions() {
   : > "$sessions_file"
   [ "$WANT_SESSIONS" -eq 1 ] || return 0
   have claude && have jq || return 0
-  claude agents --json --all 2>/dev/null \
-    | jq -r '.[]? | [.cwd // "", .name // .sessionId[0:8] // "?"] | @tsv' 2>/dev/null \
-    | awk -F'\t' '
-        { n[$1]++; if (!($1 in f)) f[$1]=$2 }
-        END { for (p in n) printf "%s\t%d live (%s%s)\n", p, n[p], f[p], (n[p]>1 ? ", +" n[p]-1 : "") }
-      ' > "$sessions_file"
+  local id cwd name status started meta title ecwd
+  while IFS=$'\t' read -r cwd id name status started; do  # cwd, id, name, status, startedAt
+    [ -n "$id" ] || continue
+    title=""; ecwd=""
+    if meta=$(session_meta "$id" "$cwd"); then
+      title=${meta%%$'\t'*}
+      ecwd=${meta#*$'\t'}
+    fi
+    [ -n "$title" ] || title="$name"
+    [ -n "$ecwd" ]  || ecwd="$cwd"
+    if [ "${#title}" -gt "$WT_TITLE_WIDTH" ]; then
+      title="${title:0:$((WT_TITLE_WIDTH - 1))}…"
+    fi
+    [ "${started:-0}" -gt 0 ] 2>/dev/null && status="$status $(age_of "$started")"
+    printf '%s\t%s\t%s\t%s\t%s\tlive\t%s\n' \
+      "$ecwd" "$id" "$title" "$status" "$cwd" "${started:-0}" >> "$sessions_file"
+  # `claude agents` lists one entry per PROCESS, and two processes can share a
+  # session id (`claude -c` on a conversation that is already open). Group by
+  # sessionId so a session is one row, not one row per process.
+  done < <(claude agents --json --all 2>/dev/null \
+           | jq -r '[ .[]?
+                      | select((.kind // "") == "interactive")
+                      | select((.sessionId // "") != "") ]
+                    | group_by(.sessionId)[]
+                    | max_by(.startedAt // 0)
+                    | [.cwd // "", .sessionId, .name // (.sessionId[0:8]), .status // "",
+                       ((.startedAt // 0) / 1000 | floor)]
+                    | @tsv' 2>/dev/null)
+}
+
+# A session's cwd may be a subdirectory of the worktree, or a worktree the
+# session moved into after launch. Attach each one to the worktree that is the
+# longest prefix of its effective cwd, falling back to its launch cwd.
+assign_sessions() {
+  : > "$owned_file"
+  [ -s "$sessions_file" ] && [ -s "$wtlist" ] || return 0
+  awk -F'\t' -v OFS='\t' -v maxr="${WT_RESUMABLE_MAX:-0}" \
+      -v ef="$expand_file" -v wl="$wtlist" -v cf="$counts_file" '
+    function owner(cwd,   i, p, l, best, bl) {
+      best = ""; bl = 0
+      for (i = 1; i <= nwt; i++) {
+        p = wp[i]; l = length(p)
+        if (cwd == p || substr(cwd, 1, l + 1) == p "/") { if (l > bl) { bl = l; best = p } }
+      }
+      return best
+    }
+    FILENAME == ef { lim[$1] = $2 + 0; next }          # per-worktree overrides
+    FILENAME == wl { wp[++nwt] = $2; next }
+    {
+      o = owner($1)
+      if (o == "") o = owner($5)
+      if (o == "") next
+      if ($6 == "resum") {
+        total[o]++
+        cap = (o in lim) ? lim[o] : maxr
+        if (total[o] > cap) next
+        shown[o]++
+      }
+      print o, $2, $3, $4, $6
+    }
+    END {
+      for (o in total) print o, total[o], shown[o] + 0 > cf
+    }
+  ' "$expand_file" "$wtlist" "$sessions_file" > "$owned_file"
 }
 
 # Historical (resumable) sessions: Claude Code exposes no non-interactive
@@ -139,33 +471,127 @@ history_count() {
 
 session_badge() {  # $1 = worktree path
   local live hist
-  live=$(awk -F'\t' -v p="$1" '$1==p {print $2; exit}' "$sessions_file")
+  live=$(awk -F'\t' -v p="$1" '$1==p && $5=="live"{n++} END{print n+0}' "$owned_file" 2>/dev/null)
   hist=$(history_count "$1")
-  if [ -n "$live" ]; then
-    printf '● %s' "$live"
+  if [ "${live:-0}" -gt 0 ]; then
+    printf '● %s live' "$live"
   elif [ "${hist:-0}" -gt 0 ]; then
     printf '◌ %s resumable' "$hist"
   fi
 }
 
+# ------------------------------------------------------- git status ---------
+# One `git status --porcelain=v2 --branch` per worktree yields both numbers:
+# the changed files and the ahead/behind counts against the upstream. Measured
+# at 40-250 ms on a large repo; -S / WT_STATUS=0 skips it.
+#
+# Prints "<changed>\t<untracked>\t<ahead>\t<behind>\t<has-upstream>".
+git_counts() {  # $1 = worktree path
+  git -C "$1" status --porcelain=v2 --branch 2>/dev/null | awk '
+    /^# branch\.ab /  { a = $3 + 0; b = -($4 + 0); up = 1 }
+    /^[12u] /         { c++ }        # 1=changed 2=renamed/copied u=unmerged
+    /^\? /            { n++ }
+    END { printf "%d\t%d\t%d\t%d\t%d", c+0, n+0, a+0, b+0, up+0 }
+  '
+}
+
+# Compact, plain text (pad() counts characters, so no colour in here).
+#   ~3  changed tracked files      ?1  untracked
+#   ↑2  commits ahead of upstream  ↓1  behind        ⚠  no upstream at all
+status_badge() {  # $1 = worktree path
+  [ "$WT_STATUS" != "0" ] || return 0
+  local c n a b up out="" hit
+  # Cached for the whole refresh: a fold redraws the menu and must not pay for
+  # four `git status` again. The leading "-" makes an empty badge a cache hit.
+  hit=$(awk -F'\t' -v p="$1" '$1==p{print $2; exit}' "$status_file" 2>/dev/null)
+  [ -n "$hit" ] && { printf '%s' "${hit#-}"; return 0; }
+  IFS=$'\t' read -r c n a b up < <(git_counts "$1")
+  [ "${c:-0}" -gt 0 ] && out="$out ~$c"
+  [ "${n:-0}" -gt 0 ] && out="$out ?$n"
+  if [ "${up:-0}" -eq 0 ]; then
+    out="$out ⚠"
+  else
+    [ "${a:-0}" -gt 0 ] && out="$out ↑$a"
+    [ "${b:-0}" -gt 0 ] && out="$out ↓$b"
+  fi
+  out="${out# }"
+  printf '%s\t-%s\n' "$1" "$out" >> "$status_file" 2>/dev/null
+  printf '%s' "$out"
+}
+
+# Sessions that are no longer running but can still be resumed. Claude Code
+# offers no non-interactive listing for them, so this reads the transcripts it
+# keeps -- best effort, and bounded: only the newest $WT_RESUMABLE_SCAN files
+# are examined, and at most $WT_RESUMABLE_MAX land under any one worktree.
+# Nothing here resumes anything; `claude --resume <id>` still does that.
+refresh_resumable() {
+  [ "$WANT_SESSIONS" -eq 1 ] || return 0
+  [ "${WT_RESUMABLE_MAX:-0}" != "0" ] || return 0
+  [ -d "$CLAUDE_PROJECTS" ] || return 0
+  have jq || return 0
+
+  local -a dirs=()
+  local d p f id meta title ecwd mt scan seen
+  # Project dirs that can hold this repo's sessions: the main worktree's slug
+  # and everything filed under it (linked worktrees, `claude --worktree`),
+  # plus each worktree's own slug for worktrees kept outside the repo.
+  for d in "$CLAUDE_PROJECTS/$(slugify "$main_root")"*; do
+    [ -d "$d" ] && dirs+=("$d")
+  done
+  while IFS=$'\t' read -r _ p; do
+    [ -n "$p" ] || continue
+    d="$CLAUDE_PROJECTS/$(slugify "$p")"
+    [ -d "$d" ] || continue
+    case " ${dirs[*]} " in *" $d "*) ;; *) dirs+=("$d") ;; esac
+  done < "$wtlist"
+  [ "${#dirs[@]}" -gt 0 ] || return 0
+
+  # Expanding a worktree lifts the cap: the rows it wants may sit well past
+  # the newest $WT_RESUMABLE_SCAN transcripts of the repo.
+  scan="$WT_RESUMABLE_SCAN"
+  [ -s "$expand_file" ] && scan=1000000
+
+  # The ids already listed as live, gathered once: a grep per transcript costs
+  # more than the whole scan.
+  local seen
+  seen=$(cut -f2 "$sessions_file" 2>/dev/null | tr '\n' ' ')
+
+  while IFS=' ' read -r mt f; do
+    [ -n "$f" ] || continue
+    id=${f##*/}; id=${id%.jsonl}
+    is_uuid "$id" || continue
+    case " $seen " in *" $id "*) continue ;; esac
+    meta=$(session_meta_file "$f" "$id" "m$mt") || continue
+    title=${meta%%$'\t'*}; ecwd=${meta#*$'\t'}
+    [ -n "$ecwd" ] || continue
+    [ -n "$title" ] || title="${id:0:8}"
+    if [ "${#title}" -gt "$WT_TITLE_WIDTH" ]; then
+      title="${title:0:$((WT_TITLE_WIDTH - 1))}…"
+    fi
+    seen="$seen $id"
+    printf '%s\t%s\t%s\tresumable %s\t%s\tresum\t%s\n' \
+      "$ecwd" "$id" "$title" "$(age_of "${mt:-0}")" "$ecwd" "${mt:-0}" >> "$sessions_file"
+  done < <(mtime_list "${dirs[@]}" | sort -rn | head -n "$scan")
+}
+
 # ------------------------------------------------------ collect worktrees ---
-# Parse porcelain output into rows: <label>\t<badge>\t<path>
+# Parse porcelain output into "$wtlist": <label>\t<path>
 wt_path=""; wt_branch=""; wt_flags=""
-flush_row() {
+flush_wt() {
   [ -n "$wt_path" ] || return 0
   local label="$wt_branch"
   [ -n "$wt_flags" ] && label="$label $wt_flags"
   [ "$wt_path" = "$main_root" ] && label="$label [main wt]"
-  printf '%s\t%s\t%s\n' "$label" "$(session_badge "$wt_path")" "$wt_path" >> "$rows"
+  printf '%s\t%s\n' "$label" "$wt_path" >> "$wtlist"
   wt_path=""; wt_branch=""; wt_flags=""
 }
 
-build_menu() {
-  : > "$rows"
+collect_worktrees() {
+  : > "$wtlist"
   wt_path=""; wt_branch=""; wt_flags=""
   while IFS= read -r line; do
     case "$line" in
-      worktree\ *) flush_row; wt_path="${line#worktree }" ;;
+      worktree\ *) flush_wt; wt_path="${line#worktree }" ;;
       branch\ *)   wt_branch="${line#branch refs/heads/}" ;;
       detached)    wt_branch="(detached)" ;;
       bare)        wt_branch="(bare)" ;;
@@ -173,30 +599,253 @@ build_menu() {
       prunable*)   wt_flags="$wt_flags ⚠" ;;
     esac
   done < <(git -C "$repo_dir" worktree list --porcelain)
-  flush_row
-  [ -s "$rows" ] || die "no worktrees found in $repo_dir"
+  flush_wt
+}
 
-  # Pad columns 1 and 2 so paths line up; keep the raw path as the last field.
-  awk -F'\t' '
-    { b[NR]=$1; s[NR]=$2; p[NR]=$3; if (length($1)>w) w=length($1); if (length($2)>v) v=length($2) }
-    END { for (i=1;i<=NR;i++) printf "\033[1;36m%-*s\033[0m  \033[33m%-*s\033[0m  \033[2m%s\033[0m\t%s\n", w, b[i], v, s[i], p[i], p[i] }
-  ' "$rows" > "$menu"
+# printf pads by bytes, so pad by characters ourselves: worktree labels and
+# session names routinely carry accents and the ●/├─ glyphs.
+pad() {  # $1 = string, $2 = target width
+  local s="$1" n="$2" fill="" k=$(( $2 - ${#1} ))
+  [ "$k" -gt 0 ] && printf -v fill '%*s' "$k" ''
+  printf '%s%s' "$s" "$fill"
+}
+
+# $1 = full | more | render
+#   full    re-probe everything (the default)
+#   more    keep the live sessions, re-scan transcripts to pull in older ones
+#   render  no probing at all, just lay the rows out again (folding)
+build_menu() {
+  local mode="${1:-full}"
+  collect_worktrees
+  [ -s "$wtlist" ] || die "no worktrees found in $repo_dir"
+  [ "$mode" = "render" ] || refresh_resumable
+  # Newest first, live and resumable interleaved: the cap below then keeps the
+  # most recent ones, and the rows come out in date order for free.
+  if [ -s "$sessions_file" ]; then
+    sort -t$'\t' -k7,7nr -o "$sessions_file" "$sessions_file" 2>/dev/null || true
+  fi
+  assign_sessions
+
+  local -a r_type=() r_path=() r_id=() r_c1=() r_c2=() r_c3=()
+  local label path bound n i id name status kind dot mark tree hidden fold _owner
+
+  while IFS=$'\t' read -r label path; do
+    [ -n "$path" ] || continue
+
+    bound=$(state_read "$path" 2>/dev/null) || bound=""
+    n=$(awk -F'\t' -v p="$path" '$1==p{n++} END{print n+0}' "$owned_file" 2>/dev/null)
+
+    # Resumables held back by the per-worktree cap get a "[...more]" row.
+    hidden=$(awk -F'\t' -v p="$path" '$1==p{print ($2+0)-($3+0); exit}' "$counts_file" 2>/dev/null)
+    [ "${hidden:-0}" -gt 0 ] || hidden=0
+
+    # ▾ unfolded, ▸ folded, blank when there is nothing under it. The two
+    # columns are always there so the labels stay aligned.
+    if [ "${n:-0}" -eq 0 ]; then fold="  "
+    elif is_collapsed "$path"; then fold="▸ "
+    else fold="▾ "
+    fi
+
+    r_type+=("wt"); r_path+=("$path"); r_id+=("")
+    r_c1+=("$fold$label"); r_c2+=("$(session_badge "$path")"); r_c3+=("$(status_badge "$path")")
+
+    [ "${n:-0}" -gt 0 ] || continue
+    is_collapsed "$path" && continue
+    i=0
+    while IFS=$'\t' read -r _owner id name status kind; do
+      i=$((i+1))
+      if [ "$i" -eq "$n" ] && [ "$hidden" -eq 0 ]; then tree="└─"; else tree="├─"; fi
+      # ● running, ◌ resumable but not running
+      [ "$kind" = "live" ] && dot="●" || dot="◌"
+      mark="$status"
+      [ -n "$bound" ] && [ "$bound" = "$id" ] && mark="$mark ← bound"
+      r_type+=("session"); r_path+=("$path"); r_id+=("$id")
+      r_c1+=("   $tree $dot $name"); r_c2+=("$mark"); r_c3+=("")
+    done < <(awk -F'\t' -v p="$path" '$1==p' "$owned_file")
+
+    if [ "$hidden" -gt 0 ]; then
+      r_type+=("more"); r_path+=("$path"); r_id+=("")
+      r_c1+=("   └─ […more]"); r_c2+=("+$hidden older"); r_c3+=("")
+    fi
+  done < "$wtlist"
+
+  # Last row: create a worktree. No path, so every consumer keys off type.
+  r_type+=("new"); r_path+=(""); r_id+=("")
+  r_c1+=("  + new worktree…"); r_c2+=(""); r_c3+=("")
+
+  local w=0 v=0 x=0 k col loc
+  for k in "${!r_c1[@]}"; do
+    [ "${#r_c1[$k]}" -gt "$w" ] && w=${#r_c1[$k]}
+    [ "${#r_c2[$k]}" -gt "$v" ] && v=${#r_c2[$k]}
+    [ "${#r_c3[$k]}" -gt "$x" ] && x=${#r_c3[$k]}
+  done
+
+  : > "$menu"
+  for k in "${!r_c1[@]}"; do
+    case "${r_type[$k]}" in
+      wt)  col=$'\033[1;36m'; loc="${r_path[$k]}" ;;
+      new)  col=$'\033[1;32m'; loc="$new_root/<name>" ;;
+      more) col=$'\033[2;35m'; loc="" ;;
+      *)   col=$'\033[0;35m'; loc="" ;;
+    esac
+    printf '%s%s\033[0m  \033[33m%s\033[0m  \033[0;32m%s\033[0m  \033[2m%s\033[0m\t%s\t%s\t%s\n' \
+      "$col" "$(pad "${r_c1[$k]}" "$w")" "$(pad "${r_c2[$k]}" "$v")" \
+      "$(pad "${r_c3[$k]}" "$x")" \
+      "$loc" "${r_path[$k]}" "${r_type[$k]}" "${r_id[$k]}" >> "$menu"
+  done
 }
 
 # ---------------------------------------------------------------- actions ---
-open_zed() {  # $1 = worktree path
-  have zed || { warn "zed CLI not found (Zed > Install CLI)"; return 1; }
-  zed "$1" || warn "zed failed to open $1"
+# Zed 1.20.2 offers no way to focus the window that already holds a project:
+# `cli_default_open_behavior` is either "new_window" (a second window on the
+# same path) or "existing_window" (every worktree piled into the focused
+# window's sidebar). A `<path>/.` subpath appeared to focus, but four calls in
+# a row produced four windows, so it does not. Measured, not assumed.
+#
+# Nested worktrees have a further catch: while the parent project is open in
+# Zed, `zed <parent>/.claude/worktrees/<name>` is swallowed by the parent's
+# window. Only the -n flag reliably gives such a worktree its own window --
+# at the cost of a new window on every open. See WT_EDITOR / WT_EDITOR_CMD.
+open_editor() {  # $1 = worktree path
+  have "${WT_EDITOR_CMD[0]}" \
+    || { warn "${WT_EDITOR_CMD[0]} not found (install its shell command)"; return 1; }
+  "${WT_EDITOR_CMD[@]}" "$1" || warn "could not open $1"
 }
 
-# Leave a one-shot flag that wt-zed-shell picks up the next time a Zed
-# terminal opens in that directory. Content = mode (continue|resume|new).
-# No secrets; consumed and deleted by the wrapper.
-arm_zed_claude() {  # $1 = worktree path, $2 = mode
-  local slug
-  slug=$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')
-  printf '%s\n' "$2" > "$PENDING_DIR/$slug" 2>/dev/null \
-    || warn "could not write the Claude flag for $1"
+# Remote default branch, the base every new branch is cut from. No fetch:
+# wt never touches the network.
+default_base() {
+  local b
+  b=$(git -C "$repo_dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) \
+    && [ -n "$b" ] && { printf '%s' "$b"; return 0; }
+  for b in origin/main origin/master; do
+    git -C "$repo_dir" rev-parse --verify --quiet "$b" >/dev/null 2>&1 \
+      && { printf '%s' "$b"; return 0; }
+  done
+  return 1
+}
+
+# Ask for a name and add the worktree under $new_root. An existing branch is
+# checked out as-is; a new one is cut from the remote default branch.
+# Prints the new path on stdout, everything else goes to stderr.
+create_worktree() {
+  local name dest base
+  printf 'branch name (empty to cancel): ' >&2
+  IFS= read -r name || { printf '\n' >&2; return 1; }
+  name="${name#"${name%%[![:space:]]*}"}"
+  name="${name%"${name##*[![:space:]]}"}"
+  [ -n "$name" ] || return 1
+  git check-ref-format --branch "$name" >/dev/null 2>&1 \
+    || { warn "invalid branch name: $name"; return 1; }
+
+  dest="$new_root/${name##*/}"
+  [ -e "$dest" ] && { warn "already there: $dest"; return 1; }
+  mkdir -p "$new_root" || { warn "could not create $new_root"; return 1; }
+
+  if git -C "$repo_dir" show-ref --verify --quiet "refs/heads/$name"; then
+    git -C "$repo_dir" worktree add "$dest" "$name" >&2 || return 1
+  else
+    base=$(default_base) || { warn "no remote default branch (origin/HEAD)"; return 1; }
+    printf '%s: branching %s off %s\n' "$PROG" "$name" "$base" >&2
+    # --no-track: the branch starts at $base but owns no upstream, so a later
+    # `git push -u origin HEAD` sets the right one instead of pointing at main.
+    git -C "$repo_dir" worktree add --no-track -b "$name" "$dest" "$base" >&2 || return 1
+  fi
+  printf '%s' "$dest"
+}
+
+# Delete one session's transcript, wherever Claude Code filed it, plus the
+# sidecar directory and our cached title. Prints how many files went.
+purge_session() {  # $1 = session id
+  local f dir gone=0
+  [ -n "$1" ] || return 1
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    rm -f "$f" && gone=$((gone+1))
+    dir="${f%.jsonl}"
+    [ -d "$dir" ] && rm -rf "$dir"
+  done < <(find "$CLAUDE_PROJECTS" -mindepth 2 -maxdepth 2 -name "$1.jsonl" 2>/dev/null)
+  rm -f "$CACHE_DIR/$1" 2>/dev/null
+  printf '%s' "$gone"
+}
+
+# ctrl-d on a session row: delete that one conversation. The worktree stays.
+delete_session() {  # $1 = id, $2 = worktree path, $3 = title, $4 = kind
+  local id="$1" p="$2" title="$3" kind="$4" ans gone bound
+  [ -n "$id" ] || return 1
+  if [ "$kind" = "live" ]; then
+    warn "session $id is running; stop it first"
+    return 1
+  fi
+  printf 'delete session "%s" (%s)? [y/N] ' "$title" "${id:0:8}" >&2
+  IFS= read -r ans || return 1
+  case "$ans" in y|Y|yes) ;; *) return 1 ;; esac
+
+  gone=$(purge_session "$id")
+  if [ "${gone:-0}" -eq 0 ]; then
+    warn "no transcript found for $id"
+    return 1
+  fi
+  # Drop the association if this worktree pointed at the session just deleted.
+  bound=$(state_read "$p" 2>/dev/null) || bound=""
+  [ "$bound" = "$id" ] && state_clear "$p"
+  printf '%s: deleted %s file(s) for %s\n' "$PROG" "$gone" "${id:0:8}" >&2
+  return 0
+}
+
+# Remove a worktree and, if asked, the Claude transcripts of the sessions
+# that belong to it. Three answers, because "delete the worktree" and "delete
+# the conversations that happened in it" are not the same decision.
+#
+# Deleting a session means deleting Claude Code's own transcript file under
+# ~/.claude/projects/. Running sessions are never touched.
+delete_worktree() {  # $1 = worktree path
+  local p="$1" rows n live ans id kind gone=0
+  [ -n "$p" ] || return 1
+  if [ "$p" = "$main_root" ]; then
+    warn "refusing to remove the main worktree"
+    return 1
+  fi
+
+  rows=$(awk -F'\t' -v w="$p" '$1==w{print $2"\t"$5}' "$owned_file" 2>/dev/null)
+  n=$(printf '%s' "$rows" | grep -c . 2>/dev/null) || n=0
+  live=$(printf '%s' "$rows" | awk -F'\t' '$2=="live"{k++} END{print k+0}')
+
+  if [ "${n:-0}" -eq 0 ]; then
+    printf 'remove worktree %s? [y/N] ' "$p" >&2
+    IFS= read -r ans || return 1
+    case "$ans" in y|Y|yes) ;; *) return 1 ;; esac
+    ans=n
+  else
+    printf '%s has %s session(s)' "$p" "$n" >&2
+    [ "${live:-0}" -gt 0 ] && printf ', %s of them running' "$live" >&2
+    printf '.\nremove the worktree and delete those sessions? [y]es / [n]o, keep them / [c]ancel ' >&2
+    IFS= read -r ans || return 1
+    case "$ans" in
+      y|Y|yes) ans=y ;;
+      n|N|no)  ans=n ;;
+      *)       return 1 ;;
+    esac
+  fi
+
+  git -C "$repo_dir" worktree remove "$p" >&2 || {
+    warn "worktree kept; use 'git worktree remove --force' yourself if you mean it"
+    return 1
+  }
+
+  [ "$ans" = "y" ] || return 0
+  while IFS=$'\t' read -r id kind; do
+    [ -n "$id" ] || continue
+    if [ "$kind" = "live" ]; then
+      warn "session $id is running; stop it first, transcript kept"
+      continue
+    fi
+    gone=$(( gone + $(purge_session "$id") ))
+  done <<EOF
+$rows
+EOF
+  [ "$gone" -gt 0 ] && printf '%s: deleted %s transcript(s)\n' "$PROG" "$gone" >&2
+  return 0
 }
 
 # Run claude in a subshell: wt keeps its own cwd and regains control on quit.
@@ -206,33 +855,178 @@ run_claude() {  # $1 = worktree path, rest = extra claude args
   ( cd "$p" && claude "$@" )
 }
 
+# --menu: print the menu once, for fzf's reload binding, and leave.
+if [ "$MENU_ONLY" -eq 1 ]; then
+  [ -n "$FOLD_PATH" ]   && collapse_set   "$FOLD_PATH"
+  [ -n "$UNFOLD_PATH" ] && collapse_unset "$UNFOLD_PATH"
+  if [ -n "$MORE_PATH" ]; then
+    cur=$(awk -F'\t' -v p="$MORE_PATH" '$1==p{print $2; exit}' "$expand_file" 2>/dev/null)
+    [ -n "$cur" ] || cur="$WT_RESUMABLE_MAX"
+    awk -F'\t' -v p="$MORE_PATH" '$1!=p' "$expand_file" > "$expand_file.new" 2>/dev/null
+    mv -f "$expand_file.new" "$expand_file" 2>/dev/null
+    printf '%s\t%s\n' "$MORE_PATH" "$(( cur + WT_MORE_STEP ))" >> "$expand_file"
+  fi
+  # A reload resets fzf's cursor to the top, so leave it the row the key was
+  # pressed on: the worktree for a fold, the "[...more]" row for an unfold
+  # (or that worktree's last row once nothing is left to unfold).
+  pos_of() {  # $1 = worktree path, $2 = row type
+    awk -F'\t' -v p="$1" -v t="$2" '$2==p && $3==t {print NR; exit}' "$menu"
+  }
+  if [ "$RENDER_ONLY" -eq 1 ]; then
+    # State built by the parent: only lay the rows out again. `more` still
+    # needs the transcript scan, the rest costs one `git worktree list`.
+    [ -n "$MORE_PATH" ] && build_menu more || build_menu render
+  else
+    refresh_sessions
+    build_menu full
+  fi
+  for _p in "$FOLD_PATH" "$UNFOLD_PATH"; do
+    [ -n "$_p" ] && pos_of "$_p" wt > "$tmpdir/pos"
+  done
+  if [ -n "$MORE_PATH" ]; then
+    # Once everything is unfolded the "[...more]" row is gone; park the cursor
+    # on the worktree rather than on its last session, so the next enter does
+    # not silently bind a session nobody aimed at.
+    _at=$(pos_of "$MORE_PATH" more)
+    [ -n "$_at" ] || _at=$(pos_of "$MORE_PATH" wt)
+    [ -n "$_at" ] && printf '%s' "$_at" > "$tmpdir/pos"
+  fi
+  cat "$menu"
+  exit 0
+fi
+
+# fzf runs a bind's command through sh, so hand it a script instead of a
+# quoted one-liner: no escaping to get wrong, whatever the repo path holds.
+reload_sh="$tmpdir/reload"
+{
+  printf '#!/bin/sh\nexec'
+  printf ' %q' "$SELF" --menu --repo "$repo_dir"
+  [ "$WANT_SESSIONS" -eq 0 ] && printf ' -n'
+  printf '\n'
+} > "$reload_sh" && chmod +x "$reload_sh"
+
+# Folding and "[...more]" go through fzf's reload rather than quitting it:
+# tearing the picker down and starting it again costs far more than the
+# redraw. $1 $2 are --fold/--unfold/--more and the path, quoted by fzf.
+act_sh="$tmpdir/act"
+{
+  printf '#!/bin/sh\nexec'
+  printf ' %q' "$SELF" --menu --render --state "$tmpdir" --repo "$repo_dir"
+  [ "$WANT_SESSIONS" -eq 0 ] && printf ' -n'
+  [ "$WT_STATUS" = "0" ] && printf ' -S'
+  printf ' "$1" "$2"\n'
+} > "$act_sh" && chmod +x "$act_sh"
+
+# fzf runs this after every reload; it prints a pos() action when the child
+# left one behind, and nothing otherwise.
+pos_sh="$tmpdir/posact"
+cat > "$pos_sh" <<'POSEOF'
+#!/bin/sh
+p="$(dirname "$0")/pos"
+[ -s "$p" ] || exit 0
+printf 'pos(%s)' "$(cat "$p")"
+rm -f "$p"
+POSEOF
+chmod +x "$pos_sh"
+
+# Identity of the row the cursor sat on, so the next pass can go back to it:
+# "<path>\t<type>\t<id>". Empty on the first pass.
+cursor_key=""
+
 # ------------------------------------------------------------- main loop ----
+next_build=full
+# Once the transcript scan has run uncapped, every resumable the repo has is
+# already in $sessions_file: further "[...more]" presses only need a redraw.
+# refresh_sessions truncates that file, so a full rebuild resets this.
+scanned_all=0
 while :; do
-  refresh_sessions
-  build_menu
+  case "$next_build" in
+    full) refresh_sessions; : > "$status_file"; scanned_all=0 ;;
+    more) : ;;                 # live list and git status still good
+  esac
+  build_menu "$next_build"
+  next_build=full
 
   if [ "$LIST_ONLY" -eq 1 ]; then
     awk -F'\t' '{print $1}' "$menu"
     exit 0
   fi
 
+  # Put the cursor back where it was. --sync makes sure the list is loaded
+  # before `start` fires; a row that vanished just leaves the cursor on top.
+  # No --height at all = fzf's full-screen mode (alternate screen).
+  height_opt=()
+  [ -n "$WT_FZF_HEIGHT" ] && height_opt=(--height="$WT_FZF_HEIGHT")
+
+  pos_bind=()
+  if [ -n "$cursor_key" ]; then
+    at=$(awk -F'\t' -v k="$cursor_key" '$2"\t"$3"\t"$4==k{print NR; exit}' "$menu")
+    [ -n "$at" ] && pos_bind=(--bind "start:pos($at)")
+  fi
+
   sel=$(
-    fzf --ansi \
-        --delimiter=$'\t' --with-nth=1 \
-        --height=80% --reverse --border \
+    fzf --ansi --sync \
+        --delimiter=$'\t' --with-nth=1 --id-nth=2,3,4 \
+        ${height_opt[@]+"${height_opt[@]}"} --reverse --border \
         --prompt="worktree> " \
-        --header=$'enter: Zed + claude -c inside Zed  |  ctrl-z: Zed only  |  ctrl-o: claude here  |  ctrl-r: resume here  |  ctrl-y: path  |  esc: quit' \
-        --expect=ctrl-z,ctrl-o,ctrl-r,ctrl-e,ctrl-y,ctrl-q \
-        --preview='git -C {2} status --short --branch 2>/dev/null | head -15; echo; git -C {2} log --oneline --decorate -n 10 2>/dev/null' \
+        --footer=$'enter open  ^o claude  ^w worktree  ^d delete  ^l reload  ←→ fold  esc quit' \
+        --expect=ctrl-o,ctrl-w,ctrl-d,ctrl-q \
+        --bind="ctrl-l:reload($reload_sh)" \
+        --bind="left:reload($act_sh --fold {2})" \
+        --bind="load:transform($pos_sh)" \
+        --bind="right:reload($act_sh --unfold {2})" \
+        --bind="enter:transform:[ {3} = more ] && echo \"reload($act_sh --more {2})\" || echo accept" \
+        ${pos_bind[@]+"${pos_bind[@]}"} \
+        --preview='[ -d {2} ] && { git -C {2} status --short --branch 2>/dev/null | head -15; echo; git -C {2} log --oneline --decorate -n 10 2>/dev/null; }' \
         --preview-window=right:50%:wrap \
         < "$menu"
   )
   # Empty selection = esc / ctrl-c / no match -> leave wt.
   [ -n "$sel" ] || break
 
+  title=""; kind=""
   key=$(printf '%s\n' "$sel" | sed -n '1p')
-  path=$(printf '%s\n' "$sel" | sed -n '2p' | awk -F'\t' '{print $2}')
+  line=$(printf '%s\n' "$sel" | sed -n '2p')
+  path=$(printf '%s' "$line"   | awk -F'\t' '{print $2}')
+  rtype=$(printf '%s' "$line"  | awk -F'\t' '{print $3}')
+  sessid=$(printf '%s' "$line" | awk -F'\t' '{print $4}')
   [ "$key" = "ctrl-q" ] && break
+  cursor_key=$(printf '%s\t%s\t%s' "$path" "$rtype" "$sessid")
+
+  # The "new worktree" row: no path to act on, it makes one.
+  if [ "$rtype" = "new" ]; then
+    case "$key" in
+      *)
+        if newp=$(create_worktree) && [ -n "$newp" ]; then
+          cursor_key=$(printf '%s\t%s\t' "$newp" "wt")
+          state_clear "$newp"
+          [ "$PRINT_ONLY" -eq 1 ] && { printf '%s\n' "$newp"; break; }
+          open_editor "$newp"
+        fi
+        ;;
+    esac
+    [ "$LOOP" -eq 1 ] || break
+    continue
+  fi
+
+  # The "[...more]" row is not an action: it raises this worktree's cap and
+  # redraws, so enter after enter keeps unfolding it.
+  if [ "$rtype" = "more" ]; then
+    cur=$(awk -F'\t' -v p="$path" '$1==p{print $2; exit}' "$expand_file" 2>/dev/null)
+    [ -n "$cur" ] || cur="$WT_RESUMABLE_MAX"
+    awk -F'\t' -v p="$path" '$1!=p' "$expand_file" > "$expand_file.new" 2>/dev/null
+    mv -f "$expand_file.new" "$expand_file" 2>/dev/null
+    printf '%s\t%s\n' "$path" "$(( cur + WT_MORE_STEP ))" >> "$expand_file"
+    if [ "$scanned_all" -eq 1 ]; then
+      next_build=render        # the rows are already in hand, just show more
+    else
+      next_build=more          # first unfold: scan the transcripts uncapped
+      scanned_all=1
+    fi
+    [ "$LOOP" -eq 1 ] || break
+    continue
+  fi
+
   [ -n "$path" ] || break
   if [ ! -d "$path" ]; then
     warn "worktree path no longer exists: $path"
@@ -245,13 +1039,40 @@ while :; do
   fi
 
   case "$key" in
-    ctrl-y) printf '%s\n' "$path"; break ;;
-    ctrl-z) open_zed "$path" ;;
+    # ctrl-w: make a worktree and, on a session row, hand that session to it.
+    # Lets a dead session be resumed somewhere other than where it ran.
+    ctrl-w)
+      if newp=$(create_worktree) && [ -n "$newp" ]; then
+        if [ "$rtype" = "session" ] && [ -n "$sessid" ]; then
+          state_write "$newp" "$sessid"
+        else
+          state_clear "$newp"
+        fi
+        cursor_key=$(printf '%s\t%s\t' "$newp" "wt")
+        open_editor "$newp"
+      fi
+      ;;
     ctrl-o) run_claude "$path" ;;
-    ctrl-r) run_claude "$path" --resume ;;
-    ctrl-e) open_zed "$path"; run_claude "$path" ;;
-    # enter: Claude runs *inside* Zed's terminal, via the wt-zed-shell flag.
-    *)      arm_zed_claude "$path" continue; open_zed "$path" ;;
+    ctrl-d)
+      if [ "$rtype" = "session" ]; then
+        title=$(awk -F'\t' -v i="$sessid" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
+        kind=$(awk -F'\t' -v i="$sessid" '$2==i{print $5; exit}' "$owned_file" 2>/dev/null)
+        delete_session "$sessid" "$path" "${title:-${sessid:0:8}}" "$kind" \
+          && cursor_key=$(printf '%s\t%s\t' "$path" "wt")
+      else
+        delete_worktree "$path" && cursor_key=""
+      fi
+      ;;
+    # enter: set (or drop) the worktree's session, then let Zed's wt_session
+    # terminal do the actual resuming.
+    *)
+      if [ "$rtype" = "session" ] && [ -n "$sessid" ]; then
+        state_write "$path" "$sessid"
+      else
+        state_clear "$path"
+      fi
+      open_editor "$path"
+      ;;
   esac
 
   [ "$LOOP" -eq 1 ] || break
