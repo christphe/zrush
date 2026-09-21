@@ -116,6 +116,11 @@ DO_ACTION=""
 DO_PATH=""
 DO_TYPE=""
 DO_ID=""
+DO_NAME=""
+ASK=""
+ANSWER=""
+Q_TEXT=""
+Q_CUR=""
 FOLD_PATH=""
 UNFOLD_PATH=""
 MORE_PATH=""
@@ -138,6 +143,11 @@ while [ $# -gt 0 ]; do
     --path)           DO_PATH="${2:-}"; shift 2 ;;
     --type)           DO_TYPE="${2:-}"; shift 2 ;;
     --id)             DO_ID="${2:-}"; shift 2 ;;
+    --name)           DO_NAME="${2:-}"; shift 2 ;;
+    --ask)            ASK="${2:-}"; shift 2 ;;
+    --answer)         ANSWER="${2:-}"; shift 2 ;;
+    --query)          Q_TEXT="${2:-}"; shift 2 ;;
+    --current)        Q_CUR="${2:-}"; shift 2 ;;
     --state)          STATE_DIR="${2:-}"; [ -n "$STATE_DIR" ] || die "--state needs a path"; shift 2 ;;
     --fold)           FOLD_PATH="${2:-}"; shift 2 ;;
     --unfold)         UNFOLD_PATH="${2:-}"; shift 2 ;;
@@ -153,6 +163,7 @@ done
 # --sessions and --do carry their own target, so the repo comes from it.
 [ -n "$SESSIONS_OF" ] && [ -z "$REPO_ARG" ] && REPO_ARG="$SESSIONS_OF"
 [ -n "$DO_ACTION" ] && [ -z "$REPO_ARG" ] && [ -d "$DO_PATH" ] && REPO_ARG="$DO_PATH"
+{ [ -n "$ASK" ] || [ -n "$ANSWER" ]; } && [ -z "$REPO_ARG" ] && [ -d "$DO_PATH" ] && REPO_ARG="$DO_PATH"
 
 for c in git fzf; do have "$c" || die "missing dependency: $c"; done
 
@@ -260,6 +271,15 @@ counts_file="$tmpdir/counts"       # worktree \t resumable-total \t resumable-sh
 expand_file="$tmpdir/expanded"     # worktree \t how many resumables to show there
 collapse_file="$tmpdir/collapsed"  # one worktree path per line: its rows are folded
 status_file="$tmpdir/status"       # worktree \t git badge, one full refresh's worth
+# Helper scripts fzf calls back into. Named here so a child spawned by a
+# binding, which only gets --state, can point at them too. No parentheses in
+# FOOTER: it is passed inside change-footer( ).
+reload_sh="$tmpdir/reload"; RELOAD_SH="$reload_sh"
+act_sh="$tmpdir/act";       ACT_SH="$act_sh"
+do_sh="$tmpdir/do"
+ask_sh="$tmpdir/ask"
+ans_sh="$tmpdir/ans";       ANS_SH="$ans_sh"
+FOOTER='enter open  ^o claude  ^w worktree  ^d delete  ^l reload  ←→ fold  esc quit'
 [ -n "$STATE_DIR" ] || { : > "$expand_file"; : > "$collapse_file"; : > "$status_file"; }
 wtlist="$tmpdir/wtlist"            # label \t path
 menu="$tmpdir/menu"                # display \t path \t type \t id
@@ -827,31 +847,6 @@ open_editor() {  # $1 = worktree path
 # so a nested fzf is fine -- and a list you arrow through beats a y/n typed
 # blind at a prompt you cannot see the context of.
 
-# Prints the key of the chosen line, nothing when cancelled.
-ask() {  # $1 = prompt, $2 = header, rest = "key<TAB>label"
-  local prompt="$1" header="$2"
-  shift 2
-  printf '%s\n' "$@" \
-    | fzf --ansi --delimiter=$'\t' --with-nth=2 --no-sort --no-info \
-          --height=~40% --border=rounded --reverse --pointer='>' \
-          --prompt="$prompt" --header="$header" 2>/dev/null \
-    | cut -f1
-}
-
-# A branch name: type a new one, or pick one that already exists. --print-query
-# puts the typed text on line 1 and the selection, if any, on line 2.
-ask_branch() {
-  local out q sel
-  out=$(git -C "$repo_dir" for-each-ref --sort=-committerdate \
-          --format='%(refname:short)' refs/heads 2>/dev/null \
-        | fzf --print-query --no-info --height=~50% --border=rounded --reverse \
-              --pointer='>' --prompt='branch> ' \
-              --header='type a new branch name, or pick one to check out' 2>/dev/null)
-  q=$(printf '%s' "$out" | sed -n '1p')
-  sel=$(printf '%s' "$out" | sed -n '2p')
-  printf '%s' "${sel:-$q}"
-}
-
 # Remote default branch, the base every new branch is cut from. No fetch:
 # zrush never touches the network.
 default_base() {
@@ -868,9 +863,9 @@ default_base() {
 # Ask for a name and add the worktree under $new_root. An existing branch is
 # checked out as-is; a new one is cut from the remote default branch.
 # Prints the new path on stdout, everything else goes to stderr.
-create_worktree() {
+create_worktree() {  # $1 = branch name, already chosen by the footer
   local name dest base
-  name=$(ask_branch)
+  name="${1:-}"
   name="${name#"${name%%[![:space:]]*}"}"
   name="${name%"${name##*[![:space:]]}"}"
   [ -n "$name" ] || return 1
@@ -910,16 +905,13 @@ purge_session() {  # $1 = session id
 
 # ctrl-d on a session row: delete that one conversation. The worktree stays.
 delete_session() {  # $1 = id, $2 = worktree path, $3 = title, $4 = kind
+  # The footer asked already; this only does the work.
   local id="$1" p="$2" title="$3" kind="$4" ans gone bound
   [ -n "$id" ] || return 1
   if [ "$kind" = "live" ]; then
     warn "session $id is running; stop it first"
     return 1
   fi
-  ans=$(ask 'delete? ' "$title  (${id:0:8})" \
-            "yes"$'\t'"delete this conversation, for good" \
-            "no"$'\t'"cancel")
-  [ "$ans" = "yes" ] || return 1
 
   gone=$(purge_session "$id")
   if [ "${gone:-0}" -eq 0 ]; then
@@ -942,7 +934,7 @@ delete_session() {  # $1 = id, $2 = worktree path, $3 = title, $4 = kind
 #
 # Deleting a session means deleting Claude Code's own transcript file under
 # ~/.claude/projects/. Running sessions are never touched.
-delete_worktree() {  # $1 = worktree path
+delete_worktree() {  # $1 = worktree path, $2 = y (with sessions) | n (without)
   local p="$1" rows n live ans hdr id kind gone=0
   [ -n "$p" ] || return 1
   if [ "$p" = "$main_root" ]; then
@@ -954,20 +946,10 @@ delete_worktree() {  # $1 = worktree path
   n=$(printf '%s' "$rows" | grep -c . 2>/dev/null) || n=0
   live=$(printf '%s' "$rows" | awk -F'\t' '$2=="live"{k++} END{print k+0}')
 
-  if [ "${n:-0}" -eq 0 ]; then
-    ans=$(ask 'remove? ' "${p##*/}  (no sessions)" \
-              "n"$'\t'"remove this worktree" \
-              "cancel"$'\t'"cancel")
-    [ "$ans" = "n" ] || return 1
-  else
-    hdr="${p##*/}  —  $n session(s)"
-    [ "${live:-0}" -gt 0 ] && hdr="$hdr, $live running"
-    ans=$(ask 'remove? ' "$hdr" \
-              "y"$'\t'"remove the worktree and delete its sessions" \
-              "n"$'\t'"remove the worktree, keep the sessions" \
-              "cancel"$'\t'"cancel")
-    case "$ans" in y|n) ;; *) return 1 ;; esac
-  fi
+  # $2 is the answer the footer already collected: y also deletes the
+  # sessions, n keeps them. Nothing is asked here any more.
+  ans="${2:-}"
+  case "$ans" in y|n) ;; *) return 1 ;; esac
 
   git -C "$repo_dir" worktree remove "$p" >&2 || {
     warn "worktree kept; use 'git worktree remove --force' yourself if you mean it"
@@ -1021,23 +1003,117 @@ run_claude_term() {  # $1 = worktree path, rest = extra claude args
     || { warn "${ZRUSH_TERMINAL[0]} could not open a terminal"; rm -rf "$dir"; return 1; }
 }
 
+# --ask / --answer: the two halves of a question posed in the footer.
+#
+# fzf cannot draw a dialog over its own list, but it can rewrite the footer
+# and swap which keys are live. --ask prints the fzf actions that put the
+# question up and remembers what y and n should do; --answer carries it out.
+# Nothing hands the terminal to another process, so the list never moves.
+# y-action \t n-action \t path \t type \t id. "-" stands for "nothing to do":
+# tab is IFS whitespace, so `read` would swallow an empty field and shift
+# every column after it.
+CONFIRM_FILE="$tmpdir/confirm"
+
+if [ -n "$ASK" ]; then
+  case "$ASK" in
+    delete)
+      case "$DO_TYPE" in
+        session|orphan)
+          t=$(awk -F'\t' -v i="$DO_ID" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
+          printf 'delete-session\t-\t%s\t%s\t%s\n' "$DO_PATH" "$DO_TYPE" "$DO_ID" > "$CONFIRM_FILE"
+          printf 'change-prompt(delete? )+change-footer(delete  %s  for good?    y  yes    esc  cancel)' \
+                 "${t:-${DO_ID:0:8}}"
+          ;;
+        wt)
+          [ "$DO_PATH" = "$main_root" ] && { printf 'change-footer(the main worktree cannot be removed -- press any key)'; exit 0; }
+          n=$(awk -F'\t' -v w="$DO_PATH" '$1==w{k++} END{print k+0}' "$owned_file" 2>/dev/null)
+          live=$(awk -F'\t' -v w="$DO_PATH" '$1==w && $5=="live"{k++} END{print k+0}' "$owned_file" 2>/dev/null)
+          if [ "${n:-0}" -eq 0 ]; then
+            printf 'delete-wt\t-\t%s\twt\t-\n' "$DO_PATH" > "$CONFIRM_FILE"
+            printf 'change-prompt(remove? )+change-footer(remove worktree  %s ?    y  yes    esc  cancel)' "${DO_PATH##*/}"
+          else
+            printf 'delete-all\tdelete-wt\t%s\twt\t-\n' "$DO_PATH" > "$CONFIRM_FILE"
+            extra=""; [ "${live:-0}" -gt 0 ] && extra=", $live running"
+            printf 'change-prompt(remove? )+change-footer(remove  %s  and its %s session%s?    y  yes, delete them too    n  no, keep them    esc  cancel)' \
+                   "${DO_PATH##*/}" "$n$extra" "$( [ "$n" -gt 1 ] && printf s )"
+          fi
+          ;;
+        *) printf 'ignore'; exit 0 ;;
+      esac
+      printf '+rebind(y,n,c)+unbind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,left,right)\n'
+      ;;
+
+    branch)
+      case "$DO_TYPE" in
+        more|orphans) printf 'ignore'; exit 0 ;;
+      esac
+      printf 'branch\t-\t%s\t%s\t%s\n' "$DO_PATH" "$DO_TYPE" "$DO_ID" > "$CONFIRM_FILE"
+      printf 'change-prompt(branch> )+change-footer(type a new branch name, or pick one below.    enter  create the worktree    esc  cancel)'
+      printf '+reload(git -C %q for-each-ref --sort=-committerdate --format=%%\(refname:short\) refs/heads)' "$repo_dir"
+      printf '+unbind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,left,right)\n'
+      ;;
+
+    enter)
+      # In branch mode the list holds branch names, so the typed query or the
+      # highlighted line is the answer; otherwise dispatch on the row type.
+      if [ "${FZF_PROMPT:-}" = "branch> " ]; then
+        name="${Q_CUR:-$Q_TEXT}"
+        printf 'execute-silent(%q branch %q)+change-prompt(worktree> )+change-footer(%s)' \
+               "$ANS_SH" "$name" "$FOOTER"
+        printf '+unbind(y,n,c)+rebind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,left,right)+reload(%q)\n' "$RELOAD_SH"
+        exit 0
+      fi
+      case "$DO_TYPE" in
+        more)       printf 'reload(%q --more %q)\n' "$ACT_SH" "$DO_PATH" ;;
+        new|orphan) exec "$0" --state "$tmpdir" --repo "$repo_dir" --ask branch \
+                         --path "$DO_PATH" --type "$DO_TYPE" --id "$DO_ID" ;;
+        orphans)    printf 'ignore\n' ;;
+        *)          printf 'accept\n' ;;
+      esac
+      ;;
+    *) printf 'ignore\n' ;;
+  esac
+  exit 0
+fi
+
+if [ -n "$ANSWER" ]; then
+  [ -f "$CONFIRM_FILE" ] || exit 0
+  IFS=$'\t' read -r ya na cpath ctype cid < "$CONFIRM_FILE"
+  : > "$CONFIRM_FILE"
+  [ "$ya" = "-" ] && ya=""
+  [ "$na" = "-" ] && na=""
+  [ "$cid" = "-" ] && cid=""
+  [ "$ctype" = "-" ] && ctype=""
+  case "$ANSWER" in
+    y) act="$ya" ;;
+    n) act="$na" ;;
+    branch)
+      [ -n "$DO_NAME" ] || exit 0
+      exec "$0" --state "$tmpdir" --repo "$repo_dir" --do newwt \
+                --path "$cpath" --type "$ctype" --id "$cid" --name "$DO_NAME"
+      ;;
+    *) exit 0 ;;
+  esac
+  [ -n "$act" ] || exit 0
+  exec "$0" --state "$tmpdir" --repo "$repo_dir" --do "$act" \
+            --path "$cpath" --type "$ctype" --id "$cid"
+fi
+
 # --do <action>: the interactive half of a key, run by fzf's execute() so the
 # picker stays up. Everything it prints goes to the terminal, never to the
 # list; the binding pairs it with a reload.
 if [ -n "$DO_ACTION" ]; then
   case "$DO_ACTION" in
-    delete)
-      if [ "$DO_TYPE" = "session" ] || [ "$DO_TYPE" = "orphan" ]; then
-        title=$(awk -F'\t' -v i="$DO_ID" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
-        kind=$(awk -F'\t' -v i="$DO_ID" '$2==i{print $5; exit}' "$owned_file" 2>/dev/null)
-        [ "$DO_TYPE" = "orphan" ] && DO_PATH=""
-        delete_session "$DO_ID" "$DO_PATH" "${title:-${DO_ID:0:8}}" "$kind" || true
-      else
-        delete_worktree "$DO_PATH" || true
-      fi
+    delete-session)
+      title=$(awk -F'\t' -v i="$DO_ID" '$2==i{print $3; exit}' "$owned_file" 2>/dev/null)
+      kind=$(awk -F'\t' -v i="$DO_ID" '$2==i{print $5; exit}' "$owned_file" 2>/dev/null)
+      [ "$DO_TYPE" = "orphan" ] && DO_PATH=""
+      delete_session "$DO_ID" "$DO_PATH" "${title:-${DO_ID:0:8}}" "$kind" || true
       ;;
+    delete-all)  delete_worktree "$DO_PATH" y || true ;;
+    delete-wt)   delete_worktree "$DO_PATH" n || true ;;
     newwt)
-      if newp=$(create_worktree) && [ -n "$newp" ]; then
+      if newp=$(create_worktree "$DO_NAME") && [ -n "$newp" ]; then
         if { [ "$DO_TYPE" = "session" ] || [ "$DO_TYPE" = "orphan" ]; } && [ -n "$DO_ID" ]; then
           state_write "$newp" "$DO_ID"
         else
@@ -1109,7 +1185,6 @@ fi
 
 # fzf runs a bind's command through sh, so hand it a script instead of a
 # quoted one-liner: no escaping to get wrong, whatever the repo path holds.
-reload_sh="$tmpdir/reload"
 {
   printf '#!/bin/sh\nexec'
   printf ' %q' "$SELF" --menu --repo "$repo_dir"
@@ -1120,7 +1195,6 @@ reload_sh="$tmpdir/reload"
 # Folding and "[...more]" go through fzf's reload rather than quitting it:
 # tearing the picker down and starting it again costs far more than the
 # redraw. $1 $2 are --fold/--unfold/--more and the path, quoted by fzf.
-act_sh="$tmpdir/act"
 {
   printf '#!/bin/sh\nexec'
   printf ' %q' "$SELF" --menu --render --state "$tmpdir" --repo "$repo_dir"
@@ -1131,12 +1205,25 @@ act_sh="$tmpdir/act"
 
 # The interactive half, run by execute(): "$1 $2 $3 $4" are the action, the
 # path, the row type and the session id, all quoted by fzf.
-do_sh="$tmpdir/do"
 {
   printf '#!/bin/sh\nexec'
   printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir"
   printf ' --do "$1" --path "$2" --type "$3" --id "$4"\n'
 } > "$do_sh" && chmod +x "$do_sh"
+
+# transform() calls this and feeds our stdout back to fzf as actions.
+{
+  printf '#!/bin/sh\nexec'
+  printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir"
+  printf ' --ask "$1" --path "$2" --type "$3" --id "$4" --query "$5" --current "$6"\n'
+} > "$ask_sh" && chmod +x "$ask_sh"
+
+# And this carries out whatever the footer just asked.
+{
+  printf '#!/bin/sh\nexec'
+  printf ' %q' "$SELF" --state "$tmpdir" --repo "$repo_dir"
+  printf ' --answer "$1" --name "$2"\n'
+} > "$ans_sh" && chmod +x "$ans_sh"
 
 # fzf runs this after every reload; it prints a pos() action when the child
 # left one behind, and nothing otherwise.
@@ -1185,25 +1272,35 @@ while :; do
     [ -n "$at" ] && pos_bind=(--bind "start:pos($at)")
   fi
 
+  # Asking happens in the footer, not in another window. fzf cannot draw a
+  # dialog over its own list, but it can rewrite the footer and swap which
+  # keys are live -- so the list stays exactly where it is, the row you aimed
+  # at stays highlighted, and nothing hands the terminal to another process.
+  # $FZF_PROMPT is the mode: "worktree> " normally, "delete? " or "branch> "
+  # while a question is up. It is the one piece of state fzf exports back to
+  # a transform, which is why the prompt carries it.
+  restore="change-prompt(worktree> )+change-footer($FOOTER)+unbind(y,n,c)"
+  restore="$restore+rebind(ctrl-d,ctrl-w,ctrl-o,ctrl-l,left,right)"
+
   sel=$(
     fzf --ansi --sync \
         --delimiter=$'\t' --with-nth=1 --id-nth=2,3,4 \
         ${height_opt[@]+"${height_opt[@]}"} --reverse --border \
         --prompt="worktree> " \
-        --footer=$'enter open  ^o claude  ^w worktree  ^d delete  ^l reload  ←→ fold  esc quit' \
+        --footer="$FOOTER" --footer-border=rounded \
         --expect=ctrl-o,ctrl-q \
+        --bind="start:unbind(y,n,c)" \
         --bind="ctrl-l:reload($reload_sh)" \
         --bind="left:reload($act_sh --fold {2})" \
-        --bind="load:transform($pos_sh)" \
         --bind="right:reload($act_sh --unfold {2})" \
-        --bind="ctrl-d:execute($do_sh delete {2} {3} {4})+reload($reload_sh)" \
-        --bind="ctrl-w:execute($do_sh newwt {2} {3} {4})+reload($reload_sh)" \
-        --bind="enter:transform:case {3} in \
-            more)        echo \"reload($act_sh --more {2})\" ;; \
-            new|orphan)  echo \"execute($do_sh newwt {2} {3} {4})+reload($reload_sh)\" ;; \
-            orphans)     echo ignore ;; \
-            *)           echo accept ;; \
-          esac" \
+        --bind="load:transform($pos_sh)" \
+        --bind="ctrl-d:transform($ask_sh delete {2} {3} {4})" \
+        --bind="ctrl-w:transform($ask_sh branch {2} {3} {4})" \
+        --bind="enter:transform($ask_sh enter {2} {3} {4} {q} {})" \
+        --bind="y:execute-silent($ans_sh y)+$restore+reload($reload_sh)" \
+        --bind="n:execute-silent($ans_sh n)+$restore+reload($reload_sh)" \
+        --bind="c:$restore" \
+        --bind="esc:transform:[ ! \"\$FZF_PROMPT\" = 'worktree> ' ] && echo \"$restore\" || echo abort" \
         ${pos_bind[@]+"${pos_bind[@]}"} \
         --preview='[ -d {2} ] && { git -C {2} status --short --branch 2>/dev/null | head -15; echo; git -C {2} log --oneline --decorate -n 10 2>/dev/null; }' \
         --preview-window=right:50%:wrap \

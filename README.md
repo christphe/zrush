@@ -76,13 +76,20 @@ The picker **loops**: opening the editor, or quitting `claude`, brings you back
 to the refreshed list, cursor still on the row you acted on. Only `esc` /
 `ctrl-c` / `ctrl-q` leave `zrush`.
 
-Most keys never leave fzf at all. Folding and `[…more]` go through its
-`reload`; the ones that ask something — `ctrl-d`, `ctrl-w`, and `enter` on the
-last row or an orphan — go through `execute`, which lends the terminal to the
-prompt and takes it back. The picker is the same process throughout, so a
-confirmation costs a redraw rather than a restart. Only `enter` on a worktree
-or a session and `ctrl-o` step out, because they hand you over to the editor
-or a new terminal anyway.
+Most keys never leave fzf at all, and none of them hands the terminal to
+another process. Folding and `[…more]` go through `reload`. The ones that ask
+something — `ctrl-d`, `ctrl-w`, and `enter` on the last row or an orphan —
+rewrite the footer into a question and swap which keys are live, then do the
+work through `execute-silent` and reload. fzf cannot draw a dialog over its
+own list, but this costs nothing visually: no screen swap, no flicker, the
+list never moves.
+
+The prompt carries the mode — `worktree>`, `delete?`, `branch>` — because
+`$FZF_PROMPT` is the one piece of state fzf hands back to a `transform`, which
+is how escape knows whether to cancel a question or quit.
+
+Only `enter` on a worktree or a session and `ctrl-o` step out, because they
+hand you over to the editor or a new terminal anyway.
 
 | key | on a **worktree** row | on a **session** row |
 | --- | --- | --- |
@@ -379,18 +386,20 @@ says so and keeps it.
 
 When sessions belong to that worktree it asks a three-way question, because
 "remove the worktree" and "delete the conversations that happened in it" are
-not the same decision. The question is itself an fzf list, so you read the
-options instead of guessing which letter does what:
+not the same decision. The question replaces the footer, so the list stays
+exactly where it is and the row you aimed at stays highlighted:
 
 ```
-  remove? > remove the worktree and delete its sessions
-            remove the worktree, keep the sessions
-            cancel
-  ──────────────────────────────────────────────────────
-  2427 — 3 session(s), 1 running
+  remove? ▌ main [root]        …/wms
+          ▌ 2427               …/wms/.claude/worktrees/2427
+          ▌ + new worktree…
+          ╭──────────────────────────────────────────────────────────╮
+          │ remove  2427  and its 3 sessions, 1 running?             │
+          │    y  yes, delete them too    n  no, keep them    esc  cancel │
+          ╰──────────────────────────────────────────────────────────╯
 ```
 
-Escape cancels, as does the last line.
+The prompt says which mode you are in, and escape cancels without leaving.
 
 `yes` also deletes those sessions' transcript files under
 `~/.claude/projects/`. Running sessions are skipped with a warning — stop them
