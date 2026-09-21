@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
+use zrush_core::config::{Config, Dirs};
 
 struct Sandbox {
     _dir: TempDir,
@@ -63,11 +64,20 @@ fn sandbox() -> Sandbox {
     let log = base.join("log");
     let ed = stub_editor(&base, &log);
 
-    std::fs::write(
-        home.join(".config/zrush/config.toml"),
-        format!("editor_cmd = [\"{}\"]\nstatus = false\n", ed.display()),
-    )
-    .expect("write");
+    // Written by the same code that writes a real one. Hand-rolled TOML got
+    // this wrong on Windows, where a path is full of backslashes and a
+    // double-quoted string treats those as escapes.
+    let cfg = Config {
+        editor_cmd: vec![ed.to_string_lossy().into_owned()],
+        status: false,
+        ..Config::default()
+    };
+    cfg.save(&Dirs {
+        config: home.join(".config/zrush"),
+        cache: home.join(".cache/zrush"),
+        claude_projects: home.join(".claude/projects"),
+    })
+    .expect("config");
 
     Sandbox {
         _dir: dir,
