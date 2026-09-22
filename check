@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Everything CI runs, in the order that fails fastest.
+#
+#   ./check          format, lint, test
+#   ./check -f       fix the formatting instead of complaining about it
+set -uo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
+rc=0
+step() {
+  printf '\n\033[1m%s\033[0m\n' "$1"; shift
+  if "$@"; then printf '  ok\n'; else printf '  FAILED\n'; rc=1; fi
+}
+
+if [ "${1:-}" = "-f" ]; then
+  step "fmt" cargo fmt
+else
+  step "fmt" cargo fmt --check
+fi
+step "clippy" cargo clippy --all-targets --all-features -- -D warnings
+
+# The platform code differs, so linting only the host's half lets the other
+# half break in CI. Skipped when the target is not installed:
+#   rustup target add x86_64-pc-windows-msvc
+if rustup target list --installed 2>/dev/null | grep -q x86_64-pc-windows-msvc; then
+  step "clippy (windows)" cargo clippy --target x86_64-pc-windows-msvc \
+    --all-targets --all-features -- -D warnings
+fi
+step "test" cargo test --workspace
+
+# The MSRV is a promise the manifest makes; CI holds us to it.
+msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+if rustup toolchain list 2>/dev/null | grep -q "^${msrv}"; then
+  step "msrv ($msrv)" cargo "+$msrv" build --workspace --locked
+fi
+
+printf '\n%s\n' "$( [ "$rc" -eq 0 ] && echo 'all green' || echo 'SOMETHING FAILED' )"
+exit "$rc"

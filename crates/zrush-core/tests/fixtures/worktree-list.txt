@@ -1,0 +1,21 @@
+worktree /home/u/repo
+HEAD 1111111111111111111111111111111111111111
+branch refs/heads/main
+
+worktree /home/u/repo/.claude/worktrees/rust
+HEAD 2222222222222222222222222222222222222222
+branch refs/heads/rust
+
+worktree /home/u/repo/.claude/worktrees/detached
+HEAD 3333333333333333333333333333333333333333
+detached
+
+worktree /home/u/repo/.claude/worktrees/locked
+HEAD 4444444444444444444444444444444444444444
+branch refs/heads/locked
+locked
+
+worktree /home/u/repo/.claude/worktrees/gone
+HEAD 5555555555555555555555555555555555555555
+branch refs/heads/gone
+prunable gitdir file points to non-existent location

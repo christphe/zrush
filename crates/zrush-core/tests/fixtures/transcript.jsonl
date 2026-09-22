@@ -1,0 +1,6 @@
+{"type":"user","message":{"content":"hello"},"cwd":"/home/u/repo","timestamp":"2026-09-20T10:00:00.000Z"}
+{"type":"ai-title","aiTitle":"first guess"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hi there"}]},"cwd":"/home/u/repo","timestamp":"2026-09-20T10:00:05.123Z"}
+{"type":"ai-title","aiTitle":"port zrush to rust"}
+{"type":"user","message":{"content":"and\tnow   this"},"cwd":"/home/u/repo/.claude/worktrees/rust","timestamp":"2026-09-20T10:05:00.000Z"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"<thinking>hidden</thinking>"},{"type":"text","text":"done"}]},"cwd":"/home/u/repo/.claude/worktrees/rust","timestamp":"2026-09-20T10:06:00.000Z"}

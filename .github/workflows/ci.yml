@@ -16,12 +16,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # transform-footer needs fzf >= 0.65, which the distro packages do not carry.
-  FZF_VERSION: "0.74.4"
-  # Pinned: the runners ship 0.9.0 (Linux) or nothing at all (macOS), and 0.9.0
-  # reports SC2015 on guards of the form `[ a ] && [ b ] || fallback`, where the
-  # fallback running on a true-then-false is precisely the point.
-  SHELLCHECK_VERSION: "0.11.0"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
   test:
@@ -30,78 +26,96 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
 
-      - name: Install fzf ${{ env.FZF_VERSION }}
+      # The tests build throwaway repositories, so git must be able to
+      # commit. The runners set no identity by default.
+      - name: Give git an identity
         run: |
-          set -euo pipefail
-          case "${{ runner.os }}-$(uname -m)" in
-            Linux-x86_64)  asset=linux_amd64  ;;
-            Linux-aarch64) asset=linux_arm64  ;;
-            macOS-arm64)   asset=darwin_arm64 ;;
-            macOS-x86_64)  asset=darwin_amd64 ;;
-            *) echo "unsupported runner: $(uname -sm)" >&2; exit 1 ;;
-          esac
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-${asset}.tar.gz" \
-            | tar -xz -C "$HOME/.local/bin" fzf
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          git config --global user.email ci@example.invalid
+          git config --global user.name "zrush ci"
+          git config --global init.defaultBranch main
 
-      - name: Install shellcheck ${{ env.SHELLCHECK_VERSION }}
-        run: |
-          set -euo pipefail
-          case "${{ runner.os }}-$(uname -m)" in
-            Linux-x86_64)  asset=linux.x86_64    ;;
-            Linux-aarch64) asset=linux.aarch64   ;;
-            macOS-arm64)   asset=darwin.aarch64  ;;
-            macOS-x86_64)  asset=darwin.x86_64   ;;
-            *) echo "unsupported runner: $(uname -sm)" >&2; exit 1 ;;
-          esac
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.${asset}.tar.xz" \
-            | tar -xJ -C "$HOME/.local/bin" --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # --no-fail-fast: one platform-specific break should not hide the
+      # others behind it.
+      - run: cargo nextest run --workspace --locked --no-fail-fast
 
-      - name: Versions
-        run: |
-          bash --version | head -1
-          fzf --version
-          shellcheck --version | sed -n '2p'
-          jq --version
-          python3 --version
-          git --version
-
-      # tests/run is the whole gate: bash -n, shellcheck, then every test file.
-      # The picker tests drive fzf on a pty, so they are timing-sensitive; a CI
-      # runner is slower than a laptop, hence the longer warmup.
-      - name: Checks and tests
-        env:
-          WARMUP: "7"
-        run: ./tests/run
-
-  package:
-    name: zip
-    needs: test
+  lint:
+    name: fmt and deny
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+      - uses: EmbarkStudios/cargo-deny-action@v2
 
-      - name: Build the zip
-        id: zip
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --locked
+
+  release:
+    name: ${{ matrix.target }}
+    needs: [test, lint]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,   target: aarch64-apple-darwin }
+          - { os: macos-latest,   target: x86_64-apple-darwin }
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-latest,  target: aarch64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      # The only target that needs a cross linker; the rest build natively.
+      - name: Cross linker for aarch64 linux
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p zrush
+
+      - name: Name the artifact
+        id: pack
+        shell: bash
         run: |
           set -euo pipefail
-          name="zrush-$(git rev-parse --short HEAD)"
+          name="zrush-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp -R bin zed install.sh README.md LICENSE "dist/$name/"
-          (cd dist && zip -qr "$name.zip" "$name")
-          unzip -l "dist/$name.zip"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/zrush.exe" "dist/$name/"
+          else
+            cp "target/${{ matrix.target }}/release/zrush" "dist/$name/"
+          fi
+          cp README.md LICENSE "dist/$name/"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.zip.outputs.name }}
-          path: dist/${{ steps.zip.outputs.name }}.zip
+          name: ${{ steps.pack.outputs.name }}
+          path: dist/${{ steps.pack.outputs.name }}
           if-no-files-found: error
           retention-days: 30

@@ -3,7 +3,7 @@
   {
     "context": "Workspace",
     "bindings": {
-      "cmd-shift-j": ["task::Spawn", { "task_name": "Claude session" }]
+      "cmd-shift-j": ["task::Spawn", { "task_name": "zrush: session here" }]
     }
   }
 ]

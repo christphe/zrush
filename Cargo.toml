@@ -1,0 +1,68 @@
+[workspace]
+resolver = "3"
+members = ["crates/zrush-core", "crates/zrush"]
+
+# Shared by every crate in the workspace, so a version is decided once.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "GPL-3.0-only"
+repository = "https://github.com/christphe/zrush"
+
+# Shared with a Zed fork, which is where these crates are vendored for now.
+# Cargo unifies a dependency to one version across a workspace, so anything
+# Zed also uses has to state a floor its version satisfies — that is why
+# some of these look older than they need to be. Raising one is not a
+# cosmetic change: it breaks the vendored build.
+#
+# Only two of them actually move our own lock; the rest are floors that let
+# Zed's older pin win once the workspaces are one. Run `cargo build
+# --locked` after touching any of it, or CI will be the one to notice.
+[workspace.dependencies]
+zrush-core = { path = "crates/zrush-core", version = "0.1.0" }
+
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
+dirs = "6.0.0"
+jiff = "0.2.15"
+nucleo-matcher = "0.3.1"
+ratatui = "0.30.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.12"
+toml = "0.9.8"
+unicode-width = "0.2.2"
+xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
+
+assert_cmd = "2.2.2"
+insta = "1.48.0"
+portable-pty = "0.9.0"
+predicates = "3.1.4"
+tempfile = "3.27.0"
+
+# Applied by every crate through `[lints] workspace = true`.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Terminal coordinates and collection indices convert back and forth all
+# over the table code; casting each one by hand is noise, not safety.
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+# These doc comments describe behaviour, not panics we promise to keep.
+missing_panics_doc = "allow"
+missing_errors_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+# The maps here are built and consumed inside the workspace; a hasher
+# parameter would buy nothing and cost every signature.
+implicit_hasher = "allow"
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.release]
+strip = true
+lto = "thin"
