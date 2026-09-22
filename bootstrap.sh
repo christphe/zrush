@@ -7,7 +7,7 @@
 # Nothing is compiled, so this needs neither Rust nor a checkout.
 #
 #   curl -fsSL https://raw.githubusercontent.com/christphe/zrush/main/bootstrap.sh | sh
-#   sh bootstrap.sh v0.1.0      that release rather than the latest
+#   sh bootstrap.sh v0.0.1      that release rather than the latest
 #   sh bootstrap.sh --nightly   the last green build of main, via gh
 #
 # Piped from curl there is no one to answer the editor question, so it is
@@ -29,7 +29,7 @@ for arg in "$@"; do
 zrush bootstrap — fetch a built binary and install it.
 
   sh bootstrap.sh              the latest release
-  sh bootstrap.sh v0.1.0       that release
+  sh bootstrap.sh v0.0.1       that release
   sh bootstrap.sh --nightly    the last green build of main, via gh
 USAGE
       exit 0

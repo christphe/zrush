@@ -4,7 +4,7 @@ members = ["crates/zrush-core", "crates/zrush"]
 
 # Shared by every crate in the workspace, so a version is decided once.
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
 rust-version = "1.88"
 license = "GPL-3.0-only"
@@ -20,7 +20,7 @@ repository = "https://github.com/christphe/zrush"
 # Zed's older pin win once the workspaces are one. Run `cargo build
 # --locked` after touching any of it, or CI will be the one to notice.
 [workspace.dependencies]
-zrush-core = { path = "crates/zrush-core", version = "0.1.0" }
+zrush-core = { path = "crates/zrush-core", version = "0.0.1" }
 
 clap = { version = "4.6.7", features = ["derive"] }
 crossterm = "0.29.0"

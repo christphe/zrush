@@ -56,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/christphe/zrush/main/bootstrap.sh |
 
 That takes the latest release for your platform, checks it against its
 `.sha256` and runs the `install.sh` inside the archive. `sh bootstrap.sh
-v0.1.0` pins a version; `sh bootstrap.sh --nightly` takes the last green build
+v0.0.1` pins a version; `sh bootstrap.sh --nightly` takes the last green build
 of `main` instead, which needs [`gh`](https://cli.github.com) logged in because
 run artifacts are not public.
 
