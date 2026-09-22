@@ -238,6 +238,19 @@ discovered and resumed, and `Host`, for where a worktree gets shown and where
 an agent runs. The terminal implements `Host` with processes; another front
 end implements it differently and never spawns an editor.
 
+### Living inside an editor
+
+`zrush-core` is currently vendored into a Zed fork, which is the shortest
+path and the reason the shared dependency versions in `Cargo.toml` are
+pinned lower than they would otherwise be: Cargo resolves a dependency to
+one version per workspace.
+
+The intended end state is a process boundary instead — the editor spawns
+zrush and talks to it over stdio — which is what `Host` exists for: the
+editor implements it on its side of the pipe and zrush never learns what
+kind of editor it is talking to. Vendoring ties the two build graphs
+together; a pipe does not.
+
 ## Development
 
 ```sh
