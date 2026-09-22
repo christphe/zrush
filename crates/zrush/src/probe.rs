@@ -151,6 +151,11 @@ pub enum PreviewJob {
     Conversation { agent: String, id: String },
 }
 
+/// Recent commits, with who wrote each one: on a shared branch the author
+/// is half of what the log tells you. `%<(14,trunc)` keeps the column
+/// straight whatever the name.
+const LOG: &[&str] = &["log", "-n", "10", "--pretty=format:%h %<(14,trunc)%an %s%d"];
+
 impl Probes {
     pub fn request_preview(&self, z: &Arc<Zrush>, key: String, job: PreviewJob) {
         let round = self.generation();
@@ -165,9 +170,7 @@ impl Probes {
                         lines.extend(out.lines().take(15).map(str::to_string));
                     }
                     lines.push(String::new());
-                    if let Ok(out) =
-                        zrush_core::git::run(&path, &["log", "--oneline", "--decorate", "-n", "10"])
-                    {
+                    if let Ok(out) = zrush_core::git::run(&path, LOG) {
                         lines.extend(out.lines().map(str::to_string));
                     }
                     crate::ui::preview::Preview::Worktree(lines)
@@ -324,6 +327,26 @@ mod tests {
         for e in &events {
             assert_eq!(e.generation(), Some(round));
         }
+    }
+
+    #[test]
+    fn a_worktree_preview_says_who_wrote_each_commit() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let z = zrush(&td, repo.clone());
+        let (tx, rx) = mpsc::channel();
+        let p = Probes::new(tx);
+        p.request_preview(&z, "w".into(), PreviewJob::Worktree(repo));
+
+        let events = drain(p, &rx);
+        let Some(Event::Preview(_, _, crate::ui::preview::Preview::Worktree(lines))) =
+            events.into_iter().next()
+        else {
+            panic!("no worktree preview");
+        };
+        let log = lines.join("\n");
+        assert!(log.contains("zrush tests"), "no author in:\n{log}");
+        assert!(log.contains("init"), "no subject in:\n{log}");
     }
 
     #[test]
