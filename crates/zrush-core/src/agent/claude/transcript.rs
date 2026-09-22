@@ -88,9 +88,9 @@ pub fn read_meta(path: &Path, tail_lines: usize) -> Option<Meta> {
     (m.title.is_some() || m.cwd.is_some()).then_some(m)
 }
 
-/// The conversation tail, for the preview pane. Tool calls and thinking
-/// blocks start with `<` and are dropped: what you want before resuming a
-/// session is what was said.
+/// The conversation tail, for the preview pane. Thinking blocks and tool
+/// calls are cut out: what you want before resuming a session is what was
+/// said.
 pub fn turns(path: &Path, tail_lines: usize, keep: usize) -> Vec<Turn> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
@@ -110,9 +110,9 @@ pub fn turns(path: &Path, tail_lines: usize, keep: usize) -> Vec<Turn> {
         let Some(content) = l.message.and_then(|m| m.content) else {
             continue;
         };
-        // Each text part is judged on its own. The bash version joined them
-        // first, so an answer opening with a thinking block was dropped
-        // whole; here only the block goes.
+        // Each text part is judged on its own, and each is stripped of the
+        // machinery inside it. The bash version joined them first, so an
+        // answer opening with a thinking block was dropped whole.
         let text = match content {
             serde_json::Value::String(s) => visible(&s).unwrap_or_default(),
             serde_json::Value::Array(parts) => parts
@@ -134,11 +134,61 @@ pub fn turns(path: &Path, tail_lines: usize, keep: usize) -> Vec<Turn> {
     out
 }
 
-/// Tool calls and thinking blocks start with `<`: what you want before
-/// resuming a session is what was said.
+/// Machinery rather than conversation. A thinking block is often followed
+/// by the answer in the same part, so the block is cut out of the text
+/// instead of the whole part being thrown away — that answer is exactly
+/// what you want to read before resuming.
+const NOISE: &[&str] = &[
+    "thinking",
+    "think",
+    "antml:thinking",
+    "system-reminder",
+    "command-name",
+    "command-message",
+    "command-args",
+    "local-command-stdout",
+    "function_calls",
+    "function_results",
+];
+
 fn visible(part: &str) -> Option<String> {
-    let t = squash(part);
+    let t = squash(&strip_noise(part));
+    // Whatever is left opening with `<` is a tool-use blob, not speech.
     (!t.is_empty() && !t.starts_with('<')).then_some(t)
+}
+
+/// Cut every noise block out of a part. A block with no closing tag runs
+/// to the end: an unterminated `<thinking>` has nothing after it worth
+/// keeping either.
+fn strip_noise(part: &str) -> String {
+    let mut s = part.to_string();
+    for tag in NOISE {
+        let close = format!("</{tag}>");
+        while let Some(open) = open_tag(&s, tag) {
+            let end = s[open..]
+                .find(&close)
+                .map_or(s.len(), |j| open + j + close.len());
+            s.replace_range(open..end, " ");
+        }
+    }
+    s
+}
+
+/// Where `<tag>` opens, if it does. The name has to end there: `<think`
+/// must not match `<thinking>`, or its closing tag would never be found
+/// and the rest of the answer would go with it.
+fn open_tag(s: &str, tag: &str) -> Option<usize> {
+    let open = format!("<{tag}");
+    let mut from = 0;
+    while let Some(i) = s[from..].find(&open) {
+        let at = from + i;
+        let after = &s[at + open.len()..];
+        if after.starts_with(['>', '/']) || after.starts_with(char::is_whitespace) {
+            return Some(at);
+        }
+        from = at + open.len();
+    }
+    None
 }
 
 fn squash(s: &str) -> String {
@@ -221,6 +271,35 @@ mod tests {
         assert!(texts.iter().any(|t| t == "and now this"));
         assert!(texts.iter().any(|t| t == "done"));
         assert!(!texts.iter().any(|t| t.contains("hidden")));
+    }
+
+    #[test]
+    fn a_thinking_block_is_cut_out_of_the_part_that_carries_the_answer() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = td.path().join("t.jsonl");
+        std::fs::write(
+            &p,
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<thinking>hidden</thinking> the answer\"}]}}\n",
+        )
+        .unwrap();
+        let texts: Vec<String> = turns(&p, 400, 14).into_iter().map(|t| t.text).collect();
+        assert_eq!(texts, vec!["the answer".to_string()]);
+    }
+
+    #[test]
+    fn a_short_think_tag_does_not_swallow_a_thinking_block() {
+        assert_eq!(
+            visible("<think>a</think> kept <thinking>b</thinking> too"),
+            Some("kept too".to_string())
+        );
+    }
+
+    #[test]
+    fn an_unterminated_noise_block_takes_the_rest_with_it() {
+        assert_eq!(
+            visible("said this <system-reminder>and then junk"),
+            Some("said this".to_string())
+        );
     }
 
     #[test]
