@@ -57,6 +57,10 @@ pub enum Modal {
         suggestions: Vec<String>,
         at: usize,
     },
+    /// What went wrong, wrapped. The status line is one line and git puts
+    /// its reason at the end of a long one: "contains modified or
+    /// untracked files" is exactly the part a flash throws away.
+    Error { title: String, body: String },
     /// Every key, in full.
     Help,
     /// `:` — the k9s command bar.
@@ -79,7 +83,7 @@ impl Modal {
                 at, suggestions, ..
             } => (at, suggestions.len()),
             Self::AgentPicker { at, agents, .. } => (at, agents.len()),
-            Self::Help | Self::Command { .. } => return,
+            Self::Help | Self::Command { .. } | Self::Error { .. } => return,
         };
         if len == 0 {
             *at = 0;
@@ -139,6 +143,7 @@ pub fn render(f: &mut Frame, area: Rect, modal: &Modal) {
         } => {
             input(f, area, title, prompt, value, suggestions, *at);
         }
+        Modal::Error { title, body } => error(f, area, title, body),
         Modal::Help => help(f, area),
         Modal::Command { value } => command(f, area, value),
         Modal::AgentPicker { agents, at, reason } => {
@@ -181,6 +186,35 @@ fn confirm(f: &mut Frame, area: Rect, title: &str, body: &str, choices: &[Choice
         Paragraph::new(lines).wrap(Wrap { trim: false }),
         inset(rect),
     );
+}
+
+/// Wide enough for a git error with an absolute path in it.
+const ERROR_WIDTH: u16 = 72;
+
+fn error(f: &mut Frame, area: Rect, title: &str, body: &str) {
+    let width = ERROR_WIDTH.min(area.width);
+    // `inset` eats two columns each side.
+    let height = wrapped_lines(body, width.saturating_sub(4)) + 2;
+    let rect = centred(area, width, height);
+    frame(f, rect, title, theme::danger(), "esc");
+    f.render_widget(
+        Paragraph::new(body.to_string())
+            .style(theme::danger())
+            .wrap(Wrap { trim: false }),
+        inset(rect),
+    );
+}
+
+/// How tall the wrapped text will be. A word longer than the line — a
+/// path, every time — is broken rather than left to overflow, so counting
+/// characters is close enough, and one spare line covers the rest.
+fn wrapped_lines(text: &str, width: u16) -> u16 {
+    let w = width.max(1) as usize;
+    let n: usize = text
+        .lines()
+        .map(|l| l.chars().count().div_ceil(w).max(1))
+        .sum();
+    u16::try_from(n + 1).unwrap_or(u16::MAX)
 }
 
 /// The branch name, with the branches that already exist under it. This is
@@ -380,6 +414,37 @@ mod tests {
         let text = super::super::tests_support::flatten(term.backend());
         assert!(text.contains("not installed here"));
         assert!(text.contains("claude"));
+    }
+
+    /// The bug this box exists for: the reason is at the end of git's
+    /// line, and a one-line status bar cuts it off.
+    #[test]
+    fn an_error_wraps_far_enough_to_show_the_reason() {
+        let m = Modal::Error {
+            title: "Remove worktree".into(),
+            body: "git worktree remove /Users/someone/projects/a-rather-long-name/worktrees/feat \
+                   failed: fatal: '/Users/someone/projects/a-rather-long-name/worktrees/feat' \
+                   contains modified or untracked files, use --force to delete it"
+                .into(),
+        };
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| render(f, f.area(), &m)).unwrap();
+        let text = super::super::tests_support::flatten(term.backend());
+        assert!(text.contains("Remove worktree"));
+        assert!(
+            text.contains("use --force to delete it"),
+            "the reason was cut off:\n{text}"
+        );
+    }
+
+    #[test]
+    fn an_error_box_fits_a_short_terminal() {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(24, 5)).unwrap();
+        let m = Modal::Error {
+            title: "Open".into(),
+            body: "no editor configured".into(),
+        };
+        term.draw(|f| render(f, f.area(), &m)).unwrap();
     }
 
     #[test]

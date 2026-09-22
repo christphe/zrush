@@ -253,6 +253,16 @@ impl App {
         self.flash = Some(msg.into());
     }
 
+    /// An action that failed says so in a box: git's reason is at the end
+    /// of a line the status line cannot hold, and a truncated error is
+    /// worse than none — it reads as if nothing happened.
+    pub fn error(&mut self, title: impl Into<String>, body: impl std::fmt::Display) {
+        self.modal = Some(Modal::Error {
+            title: title.into(),
+            body: body.to_string(),
+        });
+    }
+
     // ------------------------------------------------------------- keys ---
 
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
@@ -605,6 +615,11 @@ impl App {
         let Some(modal) = self.modal.as_mut() else {
             return Action::None;
         };
+        // An error box has one answer: it goes away.
+        if matches!(modal, Modal::Error { .. }) {
+            self.modal = None;
+            return Action::Redraw;
+        }
         match key.code {
             KeyCode::Esc => {
                 self.modal = None;
@@ -651,7 +666,7 @@ impl App {
             return Action::None;
         };
         match modal {
-            Modal::Help => Action::Redraw,
+            Modal::Help | Modal::Error { .. } => Action::Redraw,
             Modal::Command { value } => self.run_command(&value),
             Modal::AgentPicker { agents, at, .. } => agents
                 .get(at)
@@ -939,6 +954,17 @@ mod tests {
         assert!(a.modal.is_none());
         // Now it quits.
         assert_eq!(a.on_key(code(KeyCode::Esc)), Action::Quit);
+    }
+
+    #[test]
+    fn an_error_box_goes_away_on_any_key() {
+        let mut a = app();
+        a.error("Remove worktree", "fatal: it contains untracked files");
+        assert!(matches!(a.modal, Some(Modal::Error { .. })));
+        assert_eq!(a.on_key(key('j')), Action::Redraw);
+        assert!(a.modal.is_none());
+        // And it did not move the cursor on the way out.
+        assert_eq!(a.cursor, 0);
     }
 
     #[test]

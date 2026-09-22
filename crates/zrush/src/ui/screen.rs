@@ -283,7 +283,7 @@ fn handle(
         }
         Action::Open { worktree, bind } => {
             let bind = bind.as_ref().map(|(a, i)| (a.as_str(), i.as_str()));
-            report(app, z.open(&worktree, bind));
+            report(app, "Open", z.open(&worktree, bind));
         }
         Action::RunAgent { worktree, resume } => run_agent(app, z, &worktree, resume.as_deref()),
         Action::CreateWorktree { name, hand_over } => {
@@ -298,7 +298,7 @@ fn handle(
                 app.flash(format!("deleted {n} file(s)"));
                 probes.refresh(z, app.show_all);
             }
-            Err(e) => app.flash(e.to_string()),
+            Err(e) => app.error("Delete session", e),
         },
         Action::RemoveWorktree {
             path,
@@ -315,9 +315,9 @@ fn handle(
     true
 }
 
-fn report(app: &mut App, r: zrush_core::error::Result<()>) {
+fn report(app: &mut App, what: &str, r: zrush_core::error::Result<()>) {
     if let Err(e) = r {
-        app.flash(e.to_string());
+        app.error(what, e);
     }
 }
 
@@ -326,7 +326,7 @@ fn run_agent(app: &mut App, z: &Arc<Zrush>, worktree: &std::path::Path, resume: 
         app.flash("no agent installed");
         return;
     };
-    report(app, z.run_agent(worktree, agent, resume));
+    report(app, "New session", z.run_agent(worktree, agent, resume));
 }
 
 fn create(
@@ -341,11 +341,11 @@ fn create(
             let bind = hand_over.map(|(a, i)| (a.as_str(), i.as_str()));
             match z.open(&dest, bind) {
                 Ok(()) => app.flash(format!("created {name}")),
-                Err(e) => app.flash(e.to_string()),
+                Err(e) => app.error("Open", e),
             }
             probes.refresh(z, app.show_all);
         }
-        Err(e) => app.flash(e.to_string()),
+        Err(e) => app.error("New worktree", e),
     }
 }
 
@@ -371,7 +371,7 @@ fn remove(
             ));
             probes.refresh(z, app.show_all);
         }
-        Err(e) => app.flash(e.to_string()),
+        Err(e) => app.error("Remove worktree", e),
     }
 }
 
@@ -419,7 +419,7 @@ fn switch_agent(app: &mut App, z: &Arc<Zrush>, probes: &crate::probe::Probes, id
             rebuild(app, z);
             probes.refresh(z, app.show_all);
         }
-        Err(e) => app.flash(e.to_string()),
+        Err(e) => app.error("Switch agent", e),
     }
 }
 
