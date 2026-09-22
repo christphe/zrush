@@ -48,17 +48,35 @@ takes the association with it.
 
 ## Install
 
-Needs Rust ([rustup.rs](https://rustup.rs)) and `git`.
+Needs `git`. Rust only if you build it yourself.
 
 ```sh
-./install.sh          # asks which editor, or keeps the one already configured
-./install.sh zed      # no questions
+curl -fsSL https://raw.githubusercontent.com/christphe/zrush/main/bootstrap.sh | sh
 ```
 
-It builds in release mode, installs the binary into `~/.local/bin`, writes
-`~/.config/zrush/config.toml` if there is none, and for Zed installs a task and
-a keybinding. It also leaves a `zrush_session` shim, so editor settings written
-for the previous version keep working.
+That takes the latest release for your platform, checks it against its
+`.sha256` and runs the `install.sh` inside the archive. `sh bootstrap.sh
+v0.1.0` pins a version; `sh bootstrap.sh --nightly` takes the last green build
+of `main` instead, which needs [`gh`](https://cli.github.com) logged in because
+run artifacts are not public.
+
+Or unpack a [release](https://github.com/christphe/zrush/releases) yourself and
+run the `install.sh` next to the binary. Or, from a checkout:
+
+```sh
+./install-dev.sh          # builds, then installs what came out
+./install-dev.sh zed      # no questions
+```
+
+Either way what lands is the same: the binary in `~/.local/bin`,
+`~/.config/zrush/config.toml` if there is none, and for Zed a task and a
+keybinding. It also leaves a `zrush_session` shim, so editor settings written
+for the previous version keep working. Piped from `curl` there is nobody to ask
+which editor, so that part is skipped — run `install.sh zed` from the unpacked
+archive to do it.
+
+A tag `v*` is what publishes: CI builds the five targets, attaches
+`zrush-<target>.tar.gz` (`.zip` on Windows) and a checksum to the release.
 
 ### Zed
 
