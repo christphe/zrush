@@ -44,6 +44,7 @@ impl Host for ProcessHost {
             .arg(path)
             .status()
             .map_err(|_| ZrushError::msg(format!("{bin} not found (install its shell command)")))?;
+        raise(bin);
         Ok(())
     }
 
@@ -69,6 +70,107 @@ impl Host for ProcessHost {
         Ok(())
     }
 }
+
+/// Bringing the editor to the front.
+///
+/// On macOS, opening a window and activating the application are two
+/// different things: `zed -n <path>` makes the window and leaves the app
+/// where it was, so the worktree opens behind whatever you were looking at
+/// and it reads as nothing having happened. `-n` itself is not optional —
+/// without it a worktree nested inside another one is swallowed by the
+/// parent project's window — so the raise is a second step.
+///
+/// Elsewhere the window manager decides, and a new window normally takes
+/// focus by itself, so there is nothing here to do.
+#[cfg(target_os = "macos")]
+mod focus {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    /// Failure is ignored: the editor did open, and not being frontmost is
+    /// not worth an error.
+    pub fn raise(editor_bin: &str) {
+        let Some(resolved) = locate(editor_bin) else {
+            return;
+        };
+        let Some(bundle) = bundle_of(&resolved) else {
+            return;
+        };
+        let _ = Command::new("open").arg("-a").arg(bundle).status();
+    }
+
+    /// The `.app` a command lives inside, if any.
+    ///
+    /// Derived rather than guessed from the command's name:
+    /// `/usr/local/bin/zed` resolves to
+    /// `/Applications/Zed.app/Contents/MacOS/cli`, and the same walk finds
+    /// `Visual Studio Code.app` from `code`. An editor that is not in a
+    /// bundle simply has nothing to raise.
+    fn bundle_of(resolved: &Path) -> Option<&Path> {
+        resolved
+            .ancestors()
+            .find(|a| a.extension().is_some_and(|e| e == "app"))
+    }
+
+    /// Where a command actually is, following symlinks.
+    fn locate(bin: &str) -> Option<PathBuf> {
+        let direct = Path::new(bin);
+        if direct.components().count() > 1 {
+            return direct.canonicalize().ok();
+        }
+        let paths = std::env::var_os("PATH")?;
+        std::env::split_paths(&paths).find_map(|dir| dir.join(bin).canonicalize().ok())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_bundle_is_derived_from_where_the_cli_really_lives() {
+            assert_eq!(
+                bundle_of(Path::new("/Applications/Zed.app/Contents/MacOS/cli")),
+                Some(Path::new("/Applications/Zed.app"))
+            );
+            assert_eq!(
+                bundle_of(Path::new(
+                    "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+                )),
+                Some(Path::new("/Applications/Visual Studio Code.app"))
+            );
+        }
+
+        #[test]
+        fn an_editor_outside_a_bundle_has_nothing_to_raise() {
+            assert_eq!(bundle_of(Path::new("/usr/local/bin/hx")), None);
+            assert_eq!(bundle_of(Path::new("/")), None);
+        }
+
+        #[test]
+        fn the_innermost_bundle_wins() {
+            assert_eq!(
+                bundle_of(Path::new(
+                    "/Applications/Outer.app/Contents/Inner.app/MacOS/cli"
+                )),
+                Some(Path::new("/Applications/Outer.app/Contents/Inner.app"))
+            );
+        }
+
+        #[test]
+        fn a_command_on_path_is_found() {
+            assert!(locate("sh").is_some());
+            assert!(locate("definitely-not-a-command-here").is_none());
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+use focus::raise;
+
+/// Nothing to do: the window manager decides, and a new window normally
+/// takes focus by itself.
+#[cfg(not(target_os = "macos"))]
+fn raise(_editor_bin: &str) {}
 
 /// Markers an editor may have inherited from the session that launched it.
 /// Without clearing them, Claude Code writes no transcript — and a session

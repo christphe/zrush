@@ -70,6 +70,21 @@ this worktree's session:
     "program": "zrush", "args": ["session"] } } }
 ```
 
+### Focus
+
+`enter` opens the worktree and brings the editor forward. Those are two
+separate things on macOS: `zed -n <path>` makes the window and leaves the
+application where it was, so the worktree appeared behind whatever you were
+looking at and it read as nothing having happened. The `-n` is not optional —
+without it a worktree nested inside another one is swallowed by the parent
+project's window — so zrush raises the application as a second step.
+
+Which application is derived from where the command really lives rather than
+guessed from its name: `/usr/local/bin/zed` resolves into
+`/Applications/Zed.app`, and the same walk finds `Visual Studio Code.app`
+from `code`. An editor that is not in a bundle is simply opened and left
+where it is.
+
 ### Cursor and Code
 
 Set `editor` in the config and use the built-in terminal profile of your
