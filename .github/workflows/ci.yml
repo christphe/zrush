@@ -113,7 +113,7 @@ jobs:
           cp README.md LICENSE "dist/$name/"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.pack.outputs.name }}
           path: dist/${{ steps.pack.outputs.name }}
