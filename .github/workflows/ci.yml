@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -72,6 +73,8 @@ jobs:
     name: ${{ matrix.target }}
     needs: [test, lint]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -98,7 +101,9 @@ jobs:
 
       - run: cargo build --release --locked --target ${{ matrix.target }} -p zrush
 
-      - name: Name the artifact
+      # What ships is what install.sh expects to find next to it: the
+      # binary, the installer, and the Zed files it copies.
+      - name: Pack
         id: pack
         shell: bash
         run: |
@@ -109,6 +114,8 @@ jobs:
             cp "target/${{ matrix.target }}/release/zrush.exe" "dist/$name/"
           else
             cp "target/${{ matrix.target }}/release/zrush" "dist/$name/"
+            cp install.sh "dist/$name/"
+            cp -R zed "dist/$name/"
           fi
           cp README.md LICENSE "dist/$name/"
           echo "name=$name" >> "$GITHUB_OUTPUT"
@@ -119,3 +126,43 @@ jobs:
           path: dist/${{ steps.pack.outputs.name }}
           if-no-files-found: error
           retention-days: 30
+
+      # A tag, and only a tag, publishes. One archive per target, each with
+      # its own checksum: five jobs writing one SHA256SUMS would race.
+      - name: Archive
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="${{ steps.pack.outputs.name }}"
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            file="$name.zip"
+            7z a -tzip "$file" "$name" > /dev/null
+          else
+            file="$name.tar.gz"
+            tar -czf "$file" "$name"
+          fi
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$file" > "$file.sha256"
+          else
+            shasum -a 256 "$file" > "$file.sha256"
+          fi
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          # Five jobs reach this at once; the first one wins the create and
+          # the others find it already there.
+          gh release view "$tag" > /dev/null 2>&1 \
+            || gh release create "$tag" --title "$tag" --generate-notes \
+            || gh release view "$tag" > /dev/null
+          f="${{ steps.archive.outputs.file }}"
+          gh release upload "$tag" "dist/$f" "dist/$f.sha256" --clobber

@@ -3,12 +3,17 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Christophe Opoix
 #
-# Build zrush and put it on your PATH, with a config and — for Zed — a task
-# and a keybinding. Your editor's settings.json is never touched; the note
-# at the end says what to add.
+# Put a zrush binary on your PATH, with a config and — for Zed — a task and
+# a keybinding. Nothing is built here: the binary is the one next to this
+# script, which is how the release archives are laid out. To build from a
+# checkout instead, run ./install-dev.sh.
 #
-#   ./install.sh            ask which editor, or keep the configured one
-#   ./install.sh zed        no questions
+# Your editor's settings.json is never touched; the note at the end says
+# what to add.
+#
+#   ./install.sh                  ask which editor, or keep the configured one
+#   ./install.sh zed              no questions
+#   ./install.sh --bin path/zrush install that binary
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -16,13 +21,32 @@ bin_dir="$HOME/.local/bin"
 cfg_dir="${XDG_CONFIG_HOME:-$HOME/.config}/zrush"
 zed_dir="${XDG_CONFIG_HOME:-$HOME/.config}/zed"
 
-command -v cargo >/dev/null 2>&1 || {
-  echo "cargo not found. Install Rust: https://rustup.rs" >&2
-  exit 1
-}
+editor=""
+bin=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --bin) bin="${2:-}"; shift 2 ;;
+    -h|--help) sed -n '6,17p' "$0"; exit 0 ;;
+    *) editor="$1"; shift ;;
+  esac
+done
 
-echo "building (release)…"
-cargo build --release --locked --manifest-path "$here/Cargo.toml" -p zrush
+# Next to this script in a release archive; under target/ in a checkout that
+# has already been built.
+if [ -z "$bin" ]; then
+  for c in "$here/zrush" "$here/target/release/zrush"; do
+    if [ -x "$c" ]; then bin="$c"; break; fi
+  done
+fi
+if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+  cat >&2 <<'NOBIN'
+no zrush binary found next to this script.
+
+  from a checkout:  ./install-dev.sh          (builds it, needs cargo)
+  from a release:   https://github.com/christphe/zrush/releases
+NOBIN
+  exit 1
+fi
 
 mkdir -p "$bin_dir" "$cfg_dir"
 
@@ -35,8 +59,8 @@ for f in zrush zrush_session; do
   fi
 done
 
-install -m 755 "$here/target/release/zrush" "$bin_dir/zrush"
-echo "installed $bin_dir/zrush"
+install -m 755 "$bin" "$bin_dir/zrush"
+echo "installed $bin_dir/zrush ($("$bin_dir/zrush" --version 2>/dev/null || echo unknown))"
 
 # The bash version shipped two commands. `zrush_session` is now a subcommand,
 # so a shim keeps existing editor settings working rather than breaking them.
@@ -85,34 +109,40 @@ CFG
   echo "wrote $cfg_dir/config.toml"
 fi
 
-editor="${1:-}"
+# Piped from curl there is no one to ask, so the editor step is skipped
+# rather than guessed at.
 if [ -z "$editor" ] && [ -t 0 ]; then
   printf 'editor [zed/cursor/code, enter to skip]: '
   read -r editor || editor=""
 fi
 
 if [ "$editor" = "zed" ]; then
-  mkdir -p "$zed_dir"
-  skipped=""
-  for f in tasks.json keymap.json; do
-    if [ -f "$zed_dir/$f" ]; then
-      echo "note: $zed_dir/$f exists; merge $here/zed/$f yourself"
-      skipped="$skipped $f"
-    else
-      cp "$here/zed/$f" "$zed_dir/$f"
-      echo "wrote $zed_dir/$f"
-    fi
-  done
-  # The keybinding names a task by its label, so half an install leaves a
-  # key bound to nothing.
-  case " $skipped " in
-    *" tasks.json "*)
-      case " $skipped " in
-        *" keymap.json "*) ;;
-        *) echo "note: the keybinding just written needs the task in $here/zed/tasks.json" ;;
-      esac
-      ;;
-  esac
+  if [ ! -d "$here/zed" ]; then
+    echo "note: no zed/ next to this script; get tasks.json and keymap.json"
+    echo "      from https://github.com/christphe/zrush/tree/main/zed"
+  else
+    mkdir -p "$zed_dir"
+    skipped=""
+    for f in tasks.json keymap.json; do
+      if [ -f "$zed_dir/$f" ]; then
+        echo "note: $zed_dir/$f exists; merge $here/zed/$f yourself"
+        skipped="$skipped $f"
+      else
+        cp "$here/zed/$f" "$zed_dir/$f"
+        echo "wrote $zed_dir/$f"
+      fi
+    done
+    # The keybinding names a task by its label, so half an install leaves a
+    # key bound to nothing.
+    case " $skipped " in
+      *" tasks.json "*)
+        case " $skipped " in
+          *" keymap.json "*) ;;
+          *) echo "note: the keybinding just written needs the task in $here/zed/tasks.json" ;;
+        esac
+        ;;
+    esac
+  fi
   cat <<'NOTE'
 
 One thing left, in your Zed settings.json, so the terminal panel resumes
