@@ -73,7 +73,9 @@ else
   need tar
   tag="$want"
   if [ -z "$tag" ]; then
-    tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+    # 2>/dev/null: no release yet is a 404, and curl's own complaint about
+    # it says less than the line below.
+    tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
           | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
     [ -n "$tag" ] || die "no release published yet; try --nightly"
   fi
