@@ -72,7 +72,14 @@ pub enum Modal {
         at: usize,
         reason: Option<String>,
     },
+    /// Which editor `enter` opens a worktree with. The last entry is not an
+    /// editor but a way out of the list: a command line typed by hand.
+    EditorPicker { editors: Vec<String>, at: usize },
 }
+
+/// The last row of the editor picker, which opens an input instead of
+/// settling on a name.
+pub const CUSTOM: &str = "custom…";
 
 impl Modal {
     /// Move within whatever list this modal has.
@@ -83,6 +90,7 @@ impl Modal {
                 at, suggestions, ..
             } => (at, suggestions.len()),
             Self::AgentPicker { at, agents, .. } => (at, agents.len()),
+            Self::EditorPicker { at, editors } => (at, editors.len()),
             Self::Help | Self::Command { .. } | Self::Error { .. } => return,
         };
         if len == 0 {
@@ -121,7 +129,7 @@ const HELP: &[(&str, &str)] = &[
     ("ctrl-p", "purge: mark rows with space, enter to remove"),
     ("ctrl-l", "reload"),
     ("/", "filter — fuzzy; \x27 = ^ $ ! as in fzf"),
-    (":", "command bar — :agent, :theme, :help, :q"),
+    (":", "command bar — :agent, :editor, :help, :q"),
     ("?", "this"),
     ("esc", "close, or quit"),
 ];
@@ -147,8 +155,9 @@ pub fn render(f: &mut Frame, area: Rect, modal: &Modal) {
         Modal::Help => help(f, area),
         Modal::Command { value } => command(f, area, value),
         Modal::AgentPicker { agents, at, reason } => {
-            agent_picker(f, area, agents, *at, reason.as_deref());
+            picker(f, area, "Agent", agents, *at, reason.as_deref());
         }
+        Modal::EditorPicker { editors, at } => picker(f, area, "Editor", editors, *at, None),
     }
 }
 
@@ -288,16 +297,23 @@ fn command(f: &mut Frame, area: Rect, value: &str) {
     );
 }
 
-fn agent_picker(f: &mut Frame, area: Rect, agents: &[String], at: usize, reason: Option<&str>) {
+fn picker(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    items: &[String],
+    at: usize,
+    reason: Option<&str>,
+) {
     let extra = u16::from(reason.is_some()) * 2;
-    let rect = centred(area, 54, agents.len() as u16 + 4 + extra);
-    frame(f, rect, "Agent", theme::modal_border(), "↑↓ choose · enter");
+    let rect = centred(area, 54, items.len() as u16 + 4 + extra);
+    frame(f, rect, title, theme::modal_border(), "↑↓ choose · enter");
     let mut lines = Vec::new();
     if let Some(r) = reason {
         lines.push(Line::from(Span::styled(r.to_string(), theme::danger())));
         lines.push(Line::from(Span::raw("")));
     }
-    for (i, a) in agents.iter().enumerate() {
+    for (i, a) in items.iter().enumerate() {
         let marker = if i == at { "▸ " } else { "  " };
         let l = Line::from(vec![
             Span::raw(marker),

@@ -70,8 +70,8 @@ run the `install.sh` next to the binary. Or, from a checkout:
 
 Either way what lands is the same: the binary in `~/.local/bin`,
 `~/.config/zrush/config.toml` if there is none, and for Zed a task and a
-keybinding. It also leaves a `zrush_session` shim, so editor settings written
-for the previous version keep working. Piped from `curl` there is nobody to ask
+keybinding. A `zrush_session` left by the bash version is removed: the command
+is `zrush session`. Piped from `curl` there is nobody to ask
 which editor, so that part is skipped — run `install.sh zed` from the unpacked
 archive to do it.
 
@@ -105,8 +105,20 @@ where it is.
 
 ### Cursor and Code
 
-Set `editor` in the config and use the built-in terminal profile of your
-choice, pointing it at `zrush session`.
+`:editor code` switches at any time and writes the choice to the config;
+`:editor` on its own offers the list. The last row of that list, `custom…`,
+asks for a command line instead — as does `:editor` with arguments:
+
+```
+:editor code --reuse-window
+```
+
+A name gets `-n` added for the three editors we know about, so a worktree
+nested inside another one opens in its own window. A command line is taken
+exactly as typed, with the worktree path appended.
+
+Then use the built-in terminal profile of your editor, pointing it at
+`zrush session`.
 
 ## Use
 
@@ -123,7 +135,7 @@ Run `zrush` from anywhere inside a repository.
 | `ctrl-p` | purge: mark rows with `space`, `enter` removes the lot |
 | `ctrl-l` | reload |
 | `/` | filter, fuzzy by default. `'sub` `=exact` `^start` `end$` `!not`, as in fzf. A node and its children travel together, so the list stays a tree |
-| `:` | command bar — `:agent`, `:help`, `:q` |
+| `:` | command bar — `:agent`, `:editor`, `:help`, `:q` |
 | `?` | every key, in full |
 | `esc` | close a dialog, leave a mode, or quit |
 

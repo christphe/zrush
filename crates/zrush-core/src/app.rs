@@ -47,7 +47,20 @@ pub struct Zrush {
     /// The config named an agent that is not installed here. Not fatal —
     /// a config travels between machines — but never silently swallowed.
     missing_configured: Option<String>,
+    /// How the editor is named right now. `:editor` changes it while the
+    /// interface holds the service through an `Arc`, the same way `active`
+    /// changes which agent is listed.
+    editor: std::sync::Mutex<String>,
     host: Box<dyn Host>,
+}
+
+/// A typed command line is what the user sees; otherwise the editor's name.
+fn editor_label(cfg: &Config) -> String {
+    if cfg.editor_cmd.is_empty() {
+        cfg.editor.clone()
+    } else {
+        cfg.editor_cmd.join(" ")
+    }
 }
 
 impl Zrush {
@@ -76,6 +89,7 @@ impl Zrush {
         if let Some(want) = requested {
             let at = find(want).ok_or_else(|| ZrushError::msg(format!("no such agent: {want}")))?;
             return Ok(Self {
+                editor: std::sync::Mutex::new(editor_label(&cfg)),
                 dirs,
                 cfg,
                 repo,
@@ -99,6 +113,7 @@ impl Zrush {
         };
 
         Ok(Self {
+            editor: std::sync::Mutex::new(editor_label(&cfg)),
             dirs,
             cfg,
             repo,
@@ -147,6 +162,51 @@ impl Zrush {
         self.active.store(at, Ordering::SeqCst);
         self.must_choose.store(false, Ordering::SeqCst);
         Ok(())
+    }
+
+    /// Open worktrees with another editor from now on, and remember it.
+    ///
+    /// Two halves that can fail apart: the host is told first, so the
+    /// change takes effect even if the config file cannot be written, and
+    /// the write failing is still reported.
+    pub fn set_editor(&self, editor: &str) -> Result<()> {
+        let editor = editor.trim();
+        if editor.is_empty() {
+            return Err(ZrushError::msg("no editor named"));
+        }
+        self.host.set_editor(Config::command_for(editor));
+        if let Ok(mut e) = self.editor.lock() {
+            editor.clone_into(&mut e);
+        }
+        let mut cfg = self.cfg.clone();
+        cfg.editor = editor.to_string();
+        // A name and a command line are two answers to one question: the
+        // old command would otherwise keep overriding the new name.
+        cfg.editor_cmd.clear();
+        cfg.save(&self.dirs)
+    }
+
+    /// The same, for a whole command line typed by hand.
+    pub fn set_editor_command(&self, command: &[String]) -> Result<()> {
+        if command.is_empty() {
+            return Err(ZrushError::msg("no command given"));
+        }
+        self.host.set_editor(command.to_vec());
+        if let Ok(mut e) = self.editor.lock() {
+            *e = command.join(" ");
+        }
+        let mut cfg = self.cfg.clone();
+        cfg.editor_cmd = command.to_vec();
+        cfg.save(&self.dirs)
+    }
+
+    /// What `enter` opens with, as the picker shows it: the editor's name,
+    /// or the command line when one was typed. Kept beside the host rather
+    /// than read back from `cfg`, which is the config as it was loaded.
+    pub fn editor_label(&self) -> String {
+        self.editor
+            .lock()
+            .map_or_else(|_| self.cfg.editor.clone(), |e| e.clone())
     }
 
     /// True when there is a choice to offer. With one agent installed, the
@@ -520,6 +580,46 @@ mod tests {
     }
 
     #[test]
+    fn changing_the_editor_tells_the_host_and_writes_the_config() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let host = std::sync::Arc::new(RecordingHost::default());
+        let dirs = crate::config::dirs_under(td.path());
+        let z = Zrush::new(
+            dirs.clone(),
+            Config::default(),
+            repo,
+            crate::agent::all(),
+            Box::new(ArcHost(host.clone())),
+            None,
+        )
+        .unwrap();
+
+        z.set_editor("code").unwrap();
+        assert_eq!(host.editor.lock().unwrap().as_slice(), &["code", "-n"]);
+        assert_eq!(z.editor_label(), "code");
+        let saved = Config::load(&dirs).unwrap();
+        assert_eq!(saved.editor, "code");
+
+        // A command line and a name answer the same question: the old
+        // command must not survive the new name, or it would win.
+        z.set_editor_command(&["hx".to_string(), "-n".to_string()])
+            .unwrap();
+        assert_eq!(host.editor.lock().unwrap().as_slice(), &["hx", "-n"]);
+        assert_eq!(z.editor_label(), "hx -n");
+        z.set_editor("zed").unwrap();
+        assert!(Config::load(&dirs).unwrap().editor_cmd.is_empty());
+    }
+
+    #[test]
+    fn an_editor_with_no_name_is_refused() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch(&td));
+        assert!(z.set_editor("  ").is_err());
+        assert!(z.set_editor_command(&[]).is_err());
+    }
+
+    #[test]
     fn opening_a_session_binds_it_first() {
         let td = tempfile::TempDir::new().unwrap();
         let z = zrush(&td, scratch(&td));
@@ -712,6 +812,10 @@ mod tests {
 
         fn run_agent(&self, cwd: &Path, command: &[String]) -> Result<()> {
             self.0.run_agent(cwd, command)
+        }
+
+        fn set_editor(&self, command: Vec<String>) {
+            self.0.set_editor(command);
         }
     }
 }

@@ -13,7 +13,12 @@ use zrush_core::model::tree::{NodeId, Row, RowKind};
 use zrush_core::model::{GitStatus, Session, Worktree};
 
 use super::filter;
-use super::modal::{Choice, Modal};
+use super::modal::{CUSTOM, Choice, Modal};
+
+/// The input modal that asks for an editor command line rather than a
+/// branch name. Which one is up is told by its title, the way a confirm
+/// says which question it answered.
+pub const EDITOR_COMMAND: &str = "Editor command";
 
 /// What the event loop must do once a key has been handled. Anything with a
 /// side effect lives here rather than in `App`.
@@ -54,6 +59,9 @@ pub enum Action {
         sessions: Vec<(String, String)>,
     },
     SwitchAgent(String),
+    /// An editor by name, or a whole command line typed by hand.
+    SetEditor(String),
+    SetEditorCommand(Vec<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +107,9 @@ pub struct App {
     /// header shows it, and `:agent` picks from it.
     pub agent_names: Vec<String>,
     pub active_agent: String,
+    /// How the editor is named in the picker: `zed`, or the command line
+    /// when one was typed.
+    pub editor: String,
     /// Shown as `~` in the path column. Held here rather than read from the
     /// environment inside the renderer: drawing should not depend on what
     /// the process happens to be able to see.
@@ -137,6 +148,7 @@ impl App {
             preview_pending: HashSet::new(),
             agent_names: Vec::new(),
             active_agent: String::new(),
+            editor: String::new(),
             home: std::env::var_os("HOME").map(PathBuf::from),
             more_step,
             resumable_max,
@@ -247,6 +259,17 @@ impl App {
             at,
             reason,
         });
+    }
+
+    /// The editors that get a `-n`, plus the way out: type the command.
+    pub fn open_editor_picker(&mut self) {
+        let mut editors: Vec<String> = zrush_core::config::KNOWN_EDITORS
+            .iter()
+            .map(|e| (*e).to_string())
+            .collect();
+        let at = editors.iter().position(|e| *e == self.editor).unwrap_or(0);
+        editors.push(CUSTOM.to_string());
+        self.modal = Some(Modal::EditorPicker { editors, at });
     }
 
     pub fn flash(&mut self, msg: impl Into<String>) {
@@ -671,6 +694,13 @@ impl App {
             Modal::AgentPicker { agents, at, .. } => agents
                 .get(at)
                 .map_or(Action::Redraw, |a| Action::SwitchAgent(a.clone())),
+            Modal::Input { title, value, .. } if title == EDITOR_COMMAND => {
+                let words: Vec<String> = value.split_whitespace().map(str::to_string).collect();
+                if words.is_empty() {
+                    return Action::Redraw;
+                }
+                Action::SetEditorCommand(words)
+            }
             Modal::Input {
                 value,
                 suggestions,
@@ -691,6 +721,21 @@ impl App {
                     hand_over: self.session_at_cursor(),
                 }
             }
+            Modal::EditorPicker { editors, at } => match editors.get(at).map(String::as_str) {
+                None => Action::Redraw,
+                // Not an editor: the row that asks for a command line.
+                Some(CUSTOM) => {
+                    self.modal = Some(Modal::Input {
+                        title: EDITOR_COMMAND.into(),
+                        prompt: "cmd>".into(),
+                        value: self.editor.clone(),
+                        suggestions: Vec::new(),
+                        at: 0,
+                    });
+                    Action::Redraw
+                }
+                Some(e) => Action::SetEditor(e.to_string()),
+            },
             Modal::Confirm {
                 title, choices, at, ..
             } => self.confirmed(&title, &choices, at),
@@ -745,6 +790,23 @@ impl App {
             // `:agent` on its own offers the list rather than doing nothing.
             (Some("agent" | "a"), None) => {
                 self.open_agent_picker(None);
+                Action::Redraw
+            }
+            // `:editor code` names one; `:editor code --profile x` is a
+            // whole command line, which is a different setting.
+            (Some("editor" | "e"), Some(_)) => {
+                let rest: Vec<String> = value
+                    .split_whitespace()
+                    .skip(1)
+                    .map(str::to_string)
+                    .collect();
+                match rest.len() {
+                    1 => Action::SetEditor(rest[0].clone()),
+                    _ => Action::SetEditorCommand(rest),
+                }
+            }
+            (Some("editor" | "e"), None) => {
+                self.open_editor_picker();
                 Action::Redraw
             }
             (Some(other), _) => {
@@ -1003,6 +1065,81 @@ mod tests {
                 worktree: Some("/repo".into()),
             }
         );
+    }
+
+    // ---------------------------------------------------------- editor ---
+
+    #[test]
+    fn editor_with_one_word_names_an_editor() {
+        let mut a = app();
+        a.on_key(key(':'));
+        for c in "editor code".chars() {
+            a.on_key(key(c));
+        }
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::SetEditor("code".into())
+        );
+    }
+
+    #[test]
+    fn editor_with_arguments_is_a_whole_command_line() {
+        let mut a = app();
+        a.on_key(key(':'));
+        for c in "editor code --reuse-window".chars() {
+            a.on_key(key(c));
+        }
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::SetEditorCommand(vec!["code".into(), "--reuse-window".into()])
+        );
+    }
+
+    #[test]
+    fn editor_on_its_own_offers_the_list_with_the_current_one_under_the_cursor() {
+        let mut a = app();
+        a.editor = "code".into();
+        a.on_key(key(':'));
+        for c in "editor".chars() {
+            a.on_key(key(c));
+        }
+        a.on_key(code(KeyCode::Enter));
+        match a.modal.as_ref().unwrap() {
+            Modal::EditorPicker { editors, at } => {
+                assert_eq!(editors.last().map(String::as_str), Some(CUSTOM));
+                assert_eq!(editors[*at], "code");
+            }
+            other => panic!("wrong modal: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_custom_row_asks_for_a_command_instead_of_settling() {
+        let mut a = app();
+        a.open_editor_picker();
+        // Up from the first row wraps onto the last, which is the custom one.
+        a.on_key(code(KeyCode::Up));
+        assert_eq!(a.on_key(code(KeyCode::Enter)), Action::Redraw);
+        match a.modal.as_ref().unwrap() {
+            Modal::Input { title, .. } => assert_eq!(title, EDITOR_COMMAND),
+            other => panic!("wrong modal: {other:?}"),
+        }
+        for c in "hx -n".chars() {
+            a.on_key(key(c));
+        }
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::SetEditorCommand(vec!["hx".into(), "-n".into()])
+        );
+    }
+
+    #[test]
+    fn an_empty_editor_command_changes_nothing() {
+        let mut a = app();
+        a.open_editor_picker();
+        a.on_key(code(KeyCode::Up));
+        a.on_key(code(KeyCode::Enter));
+        assert_eq!(a.on_key(code(KeyCode::Enter)), Action::Redraw);
     }
 
     #[test]

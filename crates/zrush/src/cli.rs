@@ -126,6 +126,7 @@ pub fn main() -> Result<()> {
         .map(zrush_core::agent::Agent::id)
         .unwrap_or_default()
         .to_string();
+    app.editor = z.editor_label();
     if z.must_choose_agent() {
         let reason = z
             .missing_configured_agent()

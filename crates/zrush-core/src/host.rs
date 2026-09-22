@@ -25,6 +25,11 @@ pub trait Host: Send + Sync {
     /// `command` comes from `Agent::resume_command` or
     /// `Agent::start_command`; the host decides where it runs.
     fn run_agent(&self, cwd: &Path, command: &[String]) -> Result<()>;
+
+    /// Open worktrees with this command line from now on. A host with no
+    /// editor of its own to change — an extension showing the worktree
+    /// itself — ignores it.
+    fn set_editor(&self, _command: Vec<String>) {}
 }
 
 /// A host that refuses everything, for tests and for `--print`, where no
@@ -47,6 +52,7 @@ impl Host for NullHost {
 pub struct RecordingHost {
     pub opened: std::sync::Mutex<Vec<std::path::PathBuf>>,
     pub ran: std::sync::Mutex<Vec<(std::path::PathBuf, Vec<String>)>>,
+    pub editor: std::sync::Mutex<Vec<String>>,
 }
 
 impl Host for RecordingHost {
@@ -62,5 +68,11 @@ impl Host for RecordingHost {
             v.push((cwd.to_path_buf(), command.to_vec()));
         }
         Ok(())
+    }
+
+    fn set_editor(&self, command: Vec<String>) {
+        if let Ok(mut v) = self.editor.lock() {
+            *v = command;
+        }
     }
 }

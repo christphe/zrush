@@ -50,29 +50,22 @@ fi
 
 mkdir -p "$bin_dir" "$cfg_dir"
 
-# A previous install left symlinks here, pointing into a checkout. Writing
-# through one edits that checkout instead of installing, so unlink first.
-for f in zrush zrush_session; do
-  if [ -L "$bin_dir/$f" ]; then
-    echo "removing the old symlink $bin_dir/$f -> $(readlink "$bin_dir/$f")"
-    rm -f "$bin_dir/$f"
-  fi
-done
+# A previous install left a symlink here, pointing into a checkout. Writing
+# through it edits that checkout instead of installing, so unlink first.
+if [ -L "$bin_dir/zrush" ]; then
+  echo "removing the old symlink $bin_dir/zrush -> $(readlink "$bin_dir/zrush")"
+  rm -f "$bin_dir/zrush"
+fi
 
 install -m 755 "$bin" "$bin_dir/zrush"
 echo "installed $bin_dir/zrush ($("$bin_dir/zrush" --version 2>/dev/null || echo unknown))"
 
-# The bash version shipped two commands. `zrush_session` is now a subcommand,
-# so a shim keeps existing editor settings working rather than breaking them.
-rm -f "$bin_dir/zrush_session"
-cat > "$bin_dir/zrush_session" <<'SHIM'
-#!/bin/sh
-# Kept for editor settings that still name it. `zrush session` is the real
-# entry point.
-exec zrush session "$@"
-SHIM
-chmod 755 "$bin_dir/zrush_session"
-echo "installed $bin_dir/zrush_session (a shim for zrush session)"
+# The bash version shipped a second command. `zrush session` replaced it, so
+# the old one is taken away rather than kept alive as a shim.
+if [ -e "$bin_dir/zrush_session" ] || [ -L "$bin_dir/zrush_session" ]; then
+  rm -f "$bin_dir/zrush_session"
+  echo "removed $bin_dir/zrush_session; the command is zrush session"
+fi
 
 case ":$PATH:" in
   *":$bin_dir:"*) ;;
@@ -92,6 +85,7 @@ if [ ! -f "$cfg_dir/config.toml" ] && [ ! -f "$cfg_dir/config" ]; then
 # agent = "claude"
 
 # Editor that enter opens a worktree in: zed, cursor or code (run with -n).
+# Also settable from the interface, with :editor.
 # editor = "zed"
 # editor_cmd = ["code", "--reuse-window"]   # or override the whole command
 
@@ -114,6 +108,19 @@ fi
 if [ -z "$editor" ] && [ -t 0 ]; then
   printf 'editor [zed/cursor/code, enter to skip]: '
   read -r editor || editor=""
+fi
+
+# Asking which editor and then not setting it is what the first version
+# did, and it left every install on the default.
+if [ -n "$editor" ]; then
+  if grep -q '^editor = ' "$cfg_dir/config.toml" 2>/dev/null; then
+    tmp="$cfg_dir/config.toml.new"
+    sed "s|^editor = .*|editor = \"$editor\"|" "$cfg_dir/config.toml" > "$tmp"
+    mv "$tmp" "$cfg_dir/config.toml"
+  else
+    printf 'editor = "%s"\n' "$editor" >> "$cfg_dir/config.toml"
+  fi
+  echo "editor = \"$editor\" in $cfg_dir/config.toml"
 fi
 
 if [ "$editor" = "zed" ]; then

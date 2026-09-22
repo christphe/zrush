@@ -311,6 +311,11 @@ fn handle(
             sessions,
         } => purge(app, z, probes, &worktrees, &sessions),
         Action::SwitchAgent(id) => switch_agent(app, z, probes, id),
+        Action::SetEditor(name) => set_editor(app, z, &z.set_editor(&name), &name),
+        Action::SetEditorCommand(cmd) => {
+            let r = z.set_editor_command(&cmd);
+            set_editor(app, z, &r, &cmd.join(" "));
+        }
     }
     true
 }
@@ -406,6 +411,17 @@ fn purge(
         "purged {removed} worktree(s), {gone} transcript(s){kept}"
     ));
     probes.refresh(z, app.show_all);
+}
+
+/// The host has already been told; what is left is the interface's own
+/// copy of the name, and saying so. A config that could not be written is
+/// an error even though the change took: the next run would forget it.
+fn set_editor(app: &mut App, z: &Arc<Zrush>, saved: &zrush_core::error::Result<()>, label: &str) {
+    app.editor = z.editor_label();
+    match saved {
+        Ok(()) => app.flash(format!("editor: {label}")),
+        Err(e) => app.error("Editor", e),
+    }
 }
 
 fn switch_agent(app: &mut App, z: &Arc<Zrush>, probes: &crate::probe::Probes, id: String) {

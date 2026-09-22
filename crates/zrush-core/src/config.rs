@@ -152,13 +152,22 @@ impl Config {
         if !self.editor_cmd.is_empty() {
             return self.editor_cmd.clone();
         }
-        match self.editor.as_str() {
+        Self::command_for(&self.editor)
+    }
+
+    /// The command line a bare editor name means, with no config in hand:
+    /// what `:editor code` has to turn into.
+    pub fn command_for(editor: &str) -> Vec<String> {
+        match editor {
             "" => vec!["zed".into(), "-n".into()],
             e @ ("zed" | "cursor" | "code") => vec![e.into(), "-n".into()],
             other => vec![other.into()],
         }
     }
 }
+
+/// The editors that get a `-n`, in the order the picker offers them.
+pub const KNOWN_EDITORS: &[&str] = &["zed", "cursor", "code"];
 
 fn set_bool(slot: &mut bool, v: Option<&str>) {
     if let Some(v) = v {

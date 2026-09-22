@@ -13,7 +13,9 @@ use zrush_core::error::{Result, ZrushError};
 use zrush_core::host::Host;
 
 pub struct ProcessHost {
-    editor: Vec<String>,
+    /// `:editor` changes this while the interface is running, so it is not
+    /// the config's word on it but the current one.
+    editor: std::sync::Mutex<Vec<String>>,
     terminal: Vec<String>,
 }
 
@@ -27,7 +29,7 @@ impl ProcessHost {
             cfg.terminal.clone()
         };
         Self {
-            editor: cfg.editor_command(),
+            editor: std::sync::Mutex::new(cfg.editor_command()),
             terminal,
         }
     }
@@ -35,8 +37,12 @@ impl ProcessHost {
 
 impl Host for ProcessHost {
     fn open_workspace(&self, path: &Path) -> Result<()> {
-        let (bin, args) = self
+        let editor = self
             .editor
+            .lock()
+            .map_err(|_| ZrushError::msg("the editor setting is poisoned"))?
+            .clone();
+        let (bin, args) = editor
             .split_first()
             .ok_or_else(|| ZrushError::msg("no editor configured"))?;
         Command::new(bin)
@@ -46,6 +52,12 @@ impl Host for ProcessHost {
             .map_err(|_| ZrushError::msg(format!("{bin} not found (install its shell command)")))?;
         raise(bin);
         Ok(())
+    }
+
+    fn set_editor(&self, command: Vec<String>) {
+        if let Ok(mut e) = self.editor.lock() {
+            *e = command;
+        }
     }
 
     fn run_agent(&self, cwd: &Path, command: &[String]) -> Result<()> {
@@ -274,7 +286,10 @@ mod tests {
             editor: "code".into(),
             ..Config::default()
         };
-        assert_eq!(ProcessHost::new(&cfg).editor, vec!["code", "-n"]);
+        let host = ProcessHost::new(&cfg);
+        assert_eq!(*host.editor.lock().unwrap(), vec!["code", "-n"]);
+        host.set_editor(vec!["hx".into()]);
+        assert_eq!(*host.editor.lock().unwrap(), vec!["hx"]);
     }
 
     #[test]
