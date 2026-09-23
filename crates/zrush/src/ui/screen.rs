@@ -303,6 +303,7 @@ fn handle(
     key: crossterm::event::KeyEvent,
 ) -> bool {
     app.flash = None;
+    let mut settings_error: Option<zrush_core::error::ZrushError> = None;
     match app.on_key(key) {
         Action::Quit => return false,
         Action::None | Action::Redraw => {}
@@ -346,6 +347,18 @@ fn handle(
         Action::SetEditorCommand(cmd) => {
             let r = z.set_editor_command(&cmd);
             set_editor(app, z, &r, &cmd.join(" "));
+        }
+        Action::SetSetting { key, value } => {
+            let r = z.edit_config(|c| {
+                // The error is kept for the caller: a bad value must not
+                // be written, and must not be silently dropped either.
+                settings_error = c.set(&key, &value).err();
+            });
+            settings_done(app, z, probes, &key, settings_error.map_or(r, Err));
+        }
+        Action::ToggleSetting(key) => {
+            let r = z.edit_config(|c| settings_error = c.toggle(&key).err());
+            settings_done(app, z, probes, &key, settings_error.map_or(r, Err));
         }
     }
     true
@@ -457,20 +470,70 @@ fn purge(
     });
 }
 
+/// A setting was written, or was not. Either way the interface goes back
+/// to the screen the change was asked from, with what the file now says —
+/// nothing here trusts its own idea of the new value.
+fn settings_done(
+    app: &mut App,
+    z: &Arc<Zrush>,
+    probes: &crate::probe::Probes,
+    key: &str,
+    r: zrush_core::error::Result<zrush_core::config::Config>,
+) {
+    match r {
+        Ok(cfg) => {
+            adopt(app, &cfg);
+            app.flash(format!("{key} = {}", short(&cfg.show(key))));
+            probes.refresh(z, app.show_all);
+        }
+        Err(e) => app.error("Settings", e),
+    }
+    if app.settings_open {
+        app.open_settings();
+    }
+}
+
+/// What the interface keeps its own copy of, refreshed from the file.
+fn adopt(app: &mut App, cfg: &zrush_core::config::Config) {
+    app.more_step = cfg.more_step;
+    app.resumable_max = cfg.resumable_max;
+    app.cfg = cfg.clone();
+}
+
+fn short(v: &str) -> String {
+    if v.is_empty() {
+        "(unset)".into()
+    } else {
+        v.to_string()
+    }
+}
+
 /// The host has already been told; what is left is the interface's own
 /// copy of the name, and saying so. A config that could not be written is
 /// an error even though the change took: the next run would forget it.
 fn set_editor(app: &mut App, z: &Arc<Zrush>, saved: &zrush_core::error::Result<()>, label: &str) {
     app.editor = z.editor_label();
+    adopt(app, &z.config());
     match saved {
         Ok(()) => app.flash(format!("editor: {label}")),
         Err(e) => app.error("Editor", e),
     }
+    // Picked from the settings screen: go back to it, not to the list.
+    if app.settings_open {
+        app.open_settings();
+    }
 }
 
 fn switch_agent(app: &mut App, z: &Arc<Zrush>, probes: &crate::probe::Probes, id: String) {
-    match z.set_active_agent(&id) {
-        Ok(()) => {
+    // Switching is what the interface lists; remembering it is what the
+    // next run starts on. It used to do only the first, so the choice was
+    // forgotten every time.
+    match z
+        .set_active_agent(&id)
+        .and_then(|()| z.edit_config(|c| c.agent = Some(id.clone())))
+    {
+        Ok(cfg) => {
+            adopt(app, &cfg);
             app.active_agent = id;
             // Everything listed belonged to the agent we just left.
             app.live.clear();
@@ -478,6 +541,9 @@ fn switch_agent(app: &mut App, z: &Arc<Zrush>, probes: &crate::probe::Probes, id
             app.scanned = false;
             rebuild(app, z);
             probes.refresh(z, app.show_all);
+            if app.settings_open {
+                app.open_settings();
+            }
         }
         Err(e) => app.error("Switch agent", e),
     }

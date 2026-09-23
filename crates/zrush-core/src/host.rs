@@ -30,6 +30,10 @@ pub trait Host: Send + Sync {
     /// editor of its own to change — an extension showing the worktree
     /// itself — ignores it.
     fn set_editor(&self, _command: Vec<String>) {}
+
+    /// Likewise for where an agent gets its terminal. Empty means the
+    /// host's own default.
+    fn set_terminal(&self, _command: Vec<String>) {}
 }
 
 /// A host that refuses everything, for tests and for `--print`, where no
@@ -53,6 +57,7 @@ pub struct RecordingHost {
     pub opened: std::sync::Mutex<Vec<std::path::PathBuf>>,
     pub ran: std::sync::Mutex<Vec<(std::path::PathBuf, Vec<String>)>>,
     pub editor: std::sync::Mutex<Vec<String>>,
+    pub terminal: std::sync::Mutex<Vec<String>>,
 }
 
 impl Host for RecordingHost {
@@ -72,6 +77,12 @@ impl Host for RecordingHost {
 
     fn set_editor(&self, command: Vec<String>) {
         if let Ok(mut v) = self.editor.lock() {
+            *v = command;
+        }
+    }
+
+    fn set_terminal(&self, command: Vec<String>) {
+        if let Ok(mut v) = self.terminal.lock() {
             *v = command;
         }
     }

@@ -57,10 +57,6 @@ pub struct Config {
     pub more_step: usize,
     pub title_width: usize,
     pub preview_turns: usize,
-    /// `auto`, `dark` or `light`. Only decides the handful of colours that
-    /// depend on which way the terminal background goes; zrush never paints
-    /// a background of its own.
-    pub theme: String,
 }
 
 impl Default for Config {
@@ -78,7 +74,6 @@ impl Default for Config {
             more_step: 20,
             title_width: 48,
             preview_turns: 14,
-            theme: "auto".into(),
         }
     }
 }
@@ -166,8 +161,118 @@ impl Config {
     }
 }
 
+/// What the settings screen offers, in the order it shows them, with the
+/// kind of answer each one takes. The names are the config file's own, so
+/// what the screen shows and what you would type into `config.toml` are
+/// the same thing.
+pub const SETTINGS: &[(&str, Kind)] = &[
+    ("editor", Kind::Editor),
+    ("editor_cmd", Kind::Words),
+    ("terminal", Kind::Words),
+    ("agent", Kind::Agent),
+    ("titles", Kind::Flag),
+    ("status", Kind::Flag),
+    ("resumable_max", Kind::Number),
+    ("resumable_scan", Kind::Number),
+    ("more_step", Kind::Number),
+    ("title_width", Kind::Number),
+    ("preview_turns", Kind::Number),
+    ("default_repo", Kind::Path),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// An editor name, picked from a list that also takes a command line.
+    Editor,
+    /// Which agent to list, picked from the installed ones.
+    Agent,
+    /// A whole command line, split on spaces.
+    Words,
+    /// Toggled in place rather than typed.
+    Flag,
+    Number,
+    Path,
+}
+
 /// The editors that get a `-n`, in the order the picker offers them.
 pub const KNOWN_EDITORS: &[&str] = &["zed", "cursor", "code"];
+
+impl Config {
+    /// What the settings screen shows for a key. Empty means unset, which
+    /// reads better than `""` or `[]` in a list of values.
+    pub fn show(&self, key: &str) -> String {
+        match key {
+            "editor" => self.editor.clone(),
+            "editor_cmd" => self.editor_cmd.join(" "),
+            "terminal" => self.terminal.join(" "),
+            "agent" => self.agent.clone().unwrap_or_default(),
+            "titles" => on_off(self.titles),
+            "status" => on_off(self.status),
+            "resumable_max" => self.resumable_max.to_string(),
+            "resumable_scan" => self.resumable_scan.to_string(),
+            "more_step" => self.more_step.to_string(),
+            "title_width" => self.title_width.to_string(),
+            "preview_turns" => self.preview_turns.to_string(),
+            "default_repo" => self
+                .default_repo
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    /// Set one key from what was typed. One place knows the names and what
+    /// each one accepts, so the interface never parses a setting itself.
+    pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
+        let v = value.trim();
+        match key {
+            "editor" => self.editor = v.to_string(),
+            "editor_cmd" => self.editor_cmd = split_words(v),
+            "terminal" => self.terminal = split_words(v),
+            "agent" => self.agent = (!v.is_empty()).then(|| v.to_string()),
+            "titles" => self.titles = flag(v)?,
+            "status" => self.status = flag(v)?,
+            "resumable_max" => self.resumable_max = number(v)?,
+            "resumable_scan" => self.resumable_scan = number(v)?,
+            "more_step" => self.more_step = number(v)?,
+            "title_width" => self.title_width = number(v)?,
+            "preview_turns" => self.preview_turns = number(v)?,
+            "default_repo" => {
+                self.default_repo = (!v.is_empty()).then(|| PathBuf::from(v));
+            }
+            other => return Err(ZrushError::Config(format!("no such setting: {other}"))),
+        }
+        Ok(())
+    }
+
+    /// Flip a flag, for the keys that are toggled rather than typed.
+    pub fn toggle(&mut self, key: &str) -> Result<()> {
+        let now = match key {
+            "titles" => self.titles,
+            "status" => self.status,
+            other => return Err(ZrushError::Config(format!("not a flag: {other}"))),
+        };
+        self.set(key, if now { "off" } else { "on" })
+    }
+}
+
+fn on_off(b: bool) -> String {
+    if b { "on" } else { "off" }.to_string()
+}
+
+fn flag(v: &str) -> Result<bool> {
+    match v.to_lowercase().as_str() {
+        "on" | "true" | "yes" | "1" => Ok(true),
+        "off" | "false" | "no" | "0" => Ok(false),
+        other => Err(ZrushError::Config(format!("not on or off: {other}"))),
+    }
+}
+
+fn number(v: &str) -> Result<usize> {
+    v.parse()
+        .map_err(|_| ZrushError::Config(format!("not a number: {v}")))
+}
 
 fn set_bool(slot: &mut bool, v: Option<&str>) {
     if let Some(v) = v {
@@ -260,6 +365,75 @@ mod tests {
         let mut c = Config::default();
         c.apply_env(|k| (k == "ZRUSH_TITLES").then(|| "0".to_string()));
         assert!(!c.titles);
+    }
+
+    /// A config written by an older zrush still loads: the file may carry
+    /// keys this build has dropped, `theme` being the first of them.
+    #[test]
+    fn a_key_this_build_no_longer_knows_is_ignored_rather_than_fatal() {
+        let c: Config = toml::from_str("theme = \"auto\"\neditor = \"code\"\n").unwrap();
+        assert_eq!(c.editor, "code");
+    }
+
+    #[test]
+    fn every_setting_the_screen_offers_can_be_read_and_written() {
+        let mut c = Config::default();
+        for (key, kind) in SETTINGS {
+            // Reading never panics and never invents a name.
+            let _ = c.show(key);
+            let sample = match kind {
+                Kind::Flag => "on",
+                Kind::Number => "7",
+                Kind::Path => "/tmp",
+                _ => "thing",
+            };
+            c.set(key, sample).unwrap_or_else(|e| panic!("{key}: {e}"));
+            assert!(!c.show(key).is_empty(), "{key} reads back empty");
+        }
+    }
+
+    #[test]
+    fn a_setting_that_does_not_exist_is_refused_rather_than_ignored() {
+        let mut c = Config::default();
+        assert!(c.set("nope", "1").is_err());
+        assert!(c.toggle("editor").is_err());
+    }
+
+    #[test]
+    fn a_number_that_is_not_a_number_says_so() {
+        let mut c = Config::default();
+        let e = c.set("resumable_max", "lots").unwrap_err().to_string();
+        assert!(e.contains("not a number"), "{e}");
+        assert_eq!(c.resumable_max, 5, "the old value survives");
+    }
+
+    #[test]
+    fn a_flag_takes_the_words_people_actually_type() {
+        let mut c = Config::default();
+        for (v, want) in [("off", false), ("FALSE", false), ("yes", true), ("1", true)] {
+            c.set("titles", v).unwrap();
+            assert_eq!(c.titles, want, "{v}");
+        }
+        assert!(c.set("titles", "maybe").is_err());
+    }
+
+    #[test]
+    fn toggling_a_flag_flips_it() {
+        let mut c = Config::default();
+        c.toggle("status").unwrap();
+        assert!(!c.status);
+        c.toggle("status").unwrap();
+        assert!(c.status);
+    }
+
+    #[test]
+    fn clearing_a_setting_unsets_it_rather_than_storing_an_empty_one() {
+        let mut c = Config::default();
+        c.set("agent", "claude").unwrap();
+        c.set("agent", "  ").unwrap();
+        assert_eq!(c.agent, None);
+        c.set("default_repo", "").unwrap();
+        assert_eq!(c.default_repo, None);
     }
 
     #[test]

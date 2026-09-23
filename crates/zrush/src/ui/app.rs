@@ -70,6 +70,13 @@ pub enum Action {
     /// An editor by name, or a whole command line typed by hand.
     SetEditor(String),
     SetEditorCommand(Vec<String>),
+    /// One setting, by the name `config.toml` gives it. Saved, reloaded,
+    /// and applied — the interface never parses the value itself.
+    SetSetting {
+        key: String,
+        value: String,
+    },
+    ToggleSetting(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +126,13 @@ pub struct App {
 
     /// Every agent installed here, and which one is being listed. The
     /// header shows it, and `:agent` picks from it.
+    /// The config as the last reload left it, for the settings screen.
+    pub cfg: zrush_core::config::Config,
+    /// The settings screen is up, or something it opened is: a change made
+    /// from it comes back to it rather than dropping you on the list.
+    pub settings_open: bool,
+    /// Which row it was on, so it comes back where it was.
+    settings_at: usize,
     /// Branches a worktree could be opened on, for the suggestion list.
     /// Fetched with everything else, so the input is instant.
     pub branches: Vec<String>,
@@ -165,6 +179,9 @@ impl App {
             scanned: false,
             previews: HashMap::new(),
             preview_pending: HashSet::new(),
+            cfg: zrush_core::config::Config::default(),
+            settings_open: false,
+            settings_at: 0,
             branches: Vec::new(),
             agent_names: Vec::new(),
             active_agent: String::new(),
@@ -279,6 +296,49 @@ impl App {
             at,
             reason,
         });
+    }
+
+    /// Every setting and what it is now. Rebuilt from the config each time
+    /// rather than held: a change goes through the file, and this is what
+    /// came back from it.
+    pub fn open_settings(&mut self) {
+        self.settings_open = true;
+        self.modal = Some(Modal::Settings {
+            rows: zrush_core::config::SETTINGS
+                .iter()
+                .map(|(key, _)| ((*key).to_string(), self.cfg.show(key)))
+                .collect(),
+            at: self.settings_at,
+        });
+    }
+
+    /// Enter on a settings row, by what that row takes.
+    fn edit_setting(&mut self, at: usize) -> Action {
+        self.settings_at = at;
+        let Some((key, kind)) = zrush_core::config::SETTINGS.get(at) else {
+            return Action::Redraw;
+        };
+        match kind {
+            zrush_core::config::Kind::Flag => Action::ToggleSetting((*key).to_string()),
+            zrush_core::config::Kind::Editor => {
+                self.open_editor_picker();
+                Action::Redraw
+            }
+            zrush_core::config::Kind::Agent => {
+                self.open_agent_picker(None);
+                Action::Redraw
+            }
+            _ => {
+                self.modal = Some(Modal::Input {
+                    title: (*key).to_string(),
+                    prompt: format!("{key}>"),
+                    value: self.cfg.show(key),
+                    suggestions: Vec::new(),
+                    at: 0,
+                });
+                Action::Redraw
+            }
+        }
     }
 
     /// The branch input, in whichever of its two meanings. The suggestion
@@ -408,6 +468,10 @@ impl App {
                     ],
                     at: 0,
                 });
+                Action::Redraw
+            }
+            (KeyCode::Char(','), false) => {
+                self.open_settings();
                 Action::Redraw
             }
             (KeyCode::Char('d'), true) => self.ask_delete(),
@@ -722,6 +786,7 @@ impl App {
         }
         match key.code {
             KeyCode::Esc => {
+                self.settings_open = false;
                 self.modal = None;
                 Action::Redraw
             }
@@ -773,6 +838,13 @@ impl App {
             Modal::AgentPicker { agents, at, .. } => agents
                 .get(at)
                 .map_or(Action::Redraw, |a| Action::SwitchAgent(a.clone())),
+            Modal::Input { title, value, .. }
+                if zrush_core::config::SETTINGS
+                    .iter()
+                    .any(|(k, _)| *k == title) =>
+            {
+                Action::SetSetting { key: title, value }
+            }
             Modal::Input { title, value, .. } if title == EDITOR_COMMAND => {
                 let words: Vec<String> = value.split_whitespace().map(str::to_string).collect();
                 if words.is_empty() {
@@ -812,6 +884,7 @@ impl App {
                     hand_over: self.session_at_cursor(),
                 }
             }
+            Modal::Settings { at, .. } => self.edit_setting(at),
             Modal::EditorPicker { editors, at } => match editors.get(at).map(String::as_str) {
                 None => Action::Redraw,
                 // Not an editor: the row that asks for a command line.
@@ -899,6 +972,21 @@ impl App {
                 match rest.len() {
                     1 => Action::SetEditor(rest[0].clone()),
                     _ => Action::SetEditorCommand(rest),
+                }
+            }
+            (Some("settings"), _) => {
+                self.open_settings();
+                Action::Redraw
+            }
+            (Some("set"), Some(key)) => {
+                let value = value
+                    .split_whitespace()
+                    .skip(2)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                Action::SetSetting {
+                    key: key.to_string(),
+                    value,
                 }
             }
             (Some("editor" | "e"), None) => {
@@ -1161,6 +1249,106 @@ mod tests {
                 worktree: Some("/repo".into()),
             }
         );
+    }
+
+    // -------------------------------------------------------- settings ---
+
+    #[test]
+    fn a_comma_opens_the_settings_screen_with_the_live_values() {
+        let mut a = app();
+        a.cfg.editor = "code".into();
+        a.cfg.resumable_max = 9;
+        a.on_key(key(','));
+        match a.modal.as_ref().unwrap() {
+            Modal::Settings { rows, at } => {
+                assert_eq!(*at, 0);
+                assert_eq!(rows.len(), zrush_core::config::SETTINGS.len());
+                assert!(rows.contains(&("editor".into(), "code".into())));
+                assert!(rows.contains(&("resumable_max".into(), "9".into())));
+            }
+            other => panic!("wrong modal: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_flag_is_toggled_in_place_rather_than_typed() {
+        let mut a = app();
+        a.on_key(key(','));
+        // titles is the fifth row.
+        for _ in 0..4 {
+            a.on_key(code(KeyCode::Down));
+        }
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::ToggleSetting("titles".into())
+        );
+    }
+
+    #[test]
+    fn a_number_is_typed_and_comes_back_under_its_own_name() {
+        let mut a = app();
+        a.cfg.resumable_max = 5;
+        a.on_key(key(','));
+        for _ in 0..6 {
+            a.on_key(code(KeyCode::Down));
+        }
+        a.on_key(code(KeyCode::Enter));
+        match a.modal.as_ref().unwrap() {
+            // The current value is there to edit, not an empty field.
+            Modal::Input { title, value, .. } => {
+                assert_eq!(title, "resumable_max");
+                assert_eq!(value, "5");
+            }
+            other => panic!("wrong modal: {other:?}"),
+        }
+        a.on_key(code(KeyCode::Backspace));
+        a.on_key(key('8'));
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::SetSetting {
+                key: "resumable_max".into(),
+                value: "8".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_editor_row_opens_the_picker_that_also_takes_a_command() {
+        let mut a = app();
+        a.on_key(key(','));
+        a.on_key(code(KeyCode::Enter));
+        match a.modal.as_ref().unwrap() {
+            Modal::EditorPicker { editors, .. } => {
+                assert_eq!(editors.last().map(String::as_str), Some(CUSTOM));
+            }
+            other => panic!("wrong modal: {other:?}"),
+        }
+        assert!(a.settings_open, "the change should come back to settings");
+    }
+
+    #[test]
+    fn set_from_the_command_bar_takes_the_rest_of_the_line() {
+        let mut a = app();
+        a.on_key(key(':'));
+        for c in "set terminal open -a Ghostty".chars() {
+            a.on_key(key(c));
+        }
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::SetSetting {
+                key: "terminal".into(),
+                value: "open -a Ghostty".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn escape_leaves_the_settings_screen_for_good() {
+        let mut a = app();
+        a.on_key(key(','));
+        a.on_key(code(KeyCode::Esc));
+        assert!(!a.settings_open);
+        assert!(a.modal.is_none());
     }
 
     // ---------------------------------------------------------- editor ---

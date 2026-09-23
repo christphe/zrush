@@ -33,7 +33,10 @@ pub struct Removed {
 
 pub struct Zrush {
     dirs: Dirs,
-    cfg: Config,
+    /// Live, not the copy loaded at startup: the settings screen writes
+    /// config.toml and reloads it, and everything that reads a setting has
+    /// to see the new one without the process restarting.
+    cfg: std::sync::RwLock<Config>,
     /// Any worktree of the repository; git reports the whole set from any.
     repo: PathBuf,
     main_root: PathBuf,
@@ -100,7 +103,7 @@ impl Zrush {
             return Ok(Self {
                 editor: std::sync::Mutex::new(editor_label(&cfg)),
                 dirs,
-                cfg,
+                cfg: std::sync::RwLock::new(cfg),
                 repo,
                 main_root,
                 agents,
@@ -124,7 +127,7 @@ impl Zrush {
         Ok(Self {
             editor: std::sync::Mutex::new(editor_label(&cfg)),
             dirs,
-            cfg,
+            cfg: std::sync::RwLock::new(cfg),
             repo,
             main_root,
             agents,
@@ -135,8 +138,47 @@ impl Zrush {
         })
     }
 
-    pub fn config(&self) -> &Config {
-        &self.cfg
+    /// A copy, because the real one is behind a lock that no caller should
+    /// hold across a git call.
+    pub fn config(&self) -> Config {
+        self.cfg
+            .read()
+            .map_or_else(|e| e.into_inner().clone(), |c| c.clone())
+    }
+
+    /// Read config.toml again and apply it. The host is told the editor and
+    /// the terminal it now has; everything else is read per use, so it
+    /// takes effect on the next probe.
+    pub fn reload_config(&self) -> Result<Config> {
+        let fresh = Config::load(&self.dirs)?;
+        self.apply(fresh.clone());
+        Ok(fresh)
+    }
+
+    /// Replace the live config and push what the host caches out of it.
+    fn apply(&self, cfg: Config) {
+        self.host.set_editor(cfg.editor_command());
+        self.host.set_terminal(cfg.terminal.clone());
+        if let Ok(mut e) = self.editor.lock() {
+            *e = editor_label(&cfg);
+        }
+        match self.cfg.write() {
+            Ok(mut slot) => *slot = cfg,
+            Err(e) => *e.into_inner() = cfg,
+        }
+    }
+
+    /// Change one setting, save, and reload. Saving and reloading rather
+    /// than mutating in place: the file is the truth, and a write that did
+    /// not land must not leave the interface claiming it did.
+    pub fn edit_config<F>(&self, f: F) -> Result<Config>
+    where
+        F: FnOnce(&mut Config),
+    {
+        let mut cfg = self.config();
+        f(&mut cfg);
+        cfg.save(&self.dirs)?;
+        self.reload_config()
     }
 
     pub fn main_root(&self) -> &Path {
@@ -183,16 +225,13 @@ impl Zrush {
         if editor.is_empty() {
             return Err(ZrushError::msg("no editor named"));
         }
-        self.host.set_editor(Config::command_for(editor));
-        if let Ok(mut e) = self.editor.lock() {
-            editor.clone_into(&mut e);
-        }
-        let mut cfg = self.cfg.clone();
-        cfg.editor = editor.to_string();
-        // A name and a command line are two answers to one question: the
-        // old command would otherwise keep overriding the new name.
-        cfg.editor_cmd.clear();
-        cfg.save(&self.dirs)
+        self.edit_config(|cfg| {
+            cfg.editor = editor.to_string();
+            // A name and a command line are two answers to one question:
+            // the old command would otherwise keep overriding the new name.
+            cfg.editor_cmd.clear();
+        })
+        .map(drop)
     }
 
     /// The same, for a whole command line typed by hand.
@@ -200,13 +239,8 @@ impl Zrush {
         if command.is_empty() {
             return Err(ZrushError::msg("no command given"));
         }
-        self.host.set_editor(command.to_vec());
-        if let Ok(mut e) = self.editor.lock() {
-            *e = command.join(" ");
-        }
-        let mut cfg = self.cfg.clone();
-        cfg.editor_cmd = command.to_vec();
-        cfg.save(&self.dirs)
+        self.edit_config(|cfg| cfg.editor_cmd = command.to_vec())
+            .map(drop)
     }
 
     /// What `enter` opens with, as the picker shows it: the editor's name,
@@ -215,7 +249,7 @@ impl Zrush {
     pub fn editor_label(&self) -> String {
         self.editor
             .lock()
-            .map_or_else(|_| self.cfg.editor.clone(), |e| e.clone())
+            .map_or_else(|_| self.config().editor, |e| e.clone())
     }
 
     /// True when there is a choice to offer. With one agent installed, the
@@ -257,7 +291,7 @@ impl Zrush {
     pub fn live_sessions(&self) -> Vec<Session> {
         self.agents
             .iter()
-            .flat_map(|a| a.live(&self.dirs, &self.cfg))
+            .flat_map(|a| a.live(&self.dirs, &self.config()))
             .collect()
     }
 
@@ -281,7 +315,7 @@ impl Zrush {
         };
         self.agents
             .iter()
-            .flat_map(|a| a.resumable(&self.dirs, &self.cfg, &scope))
+            .flat_map(|a| a.resumable(&self.dirs, &self.config(), &scope))
             .collect()
     }
 
@@ -295,7 +329,7 @@ impl Zrush {
 
     pub fn preview(&self, agent: &str, id: &str) -> Vec<Turn> {
         self.agent(agent)
-            .map(|a| a.preview(&self.dirs, id, self.cfg.preview_turns))
+            .map(|a| a.preview(&self.dirs, id, self.config().preview_turns))
             .unwrap_or_default()
     }
 

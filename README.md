@@ -103,6 +103,22 @@ guessed from its name: `/usr/local/bin/zed` resolves into
 from `code`. An editor that is not in a bundle is simply opened and left
 where it is.
 
+### Settings
+
+`,` opens the settings screen: one row per key of `config.toml`, with what
+it is now. Enter on a row edits it in the way that row takes — a list for
+the editor and the agent, a toggle for a flag, typing for the rest.
+
+Every change is **written to the file and read back**, and what came back is
+what the screen then shows. The editor and the terminal take effect on the
+next `enter` or `ctrl-o`; the rest on the next refresh, which happens
+straight away. `:set <key> <value>` does the same from the command bar, with
+the same names.
+
+One consequence worth naming: `:agent` now remembers. It used to switch what
+was listed and forget it, so the next run started on the configured agent
+again.
+
 ### Cursor and Code
 
 `:editor code` switches at any time and writes the choice to the config;
@@ -153,7 +169,8 @@ while the first is out rather than queued.
 | `ctrl-p` | purge: mark rows with `space`, `enter` removes the lot |
 | `ctrl-l` | reload |
 | `/` | filter, fuzzy by default. `'sub` `=exact` `^start` `end$` `!not`, as in fzf. A node and its children travel together, so the list stays a tree |
-| `:` | command bar — `:agent`, `:editor`, `:help`, `:q` |
+| `,` | settings: every key of the config file, edited in place |
+| `:` | command bar — `:agent`, `:editor`, `:set`, `:settings`, `:help`, `:q` |
 | `?` | every key, in full |
 | `esc` | close a dialog, leave a mode, or quit |
 

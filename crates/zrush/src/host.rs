@@ -13,24 +13,17 @@ use zrush_core::error::{Result, ZrushError};
 use zrush_core::host::Host;
 
 pub struct ProcessHost {
-    /// `:editor` changes this while the interface is running, so it is not
-    /// the config's word on it but the current one.
+    /// The settings screen changes these while the interface is running, so
+    /// they are not the config's word at startup but the current one.
     editor: std::sync::Mutex<Vec<String>>,
-    terminal: Vec<String>,
+    terminal: std::sync::Mutex<Vec<String>>,
 }
 
 impl ProcessHost {
     pub fn new(cfg: &Config) -> Self {
-        // Empty means `open`, which hands the script to whatever app owns
-        // that file type.
-        let terminal = if cfg.terminal.is_empty() {
-            vec![default_opener().to_string()]
-        } else {
-            cfg.terminal.clone()
-        };
         Self {
             editor: std::sync::Mutex::new(cfg.editor_command()),
-            terminal,
+            terminal: std::sync::Mutex::new(terminal_command(&cfg.terminal)),
         }
     }
 }
@@ -60,6 +53,12 @@ impl Host for ProcessHost {
         }
     }
 
+    fn set_terminal(&self, command: Vec<String>) {
+        if let Ok(mut t) = self.terminal.lock() {
+            *t = terminal_command(&command);
+        }
+    }
+
     fn run_agent(&self, cwd: &Path, command: &[String]) -> Result<()> {
         let dir = std::env::temp_dir().join(format!("zrush-term.{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
@@ -67,8 +66,12 @@ impl Host for ProcessHost {
         std::fs::write(&script, script_body(cwd, command, &dir))?;
         make_executable(&script)?;
 
-        let (bin, args) = self
+        let terminal = self
             .terminal
+            .lock()
+            .map_err(|_| ZrushError::msg("the terminal setting is poisoned"))?
+            .clone();
+        let (bin, args) = terminal
             .split_first()
             .ok_or_else(|| ZrushError::msg("no terminal configured"))?;
         Command::new(bin)
@@ -80,6 +83,16 @@ impl Host for ProcessHost {
                 ZrushError::msg(format!("{bin} could not open a terminal"))
             })?;
         Ok(())
+    }
+}
+
+/// Empty means `open`, which hands the script to whatever app owns that
+/// file type.
+fn terminal_command(configured: &[String]) -> Vec<String> {
+    if configured.is_empty() {
+        vec![default_opener().to_string()]
+    } else {
+        configured.to_vec()
     }
 }
 
@@ -295,7 +308,7 @@ mod tests {
     #[test]
     fn an_unset_terminal_falls_back_to_the_platform_opener() {
         let h = ProcessHost::new(&Config::default());
-        assert_eq!(h.terminal, vec![default_opener()]);
+        assert_eq!(*h.terminal.lock().unwrap(), vec![default_opener()]);
     }
 
     #[cfg(not(windows))]

@@ -72,6 +72,12 @@ pub enum Modal {
         at: usize,
         reason: Option<String>,
     },
+    /// Every setting and its value. Enter edits the one under the cursor,
+    /// in whatever way that one takes: a list, a toggle, or typing.
+    Settings {
+        rows: Vec<(String, String)>,
+        at: usize,
+    },
     /// Which editor `enter` opens a worktree with. The last entry is not an
     /// editor but a way out of the list: a command line typed by hand.
     EditorPicker { editors: Vec<String>, at: usize },
@@ -91,6 +97,7 @@ impl Modal {
             } => (at, suggestions.len()),
             Self::AgentPicker { at, agents, .. } => (at, agents.len()),
             Self::EditorPicker { at, editors } => (at, editors.len()),
+            Self::Settings { at, rows } => (at, rows.len()),
             Self::Help | Self::Command { .. } | Self::Error { .. } => return,
         };
         if len == 0 {
@@ -130,7 +137,8 @@ const HELP: &[(&str, &str)] = &[
     ("ctrl-p", "purge: mark rows with space, enter to remove"),
     ("ctrl-l", "reload"),
     ("/", "filter — fuzzy; \x27 = ^ $ ! as in fzf"),
-    (":", "command bar — :agent, :editor, :help, :q"),
+    (",", "settings"),
+    (":", "command bar — :agent, :editor, :set, :help, :q"),
     ("?", "this"),
     ("esc", "close, or quit"),
 ];
@@ -159,6 +167,7 @@ pub fn render(f: &mut Frame, area: Rect, modal: &Modal) {
             picker(f, area, "Agent", agents, *at, reason.as_deref());
         }
         Modal::EditorPicker { editors, at } => picker(f, area, "Editor", editors, *at, None),
+        Modal::Settings { rows, at } => settings(f, area, rows, *at),
     }
 }
 
@@ -263,6 +272,37 @@ fn input(
         })
         .collect();
     f.render_widget(Paragraph::new(list), rows[1]);
+}
+
+/// Two columns: the key as `config.toml` spells it, and what it is now.
+/// The same names on purpose — what you change here is what you would have
+/// typed into the file.
+fn settings(f: &mut Frame, area: Rect, rows: &[(String, String)], at: usize) {
+    let rect = centred(area, 64, rows.len() as u16 + 4);
+    frame(
+        f,
+        rect,
+        "Settings",
+        theme::modal_border(),
+        "↑↓ · enter edits · esc",
+    );
+    let lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, (key, value))| {
+            let shown = if value.is_empty() {
+                "—"
+            } else {
+                value.as_str()
+            };
+            let l = Line::from(vec![
+                Span::styled(format!("  {key:<16}"), theme::header_label()),
+                Span::styled(shown.to_string(), theme::header_value()),
+            ]);
+            if i == at { l.style(theme::cursor()) } else { l }
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inset(rect));
 }
 
 fn help(f: &mut Frame, area: Rect) {

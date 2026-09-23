@@ -120,6 +120,7 @@ pub fn main() -> Result<()> {
     }
 
     let mut app = App::new(cfg.more_step, cfg.resumable_max);
+    app.cfg = cfg.clone();
     app.agent_names = z.agents().iter().map(|a| a.id().to_string()).collect();
     app.active_agent = z
         .active_agent()
