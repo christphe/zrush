@@ -13,6 +13,7 @@ use crate::config::{Config, Dirs};
 use crate::error::{Result, ZrushError};
 use crate::host::Host;
 use crate::model::{GitStatus, Session, Worktree};
+use crate::surface::Surface as _;
 use crate::{git, state};
 
 /// Which question the interface asked before a worktree is created. The
@@ -359,8 +360,14 @@ impl Zrush {
     /// the editor.
     pub fn run_agent(&self, worktree: &Path, agent: &str, resume: Option<&str>) -> Result<()> {
         let a = self.agent(agent)?;
-        let command = resume.map_or_else(|| a.start_command(), |id| a.resume_command(id));
-        self.host.run_agent(worktree, &command)
+        crate::surface::Terminal::default().open(
+            &crate::surface::SessionRef {
+                worktree,
+                agent: a,
+                session_id: resume,
+            },
+            self.host.as_ref(),
+        )
     }
 
     /// The branches a worktree could be opened on: the local ones, then the

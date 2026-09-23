@@ -59,6 +59,17 @@ impl Host for ProcessHost {
         }
     }
 
+    /// The desktop's own opener, which routes a scheme to whatever
+    /// registered it. Not the configured terminal: a URL is not a script.
+    fn open_url(&self, url: &str) -> Result<()> {
+        let opener = default_opener();
+        Command::new(opener)
+            .arg(url)
+            .status()
+            .map_err(|_| ZrushError::msg(format!("{opener} could not open {url}")))?;
+        Ok(())
+    }
+
     fn run_agent(&self, cwd: &Path, command: &[String]) -> Result<()> {
         let dir = std::env::temp_dir().join(format!("zrush-term.{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;

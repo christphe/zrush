@@ -34,6 +34,14 @@ pub trait Host: Send + Sync {
     /// Likewise for where an agent gets its terminal. Empty means the
     /// host's own default.
     fn set_terminal(&self, _command: Vec<String>) {}
+
+    /// Hand a URL to whatever registered its scheme. A host with no
+    /// desktop to hand it to says so rather than pretending.
+    fn open_url(&self, url: &str) -> Result<()> {
+        Err(crate::error::ZrushError::msg(format!(
+            "this host cannot open {url}"
+        )))
+    }
 }
 
 /// A host that refuses everything, for tests and for `--print`, where no
@@ -58,6 +66,7 @@ pub struct RecordingHost {
     pub ran: std::sync::Mutex<Vec<(std::path::PathBuf, Vec<String>)>>,
     pub editor: std::sync::Mutex<Vec<String>>,
     pub terminal: std::sync::Mutex<Vec<String>>,
+    pub opened_urls: std::sync::Mutex<Vec<String>>,
 }
 
 impl Host for RecordingHost {
@@ -85,5 +94,12 @@ impl Host for RecordingHost {
         if let Ok(mut v) = self.terminal.lock() {
             *v = command;
         }
+    }
+
+    fn open_url(&self, url: &str) -> Result<()> {
+        if let Ok(mut v) = self.opened_urls.lock() {
+            v.push(url.to_string());
+        }
+        Ok(())
     }
 }

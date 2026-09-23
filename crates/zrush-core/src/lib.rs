@@ -30,3 +30,4 @@ pub mod host;
 pub mod model;
 pub mod paths;
 pub mod state;
+pub mod surface;
