@@ -43,10 +43,12 @@ pub enum Action {
         worktree: PathBuf,
         bind: Option<(String, String)>,
     },
-    /// Start an agent in a terminal of its own.
+    /// Start an agent in a terminal of its own. `session` names the
+    /// conversation to resume, with the agent it belongs to — which is not
+    /// always the one being listed.
     RunAgent {
         worktree: PathBuf,
-        resume: Option<String>,
+        session: Option<(String, String)>,
     },
     CreateWorktree {
         name: String,
@@ -445,11 +447,15 @@ impl App {
             (KeyCode::Right | KeyCode::Char('l'), false) => self.fold(false),
             (KeyCode::Char('l'), true) => Action::Reload,
             (KeyCode::Enter, _) => self.enter(),
+            // On a session row this resumes THAT conversation. It used to
+            // pass None whatever the cursor was on, so a session row
+            // started a fresh one — the core could resume all along and
+            // nothing ever asked it to.
             (KeyCode::Char('o'), true) => {
                 self.worktree_at_cursor()
                     .map_or(Action::None, |worktree| Action::RunAgent {
                         worktree,
-                        resume: None,
+                        session: self.session_at_cursor(),
                     })
             }
             (KeyCode::Char('w'), true) => {
@@ -1636,13 +1642,29 @@ mod tests {
     // ----------------------------------------------------------- others ---
 
     #[test]
-    fn ctrl_o_starts_an_agent_without_touching_the_binding() {
+    fn ctrl_o_on_a_worktree_starts_a_fresh_session() {
         let mut a = app();
         assert_eq!(
             a.on_key(ctrl('o')),
             Action::RunAgent {
                 worktree: "/repo".into(),
-                resume: None
+                session: None,
+            }
+        );
+    }
+
+    /// The core could resume from the start; the interface never asked, so
+    /// ctrl-o on a session row opened a new conversation instead of the
+    /// one under the cursor.
+    #[test]
+    fn ctrl_o_on_a_session_resumes_that_one_in_its_worktree() {
+        let mut a = app();
+        a.on_key(code(KeyCode::Down));
+        assert_eq!(
+            a.on_key(ctrl('o')),
+            Action::RunAgent {
+                worktree: "/repo".into(),
+                session: Some(("claude".into(), "dead".into())),
             }
         );
     }

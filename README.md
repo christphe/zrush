@@ -163,7 +163,7 @@ while the first is out rather than queued.
 | `↑` `↓` / `k` `j` | move |
 | `←` `→` / `h` `l` | fold, unfold a worktree's rows |
 | `enter` | **worktree**: drop the association and open the editor, so the panel starts a fresh session. **session**: bind it and open, so the panel resumes it. **`[…more]`**: load older sessions |
-| `ctrl-o` | start a session in a terminal of its own, leaving the association and the editor alone |
+| `ctrl-o` | a terminal of its own, leaving the association and the editor alone. On a session row it resumes that conversation; on a worktree it starts a fresh one |
 | `ctrl-w` | new worktree: it asks for a new branch or an existing one first. On a session row, hand that session to the new worktree |
 | `ctrl-d` | delete a conversation, or remove a worktree |
 | `ctrl-p` | purge: mark rows with `space`, `enter` removes the lot |

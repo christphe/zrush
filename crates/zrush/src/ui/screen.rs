@@ -317,7 +317,7 @@ fn handle(
             let bind = bind.as_ref().map(|(a, i)| (a.as_str(), i.as_str()));
             report(app, "Open", z.open(&worktree, bind));
         }
-        Action::RunAgent { worktree, resume } => run_agent(app, z, &worktree, resume.as_deref()),
+        Action::RunAgent { worktree, session } => run_agent(app, z, &worktree, session.as_ref()),
         Action::CreateWorktree {
             name,
             kind,
@@ -370,11 +370,20 @@ fn report(app: &mut App, what: &str, r: zrush_core::error::Result<()>) {
     }
 }
 
-fn run_agent(app: &mut App, z: &Arc<Zrush>, worktree: &std::path::Path, resume: Option<&str>) {
-    let Some(agent) = z.active_agent().map(zrush_core::agent::Agent::id) else {
+fn run_agent(
+    app: &mut App,
+    z: &Arc<Zrush>,
+    worktree: &std::path::Path,
+    session: Option<&(String, String)>,
+) {
+    // The session's own agent outranks the one being listed: a worktree
+    // bound under another agent still resumes correctly.
+    let listed = z.active_agent().map(zrush_core::agent::Agent::id);
+    let Some(agent) = session.map(|(a, _)| a.as_str()).or(listed) else {
         app.flash("no agent installed");
         return;
     };
+    let resume = session.map(|(_, i)| i.as_str());
     report(app, "New session", z.run_agent(worktree, agent, resume));
 }
 
