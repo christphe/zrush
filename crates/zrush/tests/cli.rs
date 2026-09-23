@@ -124,6 +124,9 @@ fn zrush(sb: &Sandbox) -> Command {
 /// `zrush tab` is what an editor's key binding runs. The editor is the
 /// caller, so the pair it resolves to is the caller's business — and a
 /// pair with no row must still work.
+///
+/// Nothing here requires the agent to be installed: the runners have no
+/// `claude`, and an editor's own surface goes through the editor anyway.
 #[test]
 fn tab_resolves_the_pair_the_editor_asks_for() {
     let sb = sandbox();

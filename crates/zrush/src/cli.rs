@@ -191,13 +191,18 @@ fn tab(cfg: &Config, dirs: &Dirs, editor: Option<&str>, print: bool) -> Result<(
     let toplevel = PathBuf::from(toplevel.trim());
 
     let binding = zrush_core::state::read(&toplevel)?;
-    let agents = agent::available();
-    // The binding names its own agent; with none, whatever is installed.
+    // Every agent this build knows, not only the installed ones: opening a
+    // conversation in an editor's own surface goes through the editor, and
+    // needs no binary on the PATH. A terminal surface will fail at exec if
+    // the agent really is missing, which says more than refusing here.
+    let agents = agent::all();
     let agent = binding
         .as_ref()
         .and_then(|b| b.agent.clone())
+        .or_else(|| cfg.agent.clone())
+        .or_else(|| agent::available().first().map(|a| a.id().to_string()))
         .or_else(|| agents.first().map(|a| a.id().to_string()))
-        .ok_or_else(|| ZrushError::msg("no agent installed"))?;
+        .ok_or_else(|| ZrushError::msg("this build knows no agent"))?;
     let session = binding.as_ref().map(|b| b.id.as_str());
 
     if print {
