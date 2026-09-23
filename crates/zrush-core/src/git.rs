@@ -10,10 +10,20 @@ use std::process::Command;
 use crate::error::{Result, ZrushError};
 use crate::model::{GitStatus, Worktree};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddFrom {
     ExistingBranch(String),
-    NewBranch { name: String, base: String },
+    /// A branch that exists on a remote but not here. Checking it out by
+    /// name would cut a new branch from the default base instead, which is
+    /// not at all what "open the existing branch" means.
+    RemoteBranch {
+        name: String,
+        remote_ref: String,
+    },
+    NewBranch {
+        name: String,
+        base: String,
+    },
 }
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<String> {
@@ -126,6 +136,55 @@ pub fn branches(repo: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Branches that exist on a remote and not here, as the local name they
+/// would take: `origin/feat` is offered as `feat`. HEAD symrefs are
+/// dropped — `origin/HEAD` is not a branch anyone wants a worktree on.
+pub fn remote_branches(repo: &Path) -> Result<Vec<String>> {
+    let out = run(
+        repo,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+            "refs/remotes",
+        ],
+    )?;
+    Ok(out
+        .lines()
+        .filter(|l| !l.is_empty() && !l.ends_with("/HEAD"))
+        .filter_map(|l| l.split_once('/').map(|(_, rest)| rest.to_string()))
+        .collect())
+}
+
+/// Where a remote branch of this name lives, if exactly one remote has it.
+/// Several remotes carrying the same name is ambiguous, and guessing which
+/// one to track is not zrush's call.
+pub fn remote_ref(repo: &Path, name: &str) -> Option<String> {
+    let out = run(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            &format!("refs/remotes/*/{name}"),
+        ],
+    )
+    .ok()?;
+    let mut hits = out.lines().filter(|l| !l.is_empty());
+    let first = hits.next()?.to_string();
+    hits.next().is_none().then_some(first)
+}
+
+/// Branches already checked out somewhere: git refuses a second worktree
+/// on one, so offering it would only produce an error later.
+pub fn checked_out(repo: &Path) -> Vec<String> {
+    worktrees(repo)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|w| w.branch)
+        .filter(|b| !b.is_empty() && !b.starts_with('('))
+        .collect()
+}
+
 pub fn branch_exists(repo: &Path, name: &str) -> bool {
     run(
         repo,
@@ -190,6 +249,13 @@ pub fn worktree_add(repo: &Path, dest: &Path, from: &AddFrom) -> Result<()> {
     let dest = dest.to_string_lossy().into_owned();
     match from {
         AddFrom::ExistingBranch(b) => run(repo, &["worktree", "add", &dest, b]).map(drop),
+        // --track: the local branch starts at the remote one AND follows
+        // it, so `git pull` and `git push` need no argument.
+        AddFrom::RemoteBranch { name, remote_ref } => run(
+            repo,
+            &["worktree", "add", "--track", "-b", name, &dest, remote_ref],
+        )
+        .map(drop),
         // --no-track: the branch starts at `base` but owns no upstream, so a
         // later `git push -u origin HEAD` sets the right one instead of
         // pointing at main.

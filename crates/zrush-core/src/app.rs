@@ -15,6 +15,15 @@ use crate::host::Host;
 use crate::model::{GitStatus, Session, Worktree};
 use crate::{git, state};
 
+/// Which question the interface asked before a worktree is created. The
+/// two answers do different things to a name that already exists, so it is
+/// asked rather than inferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchKind {
+    New,
+    Existing,
+}
+
 /// What was removed, so a front end can say so in its own words.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Removed {
@@ -320,9 +329,31 @@ impl Zrush {
         self.host.run_agent(worktree, &command)
     }
 
-    /// Add a worktree under `new_root`. An existing branch is checked out
-    /// as-is; a new one is cut from the default base.
-    pub fn create_worktree(&self, name: &str) -> Result<PathBuf> {
+    /// The branches a worktree could be opened on: the local ones, then the
+    /// ones only a remote has, minus whatever is already checked out —
+    /// git refuses a second worktree on a branch, so offering it would buy
+    /// an error later.
+    pub fn openable_branches(&self) -> Vec<String> {
+        let taken = git::checked_out(&self.repo);
+        let mut out = git::branches(&self.repo).unwrap_or_default();
+        let local: HashSet<String> = out.iter().cloned().collect();
+        for b in git::remote_branches(&self.repo).unwrap_or_default() {
+            if !local.contains(&b) && !out.contains(&b) {
+                out.push(b);
+            }
+        }
+        out.retain(|b| !taken.contains(b));
+        out
+    }
+
+    /// Add a worktree under `new_root`.
+    ///
+    /// `kind` is the answer to a question the interface asked, not a guess:
+    /// typing a name that happens to exist must not silently open someone
+    /// else's branch, and asking for an existing branch that is only on a
+    /// remote must track it rather than cut a namesake from the default
+    /// base.
+    pub fn create_worktree(&self, name: &str, kind: BranchKind) -> Result<PathBuf> {
         let name = name.trim();
         if !git::check_ref_format(name) {
             return Err(ZrushError::msg(format!("invalid branch name: {name}")));
@@ -340,16 +371,32 @@ impl Zrush {
         }
         std::fs::create_dir_all(&new_root)?;
 
-        let from = if git::branch_exists(&self.repo, name) {
-            git::AddFrom::ExistingBranch(name.to_string())
-        } else {
-            git::AddFrom::NewBranch {
-                name: name.to_string(),
-                base: git::default_base(&self.repo)?,
-            }
-        };
+        let from = self.add_from(name, kind)?;
         git::worktree_add(&self.repo, &dest, &from)?;
         Ok(dest)
+    }
+
+    fn add_from(&self, name: &str, kind: BranchKind) -> Result<git::AddFrom> {
+        let local = git::branch_exists(&self.repo, name);
+        match kind {
+            BranchKind::New => {
+                if local {
+                    return Err(ZrushError::msg(format!("branch already exists: {name}")));
+                }
+                Ok(git::AddFrom::NewBranch {
+                    name: name.to_string(),
+                    base: git::default_base(&self.repo)?,
+                })
+            }
+            BranchKind::Existing if local => Ok(git::AddFrom::ExistingBranch(name.to_string())),
+            BranchKind::Existing => match git::remote_ref(&self.repo, name) {
+                Some(remote_ref) => Ok(git::AddFrom::RemoteBranch {
+                    name: name.to_string(),
+                    remote_ref,
+                }),
+                None => Err(ZrushError::msg(format!("no such branch: {name}"))),
+            },
+        }
     }
 
     /// Delete one conversation for good. A running one is refused: stop it
@@ -528,7 +575,7 @@ mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let repo = scratch(&td);
         let z = zrush(&td, repo.clone());
-        let dest = z.create_worktree("feature").unwrap();
+        let dest = z.create_worktree("feature", BranchKind::New).unwrap();
         assert_eq!(dest, repo.join(".claude/worktrees/feature"));
         assert!(dest.join("f.txt").exists());
     }
@@ -537,7 +584,7 @@ mod tests {
     fn a_slashed_branch_gets_a_flat_directory() {
         let td = tempfile::TempDir::new().unwrap();
         let z = zrush(&td, scratch(&td));
-        let dest = z.create_worktree("feat/thing").unwrap();
+        let dest = z.create_worktree("feat/thing", BranchKind::New).unwrap();
         assert!(dest.ends_with("thing"));
     }
 
@@ -545,15 +592,15 @@ mod tests {
     fn an_invalid_branch_name_is_refused_before_git_is_asked() {
         let td = tempfile::TempDir::new().unwrap();
         let z = zrush(&td, scratch(&td));
-        assert!(z.create_worktree("has space").is_err());
+        assert!(z.create_worktree("has space", BranchKind::New).is_err());
     }
 
     #[test]
     fn creating_the_same_worktree_twice_is_refused() {
         let td = tempfile::TempDir::new().unwrap();
         let z = zrush(&td, scratch(&td));
-        z.create_worktree("feature").unwrap();
-        assert!(z.create_worktree("feature").is_err());
+        z.create_worktree("feature", BranchKind::New).unwrap();
+        assert!(z.create_worktree("feature", BranchKind::New).is_err());
     }
 
     #[test]
@@ -570,13 +617,72 @@ mod tests {
             None,
         )
         .unwrap();
-        let dest = z.create_worktree("feature").unwrap();
+        let dest = z.create_worktree("feature", BranchKind::New).unwrap();
         state::write(&dest, "claude", "aaaaaaaa-1111-2222-3333-444455556666").unwrap();
 
         z.open(&dest, None).unwrap();
 
         assert!(z.binding(&dest).is_none());
         assert_eq!(host.opened.lock().unwrap().as_slice(), &[dest]);
+    }
+
+    /// The bug this exists for: asking for an existing branch that only a
+    /// remote has used to cut a namesake from the default base, which
+    /// silently produced a different branch with the same name.
+    #[test]
+    fn an_existing_branch_that_is_only_on_a_remote_is_tracked() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        // A branch that exists on the remote and not here.
+        run(&repo, &["checkout", "-q", "-b", "remote-only"]);
+        run(&repo, &["push", "-q", "-u", "origin", "remote-only"]);
+        run(&repo, &["checkout", "-q", "main"]);
+        run(&repo, &["branch", "-qD", "remote-only"]);
+        let z = with(
+            &td,
+            repo.clone(),
+            Config::default(),
+            crate::agent::all(),
+            None,
+        );
+
+        assert!(z.openable_branches().iter().any(|b| b == "remote-only"));
+        let dest = z
+            .create_worktree("remote-only", BranchKind::Existing)
+            .unwrap();
+
+        assert!(git::branch_exists(&repo, "remote-only"));
+        let upstream = git::run(
+            &dest,
+            &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        )
+        .unwrap();
+        assert_eq!(upstream.trim(), "origin/remote-only");
+    }
+
+    #[test]
+    fn a_branch_already_checked_out_is_not_offered() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let z = with(&td, repo, Config::default(), crate::agent::all(), None);
+        // main is checked out in the main worktree.
+        assert!(!z.openable_branches().iter().any(|b| b == "main"));
+    }
+
+    #[test]
+    fn new_refuses_a_name_that_is_already_a_branch() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        run(&repo, &["branch", "taken"]);
+        let z = with(&td, repo, Config::default(), crate::agent::all(), None);
+        assert!(z.create_worktree("taken", BranchKind::New).is_err());
+    }
+
+    #[test]
+    fn existing_refuses_a_name_that_is_no_branch_at_all() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch(&td));
+        assert!(z.create_worktree("nowhere", BranchKind::Existing).is_err());
     }
 
     #[test]
@@ -623,7 +729,7 @@ mod tests {
     fn opening_a_session_binds_it_first() {
         let td = tempfile::TempDir::new().unwrap();
         let z = zrush(&td, scratch(&td));
-        let dest = z.create_worktree("feature").unwrap();
+        let dest = z.create_worktree("feature", BranchKind::New).unwrap();
         let id = "aaaaaaaa-1111-2222-3333-444455556666";
         z.open(&dest, Some(("claude", id))).unwrap();
         let b = z.binding(&dest).unwrap();
@@ -635,7 +741,7 @@ mod tests {
     fn a_malformed_id_never_reaches_the_state_file() {
         let td = tempfile::TempDir::new().unwrap();
         let z = zrush(&td, scratch(&td));
-        let dest = z.create_worktree("feature").unwrap();
+        let dest = z.create_worktree("feature", BranchKind::New).unwrap();
         assert!(z.open(&dest, Some(("claude", "not-a-uuid"))).is_err());
         assert!(z.binding(&dest).is_none());
     }
@@ -796,7 +902,7 @@ mod tests {
     fn a_binding_records_the_agent_it_was_made_with() {
         let td = tempfile::TempDir::new().unwrap();
         let z = zrush(&td, scratch(&td));
-        let dest = z.create_worktree("feature").unwrap();
+        let dest = z.create_worktree("feature", BranchKind::New).unwrap();
         let id = "aaaaaaaa-1111-2222-3333-444455556666";
         z.open(&dest, Some(("claude", id))).unwrap();
         assert_eq!(z.binding(&dest).unwrap().agent.as_deref(), Some("claude"));
