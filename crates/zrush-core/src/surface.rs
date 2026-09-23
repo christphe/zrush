@@ -35,6 +35,10 @@ pub trait Surface: Send + Sync {
     /// How the config names this kind.
     fn id(&self) -> &'static str;
 
+    /// What opening it would do, for `zrush tab --print`. A surface whose
+    /// target cannot be read before it acts is not one you can debug.
+    fn describe(&self, session: &SessionRef<'_>) -> String;
+
     fn open(&self, session: &SessionRef<'_>, host: &dyn Host) -> Result<()>;
 }
 
@@ -48,21 +52,30 @@ pub struct Terminal {
     pub command: Option<String>,
 }
 
-impl Surface for Terminal {
-    fn id(&self) -> &'static str {
-        "terminal"
-    }
-
-    fn open(&self, session: &SessionRef<'_>, host: &dyn Host) -> Result<()> {
-        let command = match (&self.command, session.session_id) {
+impl Terminal {
+    fn command_for(&self, session: &SessionRef<'_>) -> Vec<String> {
+        match (&self.command, session.session_id) {
             (Some(t), _) => expand(t, session)
                 .split_whitespace()
                 .map(str::to_string)
                 .collect(),
             (None, Some(id)) => session.agent.resume_command(id),
             (None, None) => session.agent.start_command(),
-        };
-        host.run_agent(session.worktree, &command)
+        }
+    }
+}
+
+impl Surface for Terminal {
+    fn id(&self) -> &'static str {
+        "terminal"
+    }
+
+    fn describe(&self, session: &SessionRef<'_>) -> String {
+        self.command_for(session).join(" ")
+    }
+
+    fn open(&self, session: &SessionRef<'_>, host: &dyn Host) -> Result<()> {
+        host.run_agent(session.worktree, &self.command_for(session))
     }
 }
 
@@ -76,6 +89,10 @@ pub struct Uri {
 impl Surface for Uri {
     fn id(&self) -> &'static str {
         "uri"
+    }
+
+    fn describe(&self, session: &SessionRef<'_>) -> String {
+        expand(&self.template, session)
     }
 
     fn open(&self, session: &SessionRef<'_>, host: &dyn Host) -> Result<()> {
@@ -186,6 +203,19 @@ mod tests {
         assert_eq!(
             host.ran.lock().unwrap()[0].1,
             vec!["fake", "--resume", "abc", "--yolo"]
+        );
+    }
+
+    #[test]
+    fn describe_says_what_open_would_do() {
+        let s = session(Some("abc"), &Fake);
+        assert_eq!(Terminal::default().describe(&s), "fake --resume abc");
+        assert_eq!(
+            Uri {
+                template: "x://open?session={id}".into()
+            }
+            .describe(&s),
+            "x://open?session=abc"
         );
     }
 

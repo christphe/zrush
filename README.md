@@ -103,6 +103,51 @@ guessed from its name: `/usr/local/bin/zed` resolves into
 from `code`. An editor that is not in a bundle is simply opened and left
 where it is.
 
+### One key, whatever the editor and the agent
+
+`zrush tab`, bound to a key by the editor, opens the conversation this
+worktree is bound to — as a Claude tab in VS Code or Cursor, as a terminal
+in Zed, and as a terminal for any agent nothing knows anything about.
+
+```json
+// VS Code / Cursor, User tasks.json + a keybinding on it
+"command": "zrush tab --editor code"
+```
+
+The editor is the caller, not a guess. `--editor` says which, for a machine
+that has several installed; without it the configured one answers.
+
+How a pair opens a conversation is a row:
+
+```toml
+[[surface]]
+editor = "code"
+agent = "claude"
+kind = "uri"                                                   # or "terminal"
+template = "vscode://anthropic.claude-code/open?session={id}"  # {id}, {agent}
+```
+
+A pair with **no row is a terminal**: the agent says what to run
+(`claude --resume <id>`), the host where to run it. That needs no row,
+which is why Zed works, and why an agent this build has never heard of
+works too. A `terminal` row exists only to replace the agent's own command.
+
+Two rows ship: the Claude extension on VS Code and on Cursor, each on its
+own URL scheme — Cursor registers `cursor://`, so VS Code's URL would open
+the wrong application. Both are undocumented, read off the extension, so an
+unknown `kind` and an empty `template` fall back to a terminal rather than
+failing. Writing any row in `config.toml` replaces the shipped list, as TOML
+arrays do.
+
+`zrush tab --print` says what it would open without opening it:
+
+```
+$ zrush tab --editor zed --print
+terminal	claude --resume 477b3dd5-3d6d-4c3b-946d-de62d83f5815
+$ zrush tab --editor cursor --print
+uri	cursor://anthropic.claude-code/open?session=477b3dd5-…
+```
+
 ### Settings
 
 `,` opens the settings screen: one row per key of `config.toml`, with what

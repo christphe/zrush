@@ -121,6 +121,59 @@ fn zrush(sb: &Sandbox) -> Command {
     c
 }
 
+/// `zrush tab` is what an editor's key binding runs. The editor is the
+/// caller, so the pair it resolves to is the caller's business — and a
+/// pair with no row must still work.
+#[test]
+fn tab_resolves_the_pair_the_editor_asks_for() {
+    let sb = sandbox();
+    std::fs::write(
+        sb.repo.join(".git/zrush-session"),
+        "session_id=aaaaaaaa-1111-2222-3333-444455556666\nagent=claude\n",
+    )
+    .expect("write");
+
+    // No row for zed: the agent's own command, in a terminal.
+    zrush(&sb)
+        .args(["tab", "--editor", "zed", "--print"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "terminal\tclaude --resume aaaaaaaa-1111-2222-3333-444455556666",
+        ));
+
+    // Cursor has a row, and it is not VS Code's: its own URL scheme.
+    zrush(&sb)
+        .args(["tab", "--editor", "cursor", "--print"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "uri\tcursor://anthropic.claude-code/open?session=aaaaaaaa-1111-2222-3333-444455556666",
+        ));
+}
+
+#[test]
+fn tab_with_no_binding_opens_a_fresh_conversation() {
+    let sb = sandbox();
+    zrush(&sb)
+        .args(["tab", "--editor", "zed", "--print"])
+        .assert()
+        .success()
+        // No id to resume: the agent's start command, not `--resume `.
+        .stdout(predicate::str::contains("terminal\tclaude\n"));
+}
+
+#[test]
+fn tab_outside_a_repository_says_so() {
+    let sb = sandbox();
+    zrush(&sb)
+        .current_dir(sb.home.clone())
+        .args(["tab", "--print"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not inside a git worktree"));
+}
+
 #[test]
 fn list_prints_the_main_worktree() {
     let sb = sandbox();

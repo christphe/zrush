@@ -54,6 +54,17 @@ pub enum Command {
         #[arg(short = 'l', long = "list")]
         list: bool,
     },
+    /// Open this worktree's conversation the way this editor does it: the
+    /// Claude tab in VS Code, a terminal in Zed. Meant to be bound to a key
+    /// by the editor, which is the one asking.
+    Tab {
+        /// Which editor is asking, when it is not the configured one.
+        #[arg(short = 'e', long = "editor", value_name = "NAME")]
+        editor: Option<String>,
+        /// Say what would be opened instead of opening it.
+        #[arg(long = "print")]
+        print: bool,
+    },
     /// One line per session of a worktree, for `session --list`.
     Sessions { path: PathBuf },
 }
@@ -89,6 +100,7 @@ pub fn main() -> Result<()> {
 
     match &cli.command {
         Some(Command::Session { list }) => return crate::session::run(&dirs, &cfg, *list),
+        Some(Command::Tab { editor, print }) => return tab(&cfg, &dirs, editor.as_deref(), *print),
         Some(Command::Sessions { path }) => {
             let z = build(&cli, &cfg, &dirs, path.clone(), Box::new(NullHost))?;
             let live = z.live_sessions();
@@ -160,6 +172,55 @@ fn build(
         host,
         cli.agent.as_deref(),
     )
+}
+
+/// `zrush tab`: the conversation bound to the worktree we are standing in,
+/// opened through whatever surface this editor and that agent have.
+///
+/// The editor is the caller, not a guess: a task in VS Code says so, and
+/// the config answers otherwise. Nothing here knows what a Claude tab is —
+/// that is a row in the config.
+fn tab(cfg: &Config, dirs: &Dirs, editor: Option<&str>, print: bool) -> Result<()> {
+    let mut cfg = cfg.clone();
+    if let Some(e) = editor {
+        cfg.editor = e.to_string();
+    }
+    let here = std::env::current_dir()?;
+    let toplevel = zrush_core::git::run(&here, &["rev-parse", "--show-toplevel"])
+        .map_err(|_| ZrushError::msg("not inside a git worktree"))?;
+    let toplevel = PathBuf::from(toplevel.trim());
+
+    let binding = zrush_core::state::read(&toplevel)?;
+    let agents = agent::available();
+    // The binding names its own agent; with none, whatever is installed.
+    let agent = binding
+        .as_ref()
+        .and_then(|b| b.agent.clone())
+        .or_else(|| agents.first().map(|a| a.id().to_string()))
+        .ok_or_else(|| ZrushError::msg("no agent installed"))?;
+    let session = binding.as_ref().map(|b| b.id.as_str());
+
+    if print {
+        let surface = cfg.surface_for(&agent);
+        let a = agents
+            .iter()
+            .find(|a| a.id() == agent)
+            .ok_or_else(|| ZrushError::msg(format!("no such agent: {agent}")))?;
+        println!(
+            "{}\t{}",
+            surface.id(),
+            surface.describe(&zrush_core::surface::SessionRef {
+                worktree: &toplevel,
+                agent: a.as_ref(),
+                session_id: session,
+            })
+        );
+        return Ok(());
+    }
+
+    let host: Box<dyn Host> = Box::new(ProcessHost::new(&cfg));
+    let z = Zrush::new(dirs.clone(), cfg, toplevel.clone(), agents, host, None)?;
+    z.open_session(&toplevel, &agent, session)
 }
 
 /// `--list`: the rows as plain text, for a script or a quick look.
