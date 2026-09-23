@@ -370,6 +370,21 @@ impl Zrush {
         )
     }
 
+    /// Open a conversation the way this editor and this agent do it: the
+    /// configured surface, or a terminal. `session` is what to resume;
+    /// `None` starts a fresh one.
+    pub fn open_session(&self, worktree: &Path, agent: &str, session: Option<&str>) -> Result<()> {
+        let a = self.agent(agent)?;
+        self.config().surface_for(agent).open(
+            &crate::surface::SessionRef {
+                worktree,
+                agent: a,
+                session_id: session,
+            },
+            self.host.as_ref(),
+        )
+    }
+
     /// The branches a worktree could be opened on: the local ones, then the
     /// ones only a remote has, minus whatever is already checked out —
     /// git refuses a second worktree on a branch, so offering it would buy

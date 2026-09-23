@@ -40,6 +40,38 @@ impl Dirs {
     }
 }
 
+/// How one (editor, agent) pair opens a conversation. A pair with no row
+/// uses a terminal, which needs no row because the agent supplies the
+/// command and the host the terminal.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SurfaceRow {
+    pub editor: String,
+    pub agent: String,
+    /// `uri` or `terminal`. Anything else is ignored rather than fatal: a
+    /// config travels between machines, and a kind this build does not know
+    /// must not stop it starting.
+    pub kind: String,
+    /// For `uri`, the URL. For `terminal`, a command line that replaces the
+    /// agent's own. `{id}` and `{agent}` are filled in.
+    #[serde(default)]
+    pub template: String,
+}
+
+/// What ships known: the Claude extension answers on the editor's own URL
+/// scheme. Undocumented — read off the extension — so it degrades to a
+/// terminal rather than being relied on.
+fn default_surfaces() -> Vec<SurfaceRow> {
+    ["vscode", "cursor"]
+        .into_iter()
+        .map(|scheme| SurfaceRow {
+            editor: if scheme == "vscode" { "code" } else { "cursor" }.into(),
+            agent: "claude".into(),
+            kind: "uri".into(),
+            template: format!("{scheme}://anthropic.claude-code/open?session={{id}}"),
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Config {
@@ -57,6 +89,8 @@ pub struct Config {
     pub more_step: usize,
     pub title_width: usize,
     pub preview_turns: usize,
+    /// One row per pair that has something better than a terminal.
+    pub surface: Vec<SurfaceRow>,
 }
 
 impl Default for Config {
@@ -74,6 +108,7 @@ impl Default for Config {
             more_step: 20,
             title_width: 48,
             preview_turns: 14,
+            surface: default_surfaces(),
         }
     }
 }
@@ -192,6 +227,31 @@ pub enum Kind {
     Flag,
     Number,
     Path,
+}
+
+impl Config {
+    /// The surface for this pair: the configured row, or a terminal.
+    ///
+    /// The editor is matched on the name, not the command line: a row is
+    /// about which program is being driven, and `editor_cmd` may say
+    /// `code --reuse-window`.
+    pub fn surface_for(&self, agent: &str) -> Box<dyn crate::surface::Surface> {
+        let row = self
+            .surface
+            .iter()
+            .find(|r| r.agent == agent && r.editor == self.editor);
+        match row {
+            Some(r) if r.kind == "uri" && !r.template.is_empty() => Box::new(crate::surface::Uri {
+                template: r.template.clone(),
+            }),
+            Some(r) if r.kind == "terminal" => Box::new(crate::surface::Terminal {
+                command: (!r.template.is_empty()).then(|| r.template.clone()),
+            }),
+            // No row, or one this build cannot honour: the plain thing that
+            // always works.
+            _ => Box::new(crate::surface::Terminal::default()),
+        }
+    }
 }
 
 /// The editors that get a `-n`, in the order the picker offers them.
@@ -373,6 +433,61 @@ mod tests {
     fn a_key_this_build_no_longer_knows_is_ignored_rather_than_fatal() {
         let c: Config = toml::from_str("theme = \"auto\"\neditor = \"code\"\n").unwrap();
         assert_eq!(c.editor, "code");
+    }
+
+    #[test]
+    fn a_pair_with_no_row_gets_a_terminal_rather_than_nothing() {
+        let c = Config {
+            editor: "zed".into(),
+            ..Config::default()
+        };
+        // Zed has no row, and neither has an agent nobody has heard of.
+        assert_eq!(c.surface_for("claude").id(), "terminal");
+        assert_eq!(c.surface_for("codex").id(), "terminal");
+    }
+
+    #[test]
+    fn the_editor_decides_which_row_applies() {
+        let mut c = Config {
+            editor: "code".into(),
+            ..Config::default()
+        };
+        assert_eq!(c.surface_for("claude").id(), "uri");
+        assert_eq!(c.surface_for("codex").id(), "terminal");
+        c.editor = "cursor".into();
+        assert_eq!(c.surface_for("claude").id(), "uri");
+    }
+
+    /// A config travels between machines: a kind written by a newer zrush
+    /// must degrade, not stop the one reading it.
+    #[test]
+    fn a_kind_this_build_does_not_know_falls_back_to_a_terminal() {
+        let c = Config {
+            editor: "code".into(),
+            surface: vec![SurfaceRow {
+                editor: "code".into(),
+                agent: "claude".into(),
+                kind: "socket".into(),
+                template: "/tmp/sock".into(),
+            }],
+            ..Config::default()
+        };
+        assert_eq!(c.surface_for("claude").id(), "terminal");
+    }
+
+    #[test]
+    fn a_uri_row_with_no_template_is_not_a_uri() {
+        let c = Config {
+            editor: "code".into(),
+            surface: vec![SurfaceRow {
+                editor: "code".into(),
+                agent: "claude".into(),
+                kind: "uri".into(),
+                template: String::new(),
+            }],
+            ..Config::default()
+        };
+        assert_eq!(c.surface_for("claude").id(), "terminal");
     }
 
     #[test]
