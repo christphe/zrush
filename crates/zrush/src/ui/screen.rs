@@ -112,6 +112,11 @@ pub fn draw(f: &mut Frame, app: &App, z: &Zrush, prev: &Preview) {
     }
 }
 
+/// One frame per tick. Braille rather than ASCII: it turns in place
+/// instead of jumping a column, and every terminal that draws the tree's
+/// box characters has it.
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 fn status_line(f: &mut Frame, area: Rect, app: &App) {
     let left = match app.mode {
         Mode::Filter => format!(
@@ -122,14 +127,29 @@ fn status_line(f: &mut Frame, area: Rect, app: &App) {
         Mode::Normal if !app.filter.is_empty() => format!("/{}", app.filter),
         Mode::Normal => "<esc> quit".into(),
     };
-    let right = app.flash.clone().unwrap_or_default();
+    // What is happening now outranks what happened last: a spinner that
+    // the previous action's flash sits on top of is worse than no spinner.
+    let right = match &app.busy {
+        Some(what) => {
+            let frame = SPINNER[app.spin % SPINNER.len()];
+            format!("{frame} {what}…")
+        }
+        None => app.flash.clone().unwrap_or_default(),
+    };
     let gap =
         (area.width as usize).saturating_sub(left.chars().count() + right.chars().count() + 2);
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(format!(" {left}"), theme::header_label()),
             Span::raw(" ".repeat(gap)),
-            Span::styled(right, theme::badge()),
+            Span::styled(
+                right,
+                if app.busy.is_some() {
+                    theme::header_key()
+                } else {
+                    theme::badge()
+                },
+            ),
         ])),
         area,
     );
@@ -251,6 +271,7 @@ pub fn apply(
             app.live = s;
             rebuild(app, z);
         }
+        E::Branches(_, b) => app.branches = b,
         E::Resumable(_, s) => {
             app.resumable = s;
             app.scanned = true;
@@ -259,6 +280,16 @@ pub fn apply(
         E::Preview(_, key, preview) => {
             app.preview_pending.remove(&key);
             app.previews.insert(key, preview);
+        }
+        E::Acted(done) => {
+            app.busy = None;
+            match done.result {
+                Ok(msg) => {
+                    app.flash(msg);
+                    probes.refresh(z, app.show_all);
+                }
+                Err(e) => app.error(done.label, e),
+            }
         }
         E::Failed(_, e) => app.flash(e),
     }
@@ -286,30 +317,30 @@ fn handle(
             report(app, "Open", z.open(&worktree, bind));
         }
         Action::RunAgent { worktree, resume } => run_agent(app, z, &worktree, resume.as_deref()),
-        Action::CreateWorktree { name, hand_over } => {
-            create(app, z, probes, &name, hand_over.as_ref());
-        }
+        Action::CreateWorktree {
+            name,
+            kind,
+            hand_over,
+        } => create(app, z, probes, name, kind, hand_over),
         Action::DeleteSession {
             agent,
             id,
             worktree,
-        } => match z.delete_session(&agent, &id, false, worktree.as_deref()) {
-            Ok(n) => {
-                app.flash(format!("deleted {n} file(s)"));
-                probes.refresh(z, app.show_all);
-            }
-            Err(e) => app.error("Delete session", e),
-        },
+        } => {
+            let z = Arc::clone(z);
+            start(app, probes, "Delete session", move || {
+                let n = z.delete_session(&agent, &id, false, worktree.as_deref())?;
+                Ok(format!("deleted {n} file(s)"))
+            });
+        }
         Action::RemoveWorktree {
             path,
             with_sessions,
-        } => {
-            remove(app, z, probes, &path, with_sessions);
-        }
+        } => remove(app, z, probes, path, with_sessions),
         Action::Purge {
             worktrees,
             sessions,
-        } => purge(app, z, probes, &worktrees, &sessions),
+        } => purge(app, z, probes, worktrees, sessions),
         Action::SwitchAgent(id) => switch_agent(app, z, probes, id),
         Action::SetEditor(name) => set_editor(app, z, &z.set_editor(&name), &name),
         Action::SetEditorCommand(cmd) => {
@@ -334,50 +365,61 @@ fn run_agent(app: &mut App, z: &Arc<Zrush>, worktree: &std::path::Path, resume: 
     report(app, "New session", z.run_agent(worktree, agent, resume));
 }
 
+/// Hand a long action to a worker and put the spinner up. A second one is
+/// refused rather than queued: two `git worktree` commands at once on the
+/// same repository is not something to find out about afterwards.
+fn start<F>(app: &mut App, probes: &crate::probe::Probes, label: &str, f: F)
+where
+    F: FnOnce() -> zrush_core::error::Result<String> + Send + 'static,
+{
+    if let Some(busy) = &app.busy {
+        app.flash(format!("still {busy}"));
+        return;
+    }
+    app.busy = Some(label.to_lowercase());
+    app.spin = 0;
+    probes.spawn_action(label, f);
+}
+
 fn create(
     app: &mut App,
     z: &Arc<Zrush>,
     probes: &crate::probe::Probes,
-    name: &str,
-    hand_over: Option<&(String, String)>,
+    name: String,
+    kind: zrush_core::app::BranchKind,
+    hand_over: Option<(String, String)>,
 ) {
-    match z.create_worktree(name) {
-        Ok(dest) => {
-            let bind = hand_over.map(|(a, i)| (a.as_str(), i.as_str()));
-            match z.open(&dest, bind) {
-                Ok(()) => app.flash(format!("created {name}")),
-                Err(e) => app.error("Open", e),
-            }
-            probes.refresh(z, app.show_all);
-        }
-        Err(e) => app.error("New worktree", e),
-    }
+    let z = Arc::clone(z);
+    start(app, probes, "New worktree", move || {
+        let dest = z.create_worktree(&name, kind)?;
+        let bind = hand_over.as_ref().map(|(a, i)| (a.as_str(), i.as_str()));
+        z.open(&dest, bind)?;
+        Ok(format!("created {name}"))
+    });
 }
 
 fn remove(
     app: &mut App,
     z: &Arc<Zrush>,
     probes: &crate::probe::Probes,
-    path: &std::path::Path,
+    path: std::path::PathBuf,
     with_sessions: bool,
 ) {
     let mine: Vec<_> = app
         .live
         .iter()
         .chain(app.resumable.iter())
-        .filter(|s| s.cwd.starts_with(path))
+        .filter(|s| s.cwd.starts_with(&path))
         .cloned()
         .collect();
-    match z.remove_worktree(path, &mine, with_sessions) {
-        Ok(r) => {
-            app.flash(format!(
-                "removed, {} transcript(s) deleted, {} running kept",
-                r.transcripts, r.running_kept
-            ));
-            probes.refresh(z, app.show_all);
-        }
-        Err(e) => app.error("Remove worktree", e),
-    }
+    let z = Arc::clone(z);
+    start(app, probes, "Remove worktree", move || {
+        let r = z.remove_worktree(&path, &mine, with_sessions)?;
+        Ok(format!(
+            "removed, {} transcript(s) deleted, {} running kept",
+            r.transcripts, r.running_kept
+        ))
+    });
 }
 
 /// Each item is independent: a dirty worktree refuses without stopping the
@@ -386,31 +428,33 @@ fn purge(
     app: &mut App,
     z: &Arc<Zrush>,
     probes: &crate::probe::Probes,
-    worktrees: &[std::path::PathBuf],
-    sessions: &[(String, String)],
+    worktrees: Vec<std::path::PathBuf>,
+    sessions: Vec<(String, String)>,
 ) {
-    let mut removed = 0;
-    let mut refused = 0;
-    for p in worktrees {
-        if z.remove_worktree(p, &[], false).is_ok() {
-            removed += 1;
-        } else {
-            refused += 1;
+    let z = Arc::clone(z);
+    start(app, probes, "Purge", move || {
+        let mut removed = 0;
+        let mut refused = 0;
+        for p in &worktrees {
+            if z.remove_worktree(p, &[], false).is_ok() {
+                removed += 1;
+            } else {
+                refused += 1;
+            }
         }
-    }
-    let gone: usize = sessions
-        .iter()
-        .map(|(a, i)| z.delete_session(a, i, false, None).unwrap_or(0))
-        .sum();
-    let kept = if refused > 0 {
-        format!(", {refused} kept: git refused")
-    } else {
-        String::new()
-    };
-    app.flash(format!(
-        "purged {removed} worktree(s), {gone} transcript(s){kept}"
-    ));
-    probes.refresh(z, app.show_all);
+        let gone: usize = sessions
+            .iter()
+            .map(|(a, i)| z.delete_session(a, i, false, None).unwrap_or(0))
+            .sum();
+        let kept = if refused > 0 {
+            format!(", {refused} kept: git refused")
+        } else {
+            String::new()
+        };
+        Ok(format!(
+            "purged {removed} worktree(s), {gone} transcript(s){kept}"
+        ))
+    });
 }
 
 /// The host has already been told; what is left is the interface's own
@@ -440,6 +484,10 @@ fn switch_agent(app: &mut App, z: &Arc<Zrush>, probes: &crate::probe::Probes, id
 }
 
 /// Run the interface until it is told to stop.
+/// How often the spinner turns while a worker is out. Fast enough to read
+/// as motion, slow enough that a long action is not a busy loop.
+const SPIN_EVERY: std::time::Duration = std::time::Duration::from_millis(90);
+
 pub fn run(mut app: App, z: &Arc<Zrush>) -> zrush_core::error::Result<()> {
     let mut term = ratatui::init();
     let (tx, rx) = mpsc::channel();
@@ -458,13 +506,28 @@ pub fn run(mut app: App, z: &Arc<Zrush>) -> zrush_core::error::Result<()> {
             .map_or(10, |s| s.height.saturating_sub(header::HEIGHT + 3));
         app.offset = table::scroll_to(app.offset, app.cursor, height as usize);
 
-        match rx.recv() {
-            Ok(event) => {
-                if !apply(&mut app, z, &probes, event) {
-                    break Ok(());
+        // Blocking recv while idle: a terminal that redraws for nothing
+        // costs battery on a tool that sits open all day. The timeout
+        // exists only to turn the spinner.
+        let event = if app.busy.is_some() {
+            match rx.recv_timeout(SPIN_EVERY) {
+                Ok(e) => Some(e),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    app.spin = app.spin.wrapping_add(1);
+                    None
                 }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break Ok(()),
             }
-            Err(_) => break Ok(()),
+        } else {
+            match rx.recv() {
+                Ok(e) => Some(e),
+                Err(_) => break Ok(()),
+            }
+        };
+        if let Some(event) = event
+            && !apply(&mut app, z, &probes, event)
+        {
+            break Ok(());
         }
     };
     ratatui::restore();
@@ -584,6 +647,37 @@ pub mod tests {
         let text = frame(&app, &z, 120, 24);
         assert!(text.contains("Keys"));
         assert!(text.contains("ctrl-p"));
+    }
+
+    #[test]
+    fn a_long_action_says_it_is_working_instead_of_freezing() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch_repo(&td));
+        let mut app = App::new(20, 5);
+        app.busy = Some("remove worktree".into());
+        app.flash("created feat");
+        let text = frame(&app, &z, 100, 14);
+        assert!(text.contains("remove worktree…"), "no spinner in:\n{text}");
+        // The spinner replaces the last action's line rather than sharing
+        // the row with it.
+        assert!(!text.contains("created feat"));
+        assert!(
+            SPINNER.iter().any(|c| text.contains(*c)),
+            "no spinner frame in:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_second_long_action_is_refused_while_one_runs() {
+        let (tx, _rx) = mpsc::channel();
+        let probes = crate::probe::Probes::new(tx);
+        let mut app = App::new(20, 5);
+        app.busy = Some("remove worktree".into());
+
+        start(&mut app, &probes, "New worktree", || Ok(String::new()));
+
+        assert_eq!(app.busy.as_deref(), Some("remove worktree"));
+        assert!(app.flash.unwrap().contains("still remove worktree"));
     }
 
     #[test]

@@ -14,11 +14,18 @@ use zrush_core::model::{GitStatus, Session, Worktree};
 
 use super::filter;
 use super::modal::{CUSTOM, Choice, Modal};
+use zrush_core::app::BranchKind;
 
 /// The input modal that asks for an editor command line rather than a
 /// branch name. Which one is up is told by its title, the way a confirm
 /// says which question it answered.
 pub const EDITOR_COMMAND: &str = "Editor command";
+
+/// The two worktree inputs. Which one is up decides what enter means: a
+/// name to cut a branch at, or a branch that already exists — and the
+/// suggestion list only makes sense under the second.
+pub const NEW_BRANCH: &str = "New branch";
+pub const EXISTING_BRANCH: &str = "Existing branch";
 
 /// What the event loop must do once a key has been handled. Anything with a
 /// side effect lives here rather than in `App`.
@@ -43,6 +50,7 @@ pub enum Action {
     },
     CreateWorktree {
         name: String,
+        kind: zrush_core::app::BranchKind,
         hand_over: Option<(String, String)>,
     },
     DeleteSession {
@@ -90,6 +98,12 @@ pub struct App {
     pub expanded: HashMap<NodeId, usize>,
     pub show_all: bool,
     pub flash: Option<String>,
+    /// What a worker is doing right now, for the spinner. `None` means the
+    /// interface is idle and a long action may start.
+    pub busy: Option<String>,
+    /// Which frame of the spinner to draw. Bumped by the loop's timeout,
+    /// never by a key.
+    pub spin: usize,
 
     pub worktrees: Vec<Worktree>,
     pub statuses: HashMap<PathBuf, GitStatus>,
@@ -105,6 +119,9 @@ pub struct App {
 
     /// Every agent installed here, and which one is being listed. The
     /// header shows it, and `:agent` picks from it.
+    /// Branches a worktree could be opened on, for the suggestion list.
+    /// Fetched with everything else, so the input is instant.
+    pub branches: Vec<String>,
     pub agent_names: Vec<String>,
     pub active_agent: String,
     /// How the editor is named in the picker: `zed`, or the command line
@@ -138,6 +155,8 @@ impl App {
             expanded: HashMap::new(),
             show_all: false,
             flash: None,
+            busy: None,
+            spin: 0,
             worktrees: Vec::new(),
             statuses: HashMap::new(),
             history: HashMap::new(),
@@ -146,6 +165,7 @@ impl App {
             scanned: false,
             previews: HashMap::new(),
             preview_pending: HashSet::new(),
+            branches: Vec::new(),
             agent_names: Vec::new(),
             active_agent: String::new(),
             editor: String::new(),
@@ -261,6 +281,55 @@ impl App {
         });
     }
 
+    /// The branch input, in whichever of its two meanings. The suggestion
+    /// list is the point of the second one, so it starts full rather than
+    /// waiting for the first keystroke.
+    fn open_branch_input(&mut self, existing: bool) {
+        let suggestions = if existing {
+            self.branches.clone()
+        } else {
+            Vec::new()
+        };
+        self.modal = Some(Modal::Input {
+            title: if existing {
+                EXISTING_BRANCH
+            } else {
+                NEW_BRANCH
+            }
+            .into(),
+            prompt: "branch>".into(),
+            value: String::new(),
+            suggestions,
+            at: 0,
+        });
+    }
+
+    /// Narrow the branch list to what has been typed. Substring, not
+    /// prefix: branches are named `fix/2358-thing` and nobody types the
+    /// prefix they already know.
+    fn refilter_suggestions(&mut self) {
+        let all = self.branches.clone();
+        let Some(Modal::Input {
+            title,
+            value,
+            suggestions,
+            at,
+            ..
+        }) = self.modal.as_mut()
+        else {
+            return;
+        };
+        if title != EXISTING_BRANCH {
+            return;
+        }
+        let needle = value.to_lowercase();
+        *suggestions = all
+            .into_iter()
+            .filter(|b| b.to_lowercase().contains(&needle))
+            .collect();
+        *at = 0;
+    }
+
     /// The editors that get a `-n`, plus the way out: type the command.
     pub fn open_editor_picker(&mut self) {
         let mut editors: Vec<String> = zrush_core::config::KNOWN_EDITORS
@@ -324,11 +393,19 @@ impl App {
                     })
             }
             (KeyCode::Char('w'), true) => {
-                self.modal = Some(Modal::Input {
+                // Asked before anything is typed: on the same word, "new"
+                // cuts a branch and "existing" opens one that is already
+                // there, possibly someone else's. A completion list under
+                // an input that also accepts new names cannot say which
+                // of the two it is offering.
+                self.modal = Some(Modal::Confirm {
                     title: "New worktree".into(),
-                    prompt: "branch>".into(),
-                    value: String::new(),
-                    suggestions: Vec::new(),
+                    body: "Which branch does it get?".into(),
+                    choices: vec![
+                        Choice::new(NEW_BRANCH),
+                        Choice::new(EXISTING_BRANCH),
+                        Choice::new("Cancel"),
+                    ],
                     at: 0,
                 });
                 Action::Redraw
@@ -663,12 +740,14 @@ impl App {
                     }
                     _ => {}
                 }
+                self.refilter_suggestions();
                 Action::Redraw
             }
             KeyCode::Char(c) => {
                 match modal {
                     Modal::Input { value, .. } | Modal::Command { value } => {
                         value.push(c);
+                        self.refilter_suggestions();
                         return Action::Redraw;
                     }
                     Modal::Help => {
@@ -702,14 +781,21 @@ impl App {
                 Action::SetEditorCommand(words)
             }
             Modal::Input {
+                title,
                 value,
                 suggestions,
                 at,
                 ..
             } => {
-                // The highlighted branch if there is one, otherwise what was
-                // typed.
-                let name = suggestions.get(at).cloned().unwrap_or(value);
+                let existing = title == EXISTING_BRANCH;
+                // Under "existing", the highlighted branch wins: the list
+                // is the answer. Under "new", what was typed is the whole
+                // point and there is no list.
+                let name = if existing {
+                    suggestions.get(at).cloned().unwrap_or(value)
+                } else {
+                    value
+                };
                 if name.trim().is_empty() {
                     return Action::Redraw;
                 }
@@ -718,6 +804,11 @@ impl App {
                 // worktree" row could never do.
                 Action::CreateWorktree {
                     name,
+                    kind: if existing {
+                        BranchKind::Existing
+                    } else {
+                        BranchKind::New
+                    },
                     hand_over: self.session_at_cursor(),
                 }
             }
@@ -752,6 +843,11 @@ impl App {
             return Action::Redraw;
         }
         match title {
+            "New worktree" => {
+                let existing = choices.get(at).is_some_and(|c| c.label == EXISTING_BRANCH);
+                self.open_branch_input(existing);
+                Action::Redraw
+            }
             "Delete session" => self
                 .session_at_cursor()
                 .map_or(Action::Redraw, |(agent, id)| Action::DeleteSession {
@@ -1363,11 +1459,18 @@ mod tests {
         );
     }
 
+    /// ctrl-w asks which kind first; enter on the default takes "New
+    /// branch" and lands in the input.
+    fn ask_new_branch(a: &mut App) {
+        a.on_key(ctrl('w'));
+        a.on_key(code(KeyCode::Enter));
+    }
+
     #[test]
     fn ctrl_w_on_a_session_hands_it_to_the_new_worktree() {
         let mut a = app();
         a.on_key(code(KeyCode::Down));
-        a.on_key(ctrl('w'));
+        ask_new_branch(&mut a);
         for c in "feat".chars() {
             a.on_key(key(c));
         }
@@ -1375,6 +1478,7 @@ mod tests {
             a.on_key(code(KeyCode::Enter)),
             Action::CreateWorktree {
                 name: "feat".into(),
+                kind: BranchKind::New,
                 hand_over: Some(("claude".into(), "dead".into())),
             }
         );
@@ -1383,8 +1487,88 @@ mod tests {
     #[test]
     fn an_empty_branch_name_creates_nothing() {
         let mut a = app();
-        a.on_key(ctrl('w'));
+        ask_new_branch(&mut a);
         assert_eq!(a.on_key(code(KeyCode::Enter)), Action::Redraw);
+    }
+
+    // ------------------------------------------------- new worktree ---
+
+    #[test]
+    fn ctrl_w_asks_which_kind_of_branch_before_anything_is_typed() {
+        let mut a = app();
+        a.on_key(ctrl('w'));
+        match a.modal.as_ref().unwrap() {
+            Modal::Confirm {
+                title, choices, at, ..
+            } => {
+                assert_eq!(title, "New worktree");
+                assert_eq!(choices[*at].label, NEW_BRANCH);
+                assert_eq!(choices[1].label, EXISTING_BRANCH);
+            }
+            other => panic!("wrong modal: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_new_branch_gets_no_suggestions_to_be_mistaken_for_a_choice() {
+        let mut a = app();
+        a.branches = vec!["main".into(), "feat".into()];
+        ask_new_branch(&mut a);
+        match a.modal.as_ref().unwrap() {
+            Modal::Input {
+                title, suggestions, ..
+            } => {
+                assert_eq!(title, NEW_BRANCH);
+                assert!(suggestions.is_empty());
+            }
+            other => panic!("wrong modal: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_existing_branch_offers_the_list_and_narrows_it_as_you_type() {
+        let mut a = app();
+        a.branches = vec!["main".into(), "fix/2358-reader".into(), "feat".into()];
+        a.on_key(ctrl('w'));
+        a.on_key(code(KeyCode::Down));
+        a.on_key(code(KeyCode::Enter));
+        match a.modal.as_ref().unwrap() {
+            Modal::Input {
+                title, suggestions, ..
+            } => {
+                assert_eq!(title, EXISTING_BRANCH);
+                assert_eq!(suggestions.len(), 3);
+            }
+            other => panic!("wrong modal: {other:?}"),
+        }
+        // Substring, not prefix: nobody types the part of the name they
+        // already know.
+        for c in "2358".chars() {
+            a.on_key(key(c));
+        }
+        match a.modal.as_ref().unwrap() {
+            Modal::Input { suggestions, .. } => {
+                assert_eq!(suggestions, &vec!["fix/2358-reader".to_string()]);
+            }
+            other => panic!("wrong modal: {other:?}"),
+        }
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::CreateWorktree {
+                name: "fix/2358-reader".into(),
+                kind: BranchKind::Existing,
+                hand_over: None,
+            }
+        );
+    }
+
+    #[test]
+    fn cancelling_the_kind_question_opens_no_input() {
+        let mut a = app();
+        a.on_key(ctrl('w'));
+        a.on_key(code(KeyCode::Up)); // onto Cancel
+        assert_eq!(a.on_key(code(KeyCode::Enter)), Action::Redraw);
+        assert!(a.modal.is_none());
     }
 
     #[test]

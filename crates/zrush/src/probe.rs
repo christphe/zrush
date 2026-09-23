@@ -36,11 +36,24 @@ pub enum Event {
     History(u64, PathBuf, usize),
     Live(u64, Vec<Session>),
     Resumable(u64, Vec<Session>),
+    /// Branches a new worktree could be opened on, for the ctrl-w list.
+    Branches(u64, Vec<String>),
     /// What the preview pane should draw for one row, keyed the way the
     /// interface asked for it.
     Preview(u64, String, crate::ui::preview::Preview),
+    /// A long action finished. Never stale: a refresh started while it ran
+    /// must not throw its answer away.
+    Acted(Done),
     /// A probe gave up. Not fatal: the row simply has no badge.
     Failed(u64, String),
+}
+
+/// What a long action came back with: the line to show, or what went
+/// wrong, under the title the interface put on the spinner.
+#[derive(Debug)]
+pub struct Done {
+    pub label: String,
+    pub result: zrush_core::error::Result<String>,
 }
 
 impl Event {
@@ -48,13 +61,14 @@ impl Event {
     /// never stale.
     pub fn generation(&self) -> Option<u64> {
         match self {
-            Self::Key(_) | Self::Resize(..) => None,
+            Self::Key(_) | Self::Resize(..) | Self::Acted(_) => None,
             Self::Worktrees(g, _)
             | Self::Status(g, ..)
             | Self::History(g, ..)
             | Self::Live(g, _)
             | Self::Resumable(g, _)
             | Self::Preview(g, ..)
+            | Self::Branches(g, _)
             | Self::Failed(g, _) => Some(*g),
         }
     }
@@ -102,6 +116,20 @@ impl Probes {
         });
     }
 
+    /// Run something slow off the drawing thread, so the interface can say
+    /// it is working instead of freezing mid-frame.
+    pub fn spawn_action<F>(&self, label: &str, f: F)
+    where
+        F: FnOnce() -> zrush_core::error::Result<String> + Send + 'static,
+    {
+        let tx = self.tx.clone();
+        let label = label.to_string();
+        std::thread::spawn(move || {
+            let result = f();
+            let _ = tx.send(Event::Acted(Done { label, result }));
+        });
+    }
+
     /// Start a fresh round of probes and return its generation.
     ///
     /// `uncapped` lifts the transcript scan's bound, which the interface
@@ -125,6 +153,9 @@ impl Probes {
 
             // The per-worktree numbers fan out; neither depends on the other.
             spawn_status(&z, &tx, round, &worktrees);
+            // Two `for-each-ref` calls, so it rides along here rather than
+            // making ctrl-w wait for git.
+            let _ = tx.send(Event::Branches(round, z.openable_branches()));
 
             // These two are sequential because they have to be: the scan
             // must know which sessions are already running, so it does not

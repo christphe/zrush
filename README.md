@@ -124,13 +124,31 @@ Then use the built-in terminal profile of your editor, pointing it at
 
 Run `zrush` from anywhere inside a repository.
 
+`ctrl-w` asks which kind of branch before anything is typed. On the same
+word the two answers do different things, and a completion list under an
+input that also accepts new names cannot say which of the two it is
+offering:
+
+- **New branch** — no suggestions, because the name is yours to invent. It is
+  cut from the remote default branch, with no upstream, so a later `git push
+  -u origin HEAD` sets the right one. A name that already exists is refused.
+- **Existing branch** — the list, narrowed by substring as you type. Local
+  branches first, then the ones only a remote has; a branch already checked
+  out somewhere is left out, because git refuses a second worktree on it. A
+  remote-only branch is created with `--track`, so it follows the remote
+  rather than becoming a namesake cut from the default base.
+
+Long actions — creating a worktree, removing one, purging — run off the
+drawing thread, with a spinner in the status line. A second one is refused
+while the first is out rather than queued.
+
 | Key | What it does |
 |---|---|
 | `↑` `↓` / `k` `j` | move |
 | `←` `→` / `h` `l` | fold, unfold a worktree's rows |
 | `enter` | **worktree**: drop the association and open the editor, so the panel starts a fresh session. **session**: bind it and open, so the panel resumes it. **`[…more]`**: load older sessions |
 | `ctrl-o` | start a session in a terminal of its own, leaving the association and the editor alone |
-| `ctrl-w` | create a worktree. On a session row, hand that session to the new worktree |
+| `ctrl-w` | new worktree: it asks for a new branch or an existing one first. On a session row, hand that session to the new worktree |
 | `ctrl-d` | delete a conversation, or remove a worktree |
 | `ctrl-p` | purge: mark rows with `space`, `enter` removes the lot |
 | `ctrl-l` | reload |
