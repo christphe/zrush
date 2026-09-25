@@ -92,12 +92,36 @@ impl Surface for Uri {
     }
 
     fn describe(&self, session: &SessionRef<'_>) -> String {
-        expand(&self.template, session)
+        self.url(session)
     }
 
     fn open(&self, session: &SessionRef<'_>, host: &dyn Host) -> Result<()> {
-        host.open_url(&expand(&self.template, session))
+        host.open_url(&self.url(session))
     }
+}
+
+impl Uri {
+    fn url(&self, session: &SessionRef<'_>) -> String {
+        drop_empty_params(&expand(&self.template, session))
+    }
+}
+
+/// `session=` with nothing after it is not the same as no `session` at
+/// all: the Claude extension validates what it was given, fails, and
+/// returns without opening anything. An empty parameter means "I have no
+/// value for this", which in a URL is said by leaving it out.
+fn drop_empty_params(url: &str) -> String {
+    let Some((base, query)) = url.split_once('?') else {
+        return url.to_string();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|p| !p.is_empty() && !p.ends_with('='))
+        .collect();
+    if kept.is_empty() {
+        return base.to_string();
+    }
+    format!("{base}?{}", kept.join("&"))
 }
 
 /// `{id}` and `{agent}`, and nothing else: a template is config, and a
@@ -232,15 +256,36 @@ mod tests {
         );
     }
 
-    /// An empty `{id}` is a real case — no binding yet — and must not
-    /// leave the placeholder in the URL.
+    /// No binding yet is a real case, and `session=` with nothing after it
+    /// is worse than no parameter: the Claude extension validates it,
+    /// fails, and returns without opening anything or saying so.
     #[test]
-    fn a_uri_with_no_session_leaves_no_placeholder() {
+    fn a_uri_with_no_session_drops_the_parameter_rather_than_emptying_it() {
         let host = RecordingHost::default();
         let s = Uri {
             template: "x://open?session={id}".into(),
         };
         s.open(&session(None, &Fake), &host).unwrap();
-        assert_eq!(host.opened_urls.lock().unwrap()[0], "x://open?session=");
+        assert_eq!(host.opened_urls.lock().unwrap()[0], "x://open");
+    }
+
+    #[test]
+    fn only_the_empty_parameters_go() {
+        let s = Uri {
+            template: "x://open?a={id}&agent={agent}&b=1".into(),
+        };
+        assert_eq!(s.describe(&session(None, &Fake)), "x://open?agent=fake&b=1");
+        assert_eq!(
+            s.describe(&session(Some("abc"), &Fake)),
+            "x://open?a=abc&agent=fake&b=1"
+        );
+    }
+
+    #[test]
+    fn a_url_with_no_query_is_left_alone() {
+        let s = Uri {
+            template: "x://open/{agent}".into(),
+        };
+        assert_eq!(s.describe(&session(None, &Fake)), "x://open/fake");
     }
 }
