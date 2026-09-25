@@ -1359,7 +1359,12 @@ mod tests {
     fn with_orphan() -> App {
         let mut a = app();
         let mut rows = a.rows.clone();
-        rows.push(row(RowKind::Orphan, NodeId::Orphans, Some("dead"), "old work"));
+        rows.push(row(
+            RowKind::Orphan,
+            NodeId::Orphans,
+            Some("dead"),
+            "old work",
+        ));
         a.set_rows(rows);
         a.cursor = a.visible.len() - 1;
         a
