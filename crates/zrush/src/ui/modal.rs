@@ -72,8 +72,6 @@ pub enum Modal {
         at: usize,
         reason: Option<String>,
     },
-    /// Which worktree an orphan session should be resumed in.
-    WorktreePicker { worktrees: Vec<String>, at: usize },
     /// Every setting and its value. Enter edits the one under the cursor,
     /// in whatever way that one takes: a list, a toggle, or typing.
     Settings {
@@ -100,7 +98,6 @@ impl Modal {
             Self::AgentPicker { at, agents, .. } => (at, agents.len()),
             Self::EditorPicker { at, editors } => (at, editors.len()),
             Self::Settings { at, rows } => (at, rows.len()),
-            Self::WorktreePicker { at, worktrees } => (at, worktrees.len()),
             Self::Help | Self::Command { .. } | Self::Error { .. } => return,
         };
         if len == 0 {
@@ -173,9 +170,6 @@ pub fn render(f: &mut Frame, area: Rect, modal: &Modal) {
         }
         Modal::EditorPicker { editors, at } => picker(f, area, "Editor", editors, *at, None),
         Modal::Settings { rows, at } => settings(f, area, rows, *at),
-        Modal::WorktreePicker { worktrees, at } => {
-            picker(f, area, "Resume in", worktrees, *at, None);
-        }
     }
 }
 
@@ -474,7 +468,10 @@ mod tests {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 20)).unwrap();
         term.draw(|f| render(f, f.area(), &m)).unwrap();
         let text = super::super::tests_support::flatten(term.backend());
-        assert!(!text.contains("old workIts"), "the two ran together:\n{text}");
+        assert!(
+            !text.contains("old workIts"),
+            "the two ran together:\n{text}"
+        );
         assert!(text.contains("old work"));
         assert!(text.contains("Its transcript goes for good."));
     }

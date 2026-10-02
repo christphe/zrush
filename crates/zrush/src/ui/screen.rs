@@ -321,8 +321,23 @@ fn handle(
         Action::CreateWorktree {
             name,
             kind,
+            at,
             hand_over,
-        } => create(app, z, probes, name, kind, hand_over),
+        } => create(app, z, probes, name, kind, at, hand_over),
+        Action::AdoptSession {
+            agent,
+            id,
+            worktree,
+        } => {
+            let z2 = Arc::clone(z);
+            let w = worktree.clone();
+            start(app, probes, "Resume this session", move || {
+                z2.adopt_session(&agent, &id, &w)?;
+                // Bound and refiled; opening it is what puts the panel on it.
+                z2.open(&w, None)?;
+                Ok(format!("moved to {}", w.display()))
+            });
+        }
         Action::DeleteSession {
             agent,
             id,
@@ -409,11 +424,12 @@ fn create(
     probes: &crate::probe::Probes,
     name: String,
     kind: zrush_core::app::BranchKind,
+    at: Option<std::path::PathBuf>,
     hand_over: Option<(String, String)>,
 ) {
     let z = Arc::clone(z);
     start(app, probes, "New worktree", move || {
-        let dest = z.create_worktree(&name, kind)?;
+        let dest = z.create_worktree_at(at.as_deref(), &name, kind)?;
         let bind = hand_over.as_ref().map(|(a, i)| (a.as_str(), i.as_str()));
         z.open(&dest, bind)?;
         Ok(format!("created {name}"))

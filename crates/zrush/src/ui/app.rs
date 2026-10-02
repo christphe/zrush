@@ -24,11 +24,13 @@ pub const EDITOR_COMMAND: &str = "Editor command";
 /// The two worktree inputs. Which one is up decides what enter means: a
 /// name to cut a branch at, or a branch that already exists — and the
 /// suggestion list only makes sense under the second.
-/// Resuming an orphan, and the three places it can land.
-pub const RESUME: &str = "Resume elsewhere";
-pub const RESUME_HERE: &str = "In the main worktree";
-pub const RESUME_ELSEWHERE: &str = "In another worktree…";
-pub const RESUME_NEW: &str = "In a new worktree…";
+/// Resuming an orphan. The agent files a conversation by the directory it
+/// was started in and resumes only what it finds for the current one, so
+/// putting the directory back is the answer that changes nothing else —
+/// hence the default. Moving it is a real move, and says so.
+pub const RESUME: &str = "Resume this session";
+pub const RESUME_RECREATE: &str = "Recreate its worktree";
+pub const RESUME_ROOT: &str = "Move it to the main worktree";
 
 pub const NEW_BRANCH: &str = "New branch";
 pub const EXISTING_BRANCH: &str = "Existing branch";
@@ -59,6 +61,9 @@ pub enum Action {
     CreateWorktree {
         name: String,
         kind: zrush_core::app::BranchKind,
+        /// Where it goes, when it is not the path the branch name implies:
+        /// recreating an orphan's worktree means its exact old one.
+        at: Option<PathBuf>,
         hand_over: Option<(String, String)>,
     },
     DeleteSession {
@@ -78,6 +83,12 @@ pub enum Action {
     /// An editor by name, or a whole command line typed by hand.
     SetEditor(String),
     SetEditorCommand(Vec<String>),
+    /// Refile an orphan under a worktree and bind it there.
+    AdoptSession {
+        agent: String,
+        id: String,
+        worktree: PathBuf,
+    },
     /// One setting, by the name `config.toml` gives it. Saved, reloaded,
     /// and applied — the interface never parses the value itself.
     SetSetting {
@@ -141,6 +152,9 @@ pub struct App {
     pub settings_open: bool,
     /// Which row it was on, so it comes back where it was.
     settings_at: usize,
+    /// Where the next worktree must land, when the branch question was
+    /// asked to put an orphan's worktree back rather than to make a new one.
+    recreate_at: Option<PathBuf>,
     /// Branches a worktree could be opened on, for the suggestion list.
     /// Fetched with everything else, so the input is instant.
     pub branches: Vec<String>,
@@ -190,6 +204,7 @@ impl App {
             cfg: zrush_core::config::Config::default(),
             settings_open: false,
             settings_at: 0,
+            recreate_at: None,
             branches: Vec::new(),
             agent_names: Vec::new(),
             active_agent: String::new(),
@@ -585,43 +600,43 @@ impl App {
             return Action::None;
         }
         let title = row.label.trim().to_string();
-        let mut choices = vec![Choice::new(RESUME_HERE)];
-        if self.worktrees.iter().filter(|w| !w.is_main).count() > 0 {
-            choices.push(Choice::new(RESUME_ELSEWHERE));
+        let gone = self.cwd_at_cursor();
+        let where_ = gone.as_ref().map_or_else(
+            || "Its worktree is gone.".to_string(),
+            |p| {
+                let name = p
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                format!("It was held in {name}, which is gone.")
+            },
+        );
+        let mut choices = Vec::new();
+        // Only offered when we know where it was: recreating it anywhere
+        // else would not bring the conversation back.
+        if gone.is_some() {
+            choices.push(Choice::new(RESUME_RECREATE));
         }
-        choices.push(Choice::new(RESUME_NEW));
+        choices.push(Choice::new(RESUME_ROOT));
         choices.push(Choice::new("Cancel"));
         self.modal = Some(Modal::Confirm {
             title: RESUME.into(),
-            body: format!("{title}\n\nIts worktree is gone. Where does it go?"),
+            body: format!("{title}\n{where_}"),
             choices,
             at: 0,
         });
         Action::Redraw
     }
 
-    /// The worktrees this session could be resumed in, main first, as the
-    /// list shows them.
-    fn open_worktree_picker(&mut self) {
-        self.modal = Some(Modal::WorktreePicker {
-            worktrees: self
-                .worktrees
-                .iter()
-                .map(|w| {
-                    let name = w
-                        .path
-                        .file_name()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    if w.is_main {
-                        format!("{name} [root]")
-                    } else {
-                        name
-                    }
-                })
-                .collect(),
-            at: 0,
-        });
+    /// Where the session under the cursor was held. For an orphan that is
+    /// a directory that no longer exists, which is what makes it an orphan.
+    fn cwd_at_cursor(&self) -> Option<PathBuf> {
+        let id = self.current()?.session_id.clone()?;
+        self.live
+            .iter()
+            .chain(self.resumable.iter())
+            .find(|s| s.id == id)
+            .map(|s| s.cwd.clone())
     }
 
     fn ask_delete(&mut self) -> Action {
@@ -949,19 +964,11 @@ impl App {
                     } else {
                         BranchKind::New
                     },
+                    at: self.recreate_at.take(),
                     hand_over: self.session_at_cursor(),
                 }
             }
             Modal::Settings { at, .. } => self.edit_setting(at),
-            Modal::WorktreePicker { at, .. } => {
-                let bind = self.session_at_cursor();
-                self.worktrees
-                    .get(at)
-                    .map_or(Action::Redraw, |w| Action::Open {
-                        worktree: w.path.clone(),
-                        bind,
-                    })
-            }
             Modal::EditorPicker { editors, at } => match editors.get(at).map(String::as_str) {
                 None => Action::Redraw,
                 // Not an editor: the row that asks for a command line.
@@ -994,29 +1001,31 @@ impl App {
         }
         match title {
             RESUME => {
-                let bind = self.session_at_cursor();
-                match choices.get(at).map(|c| c.label.as_str()) {
-                    Some(RESUME_HERE) => {
-                        self.worktrees
-                            .iter()
-                            .find(|w| w.is_main)
-                            .map_or(Action::Redraw, |w| Action::Open {
-                                worktree: w.path.clone(),
-                                bind,
-                            })
-                    }
-                    Some(RESUME_ELSEWHERE) => {
-                        self.open_worktree_picker();
-                        Action::Redraw
-                    }
-                    // The same question ctrl-w asks, and the same answer:
-                    // the session is handed to whatever it creates.
-                    Some(RESUME_NEW) => {
-                        self.ask_branch_kind();
-                        Action::Redraw
-                    }
-                    _ => Action::Redraw,
+                // `label == CONST`, not `Some(CONST)`: an unknown name in a
+                // pattern is a binding that matches anything, which is how
+                // the first arm here once swallowed every answer.
+                let picked = choices.get(at).map(|c| c.label.clone()).unwrap_or_default();
+                if picked == RESUME_RECREATE {
+                    // Which branch it gets is a second question — git does
+                    // not remember the one the removed worktree had.
+                    self.recreate_at = self.cwd_at_cursor();
+                    self.ask_branch_kind();
+                    return Action::Redraw;
                 }
+                if picked != RESUME_ROOT {
+                    return Action::Redraw;
+                }
+                let Some((agent, id)) = self.session_at_cursor() else {
+                    return Action::Redraw;
+                };
+                self.worktrees
+                    .iter()
+                    .find(|w| w.is_main)
+                    .map_or(Action::Redraw, |w| Action::AdoptSession {
+                        agent,
+                        id,
+                        worktree: w.path.clone(),
+                    })
             }
             "New worktree" => {
                 let existing = choices.get(at).is_some_and(|c| c.label == EXISTING_BRANCH);
@@ -1355,9 +1364,11 @@ mod tests {
 
     // --------------------------------------------------------- orphans ---
 
-    /// A session whose worktree is gone: the conversation outlived it.
+    /// A session whose worktree is gone: the conversation outlived it, and
+    /// still carries the directory it was held in.
     fn with_orphan() -> App {
         let mut a = app();
+        a.resumable[0].cwd = "/repo/.claude/worktrees/gone".into();
         let mut rows = a.rows.clone();
         rows.push(row(
             RowKind::Orphan,
@@ -1376,78 +1387,80 @@ mod tests {
         assert_eq!(a.on_key(code(KeyCode::Enter)), Action::Redraw);
         match a.modal.as_ref().unwrap() {
             Modal::Confirm {
-                title, choices, at, ..
+                title,
+                body,
+                choices,
+                at,
             } => {
                 assert_eq!(title, RESUME);
-                assert_eq!(choices[*at].label, RESUME_HERE);
+                // Putting the directory back is the answer that changes
+                // nothing else, so it is the one under the cursor.
+                assert_eq!(choices[*at].label, RESUME_RECREATE);
                 let labels: Vec<&str> = choices.iter().map(|c| c.label.as_str()).collect();
-                assert_eq!(
-                    labels,
-                    vec![RESUME_HERE, RESUME_ELSEWHERE, RESUME_NEW, "Cancel"]
-                );
+                assert_eq!(labels, vec![RESUME_RECREATE, RESUME_ROOT, "Cancel"]);
+                // It names the directory it would put back.
+                assert!(body.contains("gone"), "{body}");
             }
             other => panic!("wrong modal: {other:?}"),
         }
     }
 
+    /// Recreating means the session's own old path, not the one the branch
+    /// name would produce: the agent files transcripts by launch directory.
     #[test]
-    fn resuming_here_binds_it_to_the_main_worktree() {
+    fn recreating_carries_the_old_path_into_the_branch_question() {
         let mut a = with_orphan();
         a.on_key(code(KeyCode::Enter));
-        assert_eq!(
-            a.on_key(code(KeyCode::Enter)),
-            Action::Open {
-                worktree: "/repo".into(),
-                bind: Some(("claude".into(), "dead".into())),
-            }
-        );
-    }
-
-    #[test]
-    fn resuming_elsewhere_offers_the_worktrees_and_binds_to_the_chosen_one() {
-        let mut a = with_orphan();
-        a.on_key(code(KeyCode::Enter));
-        a.on_key(code(KeyCode::Down));
-        assert_eq!(a.on_key(code(KeyCode::Enter)), Action::Redraw);
-        match a.modal.as_ref().unwrap() {
-            Modal::WorktreePicker { worktrees, .. } => {
-                assert_eq!(worktrees, &vec!["repo [root]".to_string(), "x".to_string()]);
-            }
-            other => panic!("wrong modal: {other:?}"),
-        }
-        a.on_key(code(KeyCode::Down));
-        assert_eq!(
-            a.on_key(code(KeyCode::Enter)),
-            Action::Open {
-                worktree: "/repo/.claude/worktrees/x".into(),
-                bind: Some(("claude".into(), "dead".into())),
-            }
-        );
-    }
-
-    /// The third answer is a different question — which branch — so it
-    /// hands over to the one ctrl-w already asks.
-    #[test]
-    fn resuming_in_a_new_worktree_asks_for_the_branch() {
-        let mut a = with_orphan();
-        a.on_key(code(KeyCode::Enter));
-        a.on_key(code(KeyCode::Down));
-        a.on_key(code(KeyCode::Down));
-        a.on_key(code(KeyCode::Enter));
+        a.on_key(code(KeyCode::Enter)); // Recreate its worktree
         match a.modal.as_ref().unwrap() {
             Modal::Confirm { title, .. } => assert_eq!(title, "New worktree"),
             other => panic!("wrong modal: {other:?}"),
         }
-        a.on_key(code(KeyCode::Enter));
-        for c in "rescue".chars() {
+        a.on_key(code(KeyCode::Enter)); // New branch
+        for c in "fix/thing".chars() {
             a.on_key(key(c));
         }
         assert_eq!(
             a.on_key(code(KeyCode::Enter)),
             Action::CreateWorktree {
-                name: "rescue".into(),
+                name: "fix/thing".into(),
                 kind: BranchKind::New,
+                at: Some("/repo/.claude/worktrees/gone".into()),
                 hand_over: Some(("claude".into(), "dead".into())),
+            }
+        );
+    }
+
+    /// ctrl-w on an ordinary row still lands where the branch name says.
+    #[test]
+    fn a_plain_new_worktree_carries_no_path() {
+        let mut a = app();
+        ask_new_branch(&mut a);
+        for c in "feat".chars() {
+            a.on_key(key(c));
+        }
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::CreateWorktree {
+                name: "feat".into(),
+                kind: BranchKind::New,
+                at: None,
+                hand_over: None,
+            }
+        );
+    }
+
+    #[test]
+    fn moving_it_to_the_root_refiles_it_there() {
+        let mut a = with_orphan();
+        a.on_key(code(KeyCode::Enter));
+        a.on_key(code(KeyCode::Down));
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::AdoptSession {
+                agent: "claude".into(),
+                id: "dead".into(),
+                worktree: "/repo".into(),
             }
         );
     }
@@ -1884,6 +1897,7 @@ mod tests {
             Action::CreateWorktree {
                 name: "feat".into(),
                 kind: BranchKind::New,
+                at: None,
                 hand_over: Some(("claude".into(), "dead".into())),
             }
         );
@@ -1962,6 +1976,7 @@ mod tests {
             Action::CreateWorktree {
                 name: "fix/2358-reader".into(),
                 kind: BranchKind::Existing,
+                at: None,
                 hand_over: None,
             }
         );
