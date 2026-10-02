@@ -185,6 +185,18 @@ impl Config {
         Self::command_for(&self.editor)
     }
 
+    /// Which editor a surface row has to match: the program that actually
+    /// gets launched. A custom `editor_cmd` wins over `editor`, so a
+    /// command naming cursor must not send the tab to a vscode:// URL.
+    pub fn editor_key(&self) -> String {
+        let Some(bin) = self.editor_cmd.first() else {
+            return self.editor.clone();
+        };
+        Path::new(bin)
+            .file_stem()
+            .map_or_else(|| bin.clone(), |s| s.to_string_lossy().into_owned())
+    }
+
     /// The command line a bare editor name means, with no config in hand:
     /// what `:editor code` has to turn into.
     pub fn command_for(editor: &str) -> Vec<String> {
@@ -236,10 +248,11 @@ impl Config {
     /// about which program is being driven, and `editor_cmd` may say
     /// `code --reuse-window`.
     pub fn surface_for(&self, agent: &str) -> Box<dyn crate::surface::Surface> {
+        let editor = self.editor_key();
         let row = self
             .surface
             .iter()
-            .find(|r| r.agent == agent && r.editor == self.editor);
+            .find(|r| r.agent == agent && r.editor == editor);
         match row {
             Some(r) if r.kind == "uri" && !r.template.is_empty() => Box::new(crate::surface::Uri {
                 template: r.template.clone(),
@@ -287,7 +300,13 @@ impl Config {
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         let v = value.trim();
         match key {
-            "editor" => self.editor = v.to_string(),
+            // Naming an editor replaces a custom command, wherever it is
+            // named: the picker already did this, and leaving the command in
+            // place made `:set editor code` change nothing at all.
+            "editor" => {
+                self.editor = v.to_string();
+                self.editor_cmd.clear();
+            }
             "editor_cmd" => self.editor_cmd = split_words(v),
             "terminal" => self.terminal = split_words(v),
             "agent" => self.agent = (!v.is_empty()).then(|| v.to_string()),
@@ -433,6 +452,52 @@ mod tests {
     fn a_key_this_build_no_longer_knows_is_ignored_rather_than_fatal() {
         let c: Config = toml::from_str("theme = \"auto\"\neditor = \"code\"\n").unwrap();
         assert_eq!(c.editor, "code");
+    }
+
+    /// A custom command may name another application than `editor`. The
+    /// tab must follow what actually gets launched, or clicking the key
+    /// opens Cursor and sends the session to VS Code.
+    #[test]
+    fn the_surface_follows_the_command_that_is_really_run() {
+        let c = Config {
+            editor: "code".into(),
+            editor_cmd: vec!["cursor".into(), "-n".into()],
+            ..Config::default()
+        };
+        assert_eq!(c.editor_key(), "cursor");
+        assert_eq!(
+            c.surface_for("claude")
+                .describe(&crate::surface::SessionRef {
+                    worktree: Path::new("/repo"),
+                    agent: crate::agent::all()[0].as_ref(),
+                    session_id: Some("abc"),
+                }),
+            "cursor://anthropic.claude-code/open?session=abc"
+        );
+    }
+
+    /// Naming an editor replaces a custom command, wherever it is named.
+    /// Leaving the command in place made `:set editor code` change nothing
+    /// at all, since the command decides what runs.
+    #[test]
+    fn naming_an_editor_drops_the_custom_command() {
+        let mut c = Config {
+            editor_cmd: vec!["cursor".into(), "-n".into()],
+            ..Config::default()
+        };
+        c.set("editor", "code").unwrap();
+        assert!(c.editor_cmd.is_empty());
+        assert_eq!(c.editor_command(), vec!["code", "-n"]);
+        assert_eq!(c.editor_key(), "code");
+    }
+
+    /// And an explicit command still wins when it is the thing being set.
+    #[test]
+    fn a_custom_command_stays_possible() {
+        let mut c = Config::default();
+        c.set("editor_cmd", "code --reuse-window").unwrap();
+        assert_eq!(c.editor_command(), vec!["code", "--reuse-window"]);
+        assert_eq!(c.editor_key(), "code");
     }
 
     #[test]

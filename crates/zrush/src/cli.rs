@@ -183,7 +183,9 @@ fn build(
 fn tab(cfg: &Config, dirs: &Dirs, editor: Option<&str>, print: bool) -> Result<()> {
     let mut cfg = cfg.clone();
     if let Some(e) = editor {
-        cfg.editor = e.to_string();
+        // Names the editor that is asking, and so outranks a configured
+        // command line — which would otherwise decide the surface.
+        cfg.set("editor", e)?;
     }
     let here = std::env::current_dir()?;
     let toplevel = zrush_core::git::run(&here, &["rev-parse", "--show-toplevel"])
