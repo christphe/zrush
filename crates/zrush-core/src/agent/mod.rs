@@ -74,6 +74,19 @@ pub trait Agent: Send + Sync {
     /// The tail of a conversation, for the preview pane.
     fn preview(&self, dirs: &Dirs, id: &str, turns: usize) -> Vec<Turn>;
 
+    /// Refile a conversation under another working directory, so the agent
+    /// finds it when it is launched from there.
+    ///
+    /// Claude Code files transcripts by the directory a session was started
+    /// in, and resumes only what it finds for the current one. A
+    /// conversation whose worktree is gone is therefore unreachable from
+    /// anywhere else until it is refiled.
+    fn move_session(&self, _dirs: &Dirs, _id: &str, _to: &Path) -> Result<()> {
+        Err(crate::error::ZrushError::msg(
+            "this agent cannot move a conversation",
+        ))
+    }
+
     /// Delete a conversation for good. Returns how many files went.
     fn delete(&self, dirs: &Dirs, id: &str) -> Result<usize>;
 

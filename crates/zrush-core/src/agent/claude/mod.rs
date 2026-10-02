@@ -137,6 +137,32 @@ impl Agent for ClaudeCode {
 
     /// The transcript wherever Claude Code filed it, plus the sidecar
     /// directory and our cached title.
+    /// The transcript, and the directory of the same name beside it. Moved
+    /// rather than copied: two files with one id in two project directories
+    /// is a conversation that resumes differently depending on where you
+    /// stand.
+    fn move_session(&self, dirs: &Dirs, id: &str, to: &Path) -> Result<()> {
+        let Some(from) = projects::find_transcript(dirs, id) else {
+            return Err(crate::error::ZrushError::msg(format!(
+                "no transcript found for {id}"
+            )));
+        };
+        let dest_dir = dirs.claude_projects.join(projects::slugify(to));
+        if from.parent() == Some(dest_dir.as_path()) {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&dest_dir)?;
+        std::fs::rename(&from, dest_dir.join(format!("{id}.jsonl")))?;
+        // Best effort: a session without its sidecar still resumes.
+        if let Some(parent) = from.parent() {
+            let side = parent.join(id);
+            if side.is_dir() {
+                let _ = std::fs::rename(&side, dest_dir.join(id));
+            }
+        }
+        Ok(())
+    }
+
     fn delete(&self, dirs: &Dirs, id: &str) -> Result<usize> {
         let mut gone = 0;
         let Ok(rd) = std::fs::read_dir(&dirs.claude_projects) else {

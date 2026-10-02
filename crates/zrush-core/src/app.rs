@@ -385,6 +385,23 @@ impl Zrush {
         )
     }
 
+    /// Refile a conversation under `worktree` and bind it there, so the
+    /// agent finds it and the editor's panel resumes it.
+    ///
+    /// Both halves matter: moving without binding leaves the panel starting
+    /// a fresh one, binding without moving leaves the agent unable to find
+    /// the transcript at all.
+    pub fn adopt_session(&self, agent: &str, id: &str, worktree: &Path) -> Result<()> {
+        if !worktree.is_dir() {
+            return Err(ZrushError::msg(format!(
+                "no such worktree: {}",
+                worktree.display()
+            )));
+        }
+        self.agent(agent)?.move_session(&self.dirs, id, worktree)?;
+        state::write(worktree, agent, id)
+    }
+
     /// The branches a worktree could be opened on: the local ones, then the
     /// ones only a remote has, minus whatever is already checked out —
     /// git refuses a second worktree on a branch, so offering it would buy
@@ -410,22 +427,36 @@ impl Zrush {
     /// remote must track it rather than cut a namesake from the default
     /// base.
     pub fn create_worktree(&self, name: &str, kind: BranchKind) -> Result<PathBuf> {
+        self.create_worktree_at(None, name, kind)
+    }
+
+    /// The same, at a directory of your choosing. Recreating the worktree a
+    /// conversation was held in needs its exact old path: the agent files
+    /// transcripts by launch directory, so anywhere else is a different
+    /// conversation as far as it is concerned.
+    pub fn create_worktree_at(
+        &self,
+        dest: Option<&Path>,
+        name: &str,
+        kind: BranchKind,
+    ) -> Result<PathBuf> {
         let name = name.trim();
         if !git::check_ref_format(name) {
             return Err(ZrushError::msg(format!("invalid branch name: {name}")));
         }
-        let new_root = self.new_root();
         // Only the last segment: a branch called feat/thing gets a directory
         // called thing, not a nested pair.
         let leaf = name.rsplit('/').next().unwrap_or(name);
-        let dest = new_root.join(leaf);
+        let dest = dest.map_or_else(|| self.new_root().join(leaf), Path::to_path_buf);
         if dest.exists() {
             return Err(ZrushError::msg(format!(
                 "already there: {}",
                 dest.display()
             )));
         }
-        std::fs::create_dir_all(&new_root)?;
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
 
         let from = self.add_from(name, kind)?;
         git::worktree_add(&self.repo, &dest, &from)?;
@@ -714,6 +745,85 @@ mod tests {
         )
         .unwrap();
         assert_eq!(upstream.trim(), "origin/remote-only");
+    }
+
+    /// An orphan is adopted by moving its transcript where the agent will
+    /// look for it, and binding it there. Either half alone leaves the
+    /// panel starting a fresh conversation.
+    #[test]
+    fn adopting_a_session_refiles_it_and_binds_it() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let dirs = crate::config::dirs_under(td.path());
+        let id = "aaaaaaaa-1111-2222-3333-444455556666";
+        let gone = repo.join(".claude/worktrees/gone");
+        let from = dirs
+            .claude_projects
+            .join(crate::agent::claude::projects::slugify(&gone));
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::write(from.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        std::fs::create_dir_all(from.join(id)).unwrap();
+
+        let z = with(
+            &td,
+            repo.clone(),
+            Config::default(),
+            crate::agent::all(),
+            None,
+        );
+        z.adopt_session("claude", id, &repo).unwrap();
+
+        let to = dirs
+            .claude_projects
+            .join(crate::agent::claude::projects::slugify(&repo));
+        assert!(to.join(format!("{id}.jsonl")).is_file(), "transcript moved");
+        assert!(to.join(id).is_dir(), "sidecar moved with it");
+        assert!(
+            !from.join(format!("{id}.jsonl")).exists(),
+            "and not left behind"
+        );
+        assert_eq!(z.binding(&repo).unwrap().id, id);
+    }
+
+    #[test]
+    fn adopting_into_a_worktree_that_is_not_there_is_refused() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch(&td));
+        let err = z
+            .adopt_session(
+                "claude",
+                "aaaaaaaa-1111-2222-3333-444455556666",
+                Path::new("/nope"),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no such worktree"), "{err}");
+    }
+
+    /// Recreating an orphan's worktree means its exact old path, not the
+    /// one the branch name would produce.
+    #[test]
+    fn a_worktree_can_be_created_at_a_chosen_path() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let z = with(
+            &td,
+            repo.clone(),
+            Config::default(),
+            crate::agent::all(),
+            None,
+        );
+        let want = repo.join(".claude/worktrees/bin-evac");
+
+        let dest = z
+            .create_worktree_at(Some(&want), "fix/bin-evacuation", BranchKind::New)
+            .unwrap();
+
+        assert_eq!(
+            dest, want,
+            "the path is the one asked for, not 'bin-evacuation'"
+        );
+        assert!(want.join(".git").exists());
     }
 
     #[test]
