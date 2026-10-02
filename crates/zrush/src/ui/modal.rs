@@ -180,7 +180,8 @@ pub fn render(f: &mut Frame, area: Rect, modal: &Modal) {
 }
 
 fn confirm(f: &mut Frame, area: Rect, title: &str, body: &str, choices: &[Choice], at: usize) {
-    let rect = centred(area, 64, choices.len() as u16 + 6);
+    let body_lines = body.lines().count().max(1) as u16;
+    let rect = centred(area, 64, choices.len() as u16 + body_lines + 5);
     frame(
         f,
         rect,
@@ -188,10 +189,14 @@ fn confirm(f: &mut Frame, area: Rect, title: &str, body: &str, choices: &[Choice
         theme::modal_border(),
         "↑↓ choose · enter · esc",
     );
-    let mut lines = vec![
-        Line::from(Span::raw(body.to_string())),
-        Line::from(Span::raw("")),
-    ];
+    // One Line per line: ratatui does not break on a newline, it swallows
+    // it, which turned "old work\n\nIts transcript goes for good." into one
+    // run-on sentence.
+    let mut lines: Vec<Line> = body
+        .lines()
+        .map(|l| Line::from(Span::raw(l.to_string())))
+        .collect();
+    lines.push(Line::from(Span::raw("")));
     for (i, c) in choices.iter().enumerate() {
         let marker = if i == at { "▸ " } else { "  " };
         let style = if c.destructive {
@@ -454,6 +459,24 @@ mod tests {
         assert!(r.width <= tiny.width);
         assert!(r.height <= tiny.height);
         assert!(r.x >= tiny.x && r.y >= tiny.y);
+    }
+
+    /// The body used to be one Line, and ratatui swallows a newline rather
+    /// than breaking on it: two sentences ran together into one.
+    #[test]
+    fn a_confirm_body_keeps_its_own_lines() {
+        let m = Modal::Confirm {
+            title: "Delete session".into(),
+            body: "old work\n\nIts transcript goes for good.".into(),
+            choices: vec![Choice::destructive("Delete it"), Choice::new("Cancel")],
+            at: 1,
+        };
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 20)).unwrap();
+        term.draw(|f| render(f, f.area(), &m)).unwrap();
+        let text = super::super::tests_support::flatten(term.backend());
+        assert!(!text.contains("old workIts"), "the two ran together:\n{text}");
+        assert!(text.contains("old work"));
+        assert!(text.contains("Its transcript goes for good."));
     }
 
     #[test]
