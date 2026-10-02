@@ -333,8 +333,10 @@ fn handle(
             let w = worktree.clone();
             start(app, probes, "Resume this session", move || {
                 z2.adopt_session(&agent, &id, &w)?;
-                // Bound and refiled; opening it is what puts the panel on it.
-                z2.open(&w, None)?;
+                // Some, not None: None means "a fresh conversation here" and
+                // clears the association adopt_session just wrote, which is
+                // the whole point of adopting it.
+                z2.open(&w, Some((&agent, &id)))?;
                 Ok(format!("moved to {}", w.display()))
             });
         }
@@ -511,7 +513,13 @@ fn settings_done(
             app.flash(format!("{key} = {}", short(&cfg.show(key))));
             probes.refresh(z, app.show_all);
         }
-        Err(e) => app.error("Settings", e),
+        Err(e) => {
+            // The error box IS the modal: reopening the settings screen here
+            // would replace it, which is how a bad value used to look like
+            // nothing happening.
+            app.error("Settings", e);
+            return;
+        }
     }
     if app.settings_open {
         app.open_settings();
@@ -628,6 +636,10 @@ pub fn run(mut app: App, z: &Arc<Zrush>) -> zrush_core::error::Result<()> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::from(code)
+    }
     use crate::testing::{git, scratch_repo, zrush};
     use crate::ui::app::App;
     use zrush_core::model::{Session, SessionKind};
@@ -738,6 +750,110 @@ pub mod tests {
         let text = frame(&app, &z, 120, 24);
         assert!(text.contains("Keys"));
         assert!(text.contains("ctrl-p"));
+    }
+
+    /// The whole sequence, through the keyboard: adopting an orphan must
+    /// leave it bound. It used to refile the transcript and then clear the
+    /// association on the way out, so the panel opened a fresh
+    /// conversation — the symptom that started this.
+    #[test]
+    fn adopting_an_orphan_leaves_it_bound() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let z = zrush(&td, repo.clone());
+        let id = "cccccccc-1111-2222-3333-444455556666";
+
+        // Its transcript is filed under a worktree that no longer exists.
+        let gone = repo.join(".claude/worktrees/gone");
+        let dir = zrush_core::config::dirs_under(td.path())
+            .claude_projects
+            .join(zrush_core::agent::claude::projects::slugify(&gone));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{id}.jsonl")), "{}\n").unwrap();
+
+        let mut app = App::new(20, 5);
+        app.active_agent = "claude".into();
+        app.worktrees = z.worktrees().unwrap();
+        app.resumable = vec![session(
+            id,
+            "orphan",
+            gone.to_str().unwrap(),
+            SessionKind::Resumable,
+        )];
+        app.scanned = true;
+        rebuild(&mut app, &z);
+        // Onto the orphan row.
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| app.rows[i].session_id.as_deref() == Some(id))
+            .unwrap();
+
+        let (tx, rx) = mpsc::channel();
+        let probes = crate::probe::Probes::new(tx);
+        handle(&mut app, &z, &probes, key(crossterm::event::KeyCode::Enter));
+        handle(&mut app, &z, &probes, key(crossterm::event::KeyCode::Down));
+        handle(&mut app, &z, &probes, key(crossterm::event::KeyCode::Enter));
+
+        // The worker answers; nothing else is listening.
+        let done = rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+        match done {
+            crate::probe::Event::Acted(d) => d.result.unwrap(),
+            other => panic!("expected the action to finish: {other:?}"),
+        };
+
+        let bound = z.binding(&repo).expect("the association must survive");
+        assert_eq!(bound.id, id);
+        let moved = zrush_core::config::dirs_under(td.path())
+            .claude_projects
+            .join(zrush_core::agent::claude::projects::slugify(&repo))
+            .join(format!("{id}.jsonl"));
+        assert!(moved.is_file(), "and the transcript must have moved");
+    }
+
+    /// A value the config refuses must be seen. The error box used to be
+    /// posted and then replaced by the settings screen reopening over it,
+    /// so a typo looked like nothing happening.
+    #[test]
+    fn a_refused_setting_shows_its_error_instead_of_the_screen() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch_repo(&td));
+        let (tx, _rx) = mpsc::channel();
+        let probes = crate::probe::Probes::new(tx);
+        let mut app = App::new(20, 5);
+        app.cfg = z.config();
+
+        app.open_settings();
+        assert!(app.settings_open);
+        // Down to resumable_max, then type something that is not a number.
+        for _ in 0..6 {
+            handle(&mut app, &z, &probes, key(crossterm::event::KeyCode::Down));
+        }
+        handle(&mut app, &z, &probes, key(crossterm::event::KeyCode::Enter));
+        handle(
+            &mut app,
+            &z,
+            &probes,
+            key(crossterm::event::KeyCode::Backspace),
+        );
+        for c in "lots".chars() {
+            handle(
+                &mut app,
+                &z,
+                &probes,
+                key(crossterm::event::KeyCode::Char(c)),
+            );
+        }
+        handle(&mut app, &z, &probes, key(crossterm::event::KeyCode::Enter));
+
+        match &app.modal {
+            Some(crate::ui::modal::Modal::Error { body, .. }) => {
+                assert!(body.contains("not a number"), "{body}");
+            }
+            other => panic!("the error was replaced by {other:?}"),
+        }
+        // And the old value is still what the config says.
+        assert_eq!(z.config().resumable_max, 5);
     }
 
     #[test]
