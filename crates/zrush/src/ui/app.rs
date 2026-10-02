@@ -35,6 +35,21 @@ pub const RESUME_ROOT: &str = "Move it to the main worktree";
 pub const NEW_BRANCH: &str = "New branch";
 pub const EXISTING_BRANCH: &str = "Existing branch";
 
+/// What a question is about, read once when it is asked rather than again
+/// when it is answered.
+///
+/// Every probe rebuilds the rows, including while a modal is up, and the
+/// cursor follows the row it was on only while that row still exists. Read
+/// at confirm time, "the session under the cursor" could be a different
+/// one — and the answer to "delete it?" would land on that one.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Pending {
+    session: Option<(String, String)>,
+    worktree: Option<PathBuf>,
+    /// Where a recreated worktree must land: an orphan's own old path.
+    at: Option<PathBuf>,
+}
+
 /// What the event loop must do once a key has been handled. Anything with a
 /// side effect lives here rather than in `App`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,9 +167,8 @@ pub struct App {
     pub settings_open: bool,
     /// Which row it was on, so it comes back where it was.
     settings_at: usize,
-    /// Where the next worktree must land, when the branch question was
-    /// asked to put an orphan's worktree back rather than to make a new one.
-    recreate_at: Option<PathBuf>,
+    /// What the open question is about, captured when it was asked.
+    pending: Pending,
     /// Branches a worktree could be opened on, for the suggestion list.
     /// Fetched with everything else, so the input is instant.
     pub branches: Vec<String>,
@@ -204,7 +218,7 @@ impl App {
             cfg: zrush_core::config::Config::default(),
             settings_open: false,
             settings_at: 0,
-            recreate_at: None,
+            pending: Pending::default(),
             branches: Vec::new(),
             agent_names: Vec::new(),
             active_agent: String::new(),
@@ -480,6 +494,11 @@ impl App {
                     })
             }
             (KeyCode::Char('w'), true) => {
+                self.pending = Pending {
+                    session: self.session_at_cursor(),
+                    worktree: None,
+                    at: None,
+                };
                 self.ask_branch_kind();
                 Action::Redraw
             }
@@ -577,6 +596,7 @@ impl App {
     /// someone else's. A completion list under an input that also accepts
     /// new names cannot say which of the two it is offering.
     fn ask_branch_kind(&mut self) {
+        // Keeps whatever ask_where put there; ctrl-w resets it first.
         self.modal = Some(Modal::Confirm {
             title: "New worktree".into(),
             body: "Which branch does it get?".into(),
@@ -601,6 +621,11 @@ impl App {
         }
         let title = row.label.trim().to_string();
         let gone = self.cwd_at_cursor();
+        self.pending = Pending {
+            session: self.session_at_cursor(),
+            worktree: None,
+            at: gone.clone(),
+        };
         let where_ = gone.as_ref().map_or_else(
             || "Its worktree is gone.".to_string(),
             |p| {
@@ -645,7 +670,7 @@ impl App {
         };
         match row.kind {
             RowKind::Session | RowKind::Orphan => {
-                let Some((_, id)) = self.session_at_cursor() else {
+                let Some((agent, id)) = self.session_at_cursor() else {
                     return Action::None;
                 };
                 if self.is_running(&id) {
@@ -653,6 +678,11 @@ impl App {
                     return Action::Redraw;
                 }
                 let title = row.label.trim().to_string();
+                self.pending = Pending {
+                    session: Some((agent, id)),
+                    worktree: self.worktree_at_cursor(),
+                    at: None,
+                };
                 self.modal = Some(Modal::Confirm {
                     title: "Delete session".into(),
                     body: format!("{title}\n\nIts transcript goes for good."),
@@ -664,6 +694,11 @@ impl App {
             RowKind::Worktree => {
                 let Some(path) = self.worktree_at_cursor() else {
                     return Action::None;
+                };
+                self.pending = Pending {
+                    session: None,
+                    worktree: Some(path.clone()),
+                    at: None,
                 };
                 let node = NodeId::Worktree(path.clone());
                 let n = self
@@ -870,6 +905,7 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 self.settings_open = false;
+                self.pending = Pending::default();
                 self.modal = None;
                 Action::Redraw
             }
@@ -964,8 +1000,8 @@ impl App {
                     } else {
                         BranchKind::New
                     },
-                    at: self.recreate_at.take(),
-                    hand_over: self.session_at_cursor(),
+                    at: self.pending.at.take(),
+                    hand_over: self.pending.session.clone(),
                 }
             }
             Modal::Settings { at, .. } => self.edit_setting(at),
@@ -993,6 +1029,10 @@ impl App {
     fn confirmed(&mut self, title: &str, choices: &[Choice], at: usize) -> Action {
         let last = choices.len() - 1;
         if at == last {
+            // Cancel: the question is over, and nothing it captured may
+            // outlive it — a path kept here would land the next worktree
+            // somewhere nobody asked for.
+            self.pending = Pending::default();
             if title == "Purge" {
                 self.leave_purge();
                 return Action::Reload;
@@ -1007,15 +1047,15 @@ impl App {
                 let picked = choices.get(at).map(|c| c.label.clone()).unwrap_or_default();
                 if picked == RESUME_RECREATE {
                     // Which branch it gets is a second question — git does
-                    // not remember the one the removed worktree had.
-                    self.recreate_at = self.cwd_at_cursor();
+                    // not remember the one the removed worktree had, and
+                    // `pending.at` already holds where it must land.
                     self.ask_branch_kind();
                     return Action::Redraw;
                 }
                 if picked != RESUME_ROOT {
                     return Action::Redraw;
                 }
-                let Some((agent, id)) = self.session_at_cursor() else {
+                let Some((agent, id)) = self.pending.session.clone() else {
                     return Action::Redraw;
                 };
                 self.worktrees
@@ -1032,20 +1072,24 @@ impl App {
                 self.open_branch_input(existing);
                 Action::Redraw
             }
-            "Delete session" => self
-                .session_at_cursor()
-                .map_or(Action::Redraw, |(agent, id)| Action::DeleteSession {
-                    agent,
-                    id,
-                    worktree: self.worktree_at_cursor(),
-                }),
-            "Remove worktree" => {
-                self.worktree_at_cursor()
-                    .map_or(Action::Redraw, |path| Action::RemoveWorktree {
-                        path,
-                        with_sessions: choices.len() == 3 && at == 1,
+            "Delete session" => {
+                self.pending
+                    .session
+                    .clone()
+                    .map_or(Action::Redraw, |(agent, id)| Action::DeleteSession {
+                        agent,
+                        id,
+                        worktree: self.pending.worktree.clone(),
                     })
             }
+            "Remove worktree" => self
+                .pending
+                .worktree
+                .clone()
+                .map_or(Action::Redraw, |path| Action::RemoveWorktree {
+                    path,
+                    with_sessions: choices.len() == 3 && at == 1,
+                }),
             "Purge" => {
                 let (worktrees, sessions, ..) = self.purge_plan();
                 self.leave_purge();
@@ -1360,6 +1404,120 @@ mod tests {
                 worktree: Some("/repo".into()),
             }
         );
+    }
+
+    // ------------------------------------------- a question's target ---
+
+    /// Every probe rebuilds the rows while a modal is up. Reading the
+    /// cursor again at confirm time deleted whatever had slid under it.
+    #[test]
+    fn a_rebuild_under_the_question_does_not_move_its_target() {
+        let mut a = app();
+        a.resumable.push(Session {
+            agent: "claude",
+            id: "other".into(),
+            title: "someone else".into(),
+            status: "resumable 1d".into(),
+            cwd: "/repo".into(),
+            launch_cwd: "/repo".into(),
+            kind: SessionKind::Resumable,
+            last_activity: 0,
+        });
+        a.on_key(code(KeyCode::Down)); // onto "old work", session dead
+        a.on_key(ctrl('d'));
+
+        // A probe lands: the row that was asked about is gone, and another
+        // session takes its place under the cursor.
+        a.set_rows(vec![
+            row(
+                RowKind::Worktree,
+                NodeId::Worktree("/repo".into()),
+                None,
+                "main",
+            ),
+            row(
+                RowKind::Session,
+                NodeId::Worktree("/repo".into()),
+                Some("other"),
+                "someone else",
+            ),
+        ]);
+
+        a.on_key(code(KeyCode::Up)); // onto "Delete it"
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::DeleteSession {
+                agent: "claude".into(),
+                id: "dead".into(),
+                worktree: Some("/repo".into()),
+            },
+            "it must still be the session the question named"
+        );
+    }
+
+    /// Same for a worktree: the answer belongs to the row that was asked
+    /// about, not to whatever the cursor ended up on.
+    #[test]
+    fn removing_a_worktree_keeps_the_one_the_question_named() {
+        let mut a = app();
+        a.on_key(ctrl('d')); // on main [root]
+        a.set_rows(vec![row(
+            RowKind::Worktree,
+            NodeId::Worktree("/repo/.claude/worktrees/x".into()),
+            None,
+            "x",
+        )]);
+        a.on_key(code(KeyCode::Up));
+        match a.on_key(code(KeyCode::Enter)) {
+            Action::RemoveWorktree { path, .. } => assert_eq!(path, PathBuf::from("/repo")),
+            other => panic!("wrong action: {other:?}"),
+        }
+    }
+
+    /// Cancelling the branch question used to leave the orphan's path
+    /// behind, and the next ctrl-w built its worktree there.
+    #[test]
+    fn cancelling_a_recreate_does_not_place_the_next_worktree() {
+        let mut a = with_orphan();
+        a.on_key(code(KeyCode::Enter)); // the question
+        a.on_key(code(KeyCode::Enter)); // Recreate its worktree
+        a.on_key(code(KeyCode::Esc)); // …then think better of it
+        assert!(a.modal.is_none());
+
+        a.cursor = 0;
+        ask_new_branch(&mut a);
+        for c in "feat".chars() {
+            a.on_key(key(c));
+        }
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::CreateWorktree {
+                name: "feat".into(),
+                kind: BranchKind::New,
+                at: None,
+                hand_over: None,
+            }
+        );
+    }
+
+    /// The same, through Cancel rather than esc.
+    #[test]
+    fn cancelling_the_branch_question_forgets_the_path_too() {
+        let mut a = with_orphan();
+        a.on_key(code(KeyCode::Enter));
+        a.on_key(code(KeyCode::Enter)); // Recreate its worktree
+        a.on_key(code(KeyCode::Up)); // onto Cancel
+        a.on_key(code(KeyCode::Enter));
+
+        a.cursor = 0;
+        ask_new_branch(&mut a);
+        for c in "feat".chars() {
+            a.on_key(key(c));
+        }
+        match a.on_key(code(KeyCode::Enter)) {
+            Action::CreateWorktree { at, .. } => assert_eq!(at, None),
+            other => panic!("wrong action: {other:?}"),
+        }
     }
 
     // --------------------------------------------------------- orphans ---
