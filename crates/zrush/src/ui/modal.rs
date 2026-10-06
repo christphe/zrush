@@ -136,6 +136,10 @@ const HELP: &[(&str, &str)] = &[
     ("ctrl-w", "new worktree: a new branch, or one that exists"),
     ("", "on a session row, hand that session over"),
     ("ctrl-d", "delete a session, or remove a worktree"),
+    (
+        "ctrl-r",
+        "file a session under the worktree it is listed in",
+    ),
     ("ctrl-p", "purge: mark rows with space, enter to remove"),
     ("ctrl-l", "reload"),
     ("/", "filter — fuzzy; \x27 = ^ $ ! as in fzf"),

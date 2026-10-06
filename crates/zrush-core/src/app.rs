@@ -385,6 +385,17 @@ impl Zrush {
         )
     }
 
+    /// Whether resuming this conversation from `cwd` would find it, or
+    /// quietly start a new one. zrush lists a session by where it last
+    /// worked; the agent files it by where it was started, and the two
+    /// differ for every session that moved.
+    pub fn filing(&self, agent: &str, id: &str, cwd: &Path) -> crate::agent::Filing {
+        self.agent(agent)
+            .map_or(crate::agent::Filing::Unknown, |a| {
+                a.filing(&self.dirs, id, cwd)
+            })
+    }
+
     /// Refile a conversation under `worktree` and bind it there, so the
     /// agent finds it and the editor's panel resumes it.
     ///

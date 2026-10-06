@@ -24,6 +24,9 @@ pub const EDITOR_COMMAND: &str = "Editor command";
 /// The two worktree inputs. Which one is up decides what enter means: a
 /// name to cut a branch at, or a branch that already exists — and the
 /// suggestion list only makes sense under the second.
+/// Refiling a session under the worktree it is listed in.
+pub const REFILE: &str = "File it here";
+
 /// Resuming an orphan. The agent files a conversation by the directory it
 /// was started in and resumes only what it finds for the current one, so
 /// putting the directory back is the answer that changes nothing else —
@@ -506,6 +509,7 @@ impl App {
                 self.open_settings();
                 Action::Redraw
             }
+            (KeyCode::Char('r'), true) => self.ask_refile(),
             (KeyCode::Char('d'), true) => self.ask_delete(),
             (KeyCode::Char('p'), true) => {
                 // Marking rows you cannot see would be a trap: unfold first.
@@ -662,6 +666,42 @@ impl App {
             .chain(self.resumable.iter())
             .find(|s| s.id == id)
             .map(|s| s.cwd.clone())
+    }
+
+    /// Put a session's transcript where the worktree it is listed under
+    /// would look for it. Only a session has one to move, and only the
+    /// worktree it is shown under is a sensible destination.
+    fn ask_refile(&mut self) -> Action {
+        let Some(row) = self.current().cloned() else {
+            return Action::None;
+        };
+        if row.kind != RowKind::Session {
+            self.flash("nothing to file here");
+            return Action::Redraw;
+        }
+        let (Some(session), NodeId::Worktree(worktree)) = (self.session_at_cursor(), &row.node)
+        else {
+            return Action::None;
+        };
+        let name = worktree
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.pending = Pending {
+            session: Some(session),
+            worktree: Some(worktree.clone()),
+            at: None,
+        };
+        self.modal = Some(Modal::Confirm {
+            title: REFILE.into(),
+            body: format!(
+                "{}\nIts transcript moves under {name}, so resuming it there finds it.",
+                row.label.trim()
+            ),
+            choices: vec![Choice::new(REFILE), Choice::new("Cancel")],
+            at: 0,
+        });
+        Action::Redraw
     }
 
     fn ask_delete(&mut self) -> Action {
@@ -1072,6 +1112,14 @@ impl App {
                 self.open_branch_input(existing);
                 Action::Redraw
             }
+            REFILE => match (self.pending.session.clone(), self.pending.worktree.clone()) {
+                (Some((agent, id)), Some(worktree)) => Action::AdoptSession {
+                    agent,
+                    id,
+                    worktree,
+                },
+                _ => Action::Redraw,
+            },
             "Delete session" => {
                 self.pending
                     .session
@@ -1404,6 +1452,33 @@ mod tests {
                 worktree: Some("/repo".into()),
             }
         );
+    }
+
+    #[test]
+    fn ctrl_r_files_a_session_under_the_worktree_it_is_listed_in() {
+        let mut a = app();
+        a.on_key(code(KeyCode::Down)); // onto the session under /repo
+        assert_eq!(a.on_key(ctrl('r')), Action::Redraw);
+        match a.modal.as_ref().unwrap() {
+            Modal::Confirm { title, .. } => assert_eq!(title, REFILE),
+            other => panic!("wrong modal: {other:?}"),
+        }
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::AdoptSession {
+                agent: "claude".into(),
+                id: "dead".into(),
+                worktree: "/repo".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn ctrl_r_on_a_worktree_has_nothing_to_file() {
+        let mut a = app();
+        assert_eq!(a.on_key(ctrl('r')), Action::Redraw);
+        assert!(a.modal.is_none());
+        assert!(a.flash.unwrap().contains("nothing to file"));
     }
 
     // ------------------------------------------- a question's target ---

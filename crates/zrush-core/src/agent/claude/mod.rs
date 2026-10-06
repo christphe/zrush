@@ -16,7 +16,7 @@ pub mod transcript;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::agent::{Agent, Scope, Turn};
+use crate::agent::{Agent, Filing, Scope, Turn};
 use crate::config::{Config, Dirs};
 use crate::error::Result;
 use crate::model::{Session, SessionKind, age, truncate_title};
@@ -137,6 +137,20 @@ impl Agent for ClaudeCode {
 
     /// The transcript wherever Claude Code filed it, plus the sidecar
     /// directory and our cached title.
+    /// Claude Code looks in the directory named after where it is being
+    /// started, and nowhere else. One stat answers the common case; the
+    /// walk only happens when the answer is no.
+    fn filing(&self, dirs: &Dirs, id: &str, cwd: &Path) -> Filing {
+        if projects::transcript_path(dirs, cwd, id).is_file() {
+            return Filing::Here;
+        }
+        if projects::find_transcript(dirs, id).is_some() {
+            Filing::Elsewhere
+        } else {
+            Filing::Unknown
+        }
+    }
+
     /// The transcript, and the directory of the same name beside it. Moved
     /// rather than copied: two files with one id in two project directories
     /// is a conversation that resumes differently depending on where you

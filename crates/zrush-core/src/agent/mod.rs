@@ -45,6 +45,15 @@ pub struct Turn {
     pub text: String,
 }
 
+/// Whether an agent would find a conversation when started somewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Filing {
+    Here,
+    Elsewhere,
+    /// Filed nowhere this build can see.
+    Unknown,
+}
+
 pub trait Agent: Send + Sync {
     /// Stable, written into the worktree's state file. Never translated.
     fn id(&self) -> &'static str;
@@ -73,6 +82,16 @@ pub trait Agent: Send + Sync {
 
     /// The tail of a conversation, for the preview pane.
     fn preview(&self, dirs: &Dirs, id: &str, turns: usize) -> Vec<Turn>;
+
+    /// Where this conversation is filed, relative to `cwd`.
+    ///
+    /// `Elsewhere` is the one that matters: the agent will not find it when
+    /// started there, so resuming opens a fresh one and says nothing.
+    /// `Unknown` is not a complaint — a live session may have no transcript
+    /// yet, and an absent one is a different problem.
+    fn filing(&self, _dirs: &Dirs, _id: &str, _cwd: &Path) -> Filing {
+        Filing::Here
+    }
 
     /// Refile a conversation under another working directory, so the agent
     /// finds it when it is launched from there.

@@ -178,7 +178,7 @@ pub fn rebuild(app: &mut App, z: &Zrush) {
         app.history.clone()
     };
 
-    let rows = tree::build(&TreeInput {
+    let mut rows = tree::build(&TreeInput {
         worktrees: &app.worktrees,
         assigned: &assigned,
         statuses: &app.statuses,
@@ -188,7 +188,39 @@ pub fn rebuild(app: &mut App, z: &Zrush) {
         resumable_max: app.resumable_max,
         show_all: app.show_all,
     });
+    mark_misfiled(&mut rows, &sessions, z);
     app.set_rows(rows);
+}
+
+/// Say so when a session is listed somewhere the agent would not find it.
+///
+/// zrush assigns a conversation to the worktree it last worked in; the
+/// agent files it under the one it was *started* in, and never moves it.
+/// Resuming from the row then opens an empty panel and says nothing, which
+/// is the most confusing thing zrush can do.
+fn mark_misfiled(rows: &mut [tree::Row], sessions: &[zrush_core::model::Session], z: &Zrush) {
+    for row in rows {
+        let (RowKind::Session | RowKind::Orphan) = row.kind else {
+            continue;
+        };
+        let NodeId::Worktree(worktree) = &row.node else {
+            continue;
+        };
+        let Some(id) = row.session_id.clone() else {
+            continue;
+        };
+        // A live session is already attached to its panel; where its
+        // transcript sits only matters to resuming one.
+        let Some(session) = sessions
+            .iter()
+            .find(|s| s.id == id && s.kind == zrush_core::model::SessionKind::Resumable)
+        else {
+            continue;
+        };
+        if z.filing(session.agent, &id, worktree) == zrush_core::agent::Filing::Elsewhere {
+            row.status = format!("{} · filed elsewhere", row.status);
+        }
+    }
 }
 
 /// What the preview pane should draw for the row under the cursor: whatever
@@ -854,6 +886,85 @@ pub mod tests {
         }
         // And the old value is still what the config says.
         assert_eq!(z.config().resumable_max, 5);
+    }
+
+    /// The case that cost an afternoon: a session started at the repo root
+    /// and moved into a worktree is listed under that worktree, but filed
+    /// under the root. Resuming from the row opened an empty panel and
+    /// said nothing.
+    #[test]
+    fn a_session_filed_somewhere_else_says_so_on_its_row() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        git(
+            &repo,
+            &["worktree", "add", "-q", ".claude/worktrees/w", "-b", "w"],
+        );
+        let z = zrush(&td, repo.clone());
+        let projects = zrush_core::config::dirs_under(td.path()).claude_projects;
+        let here = "aaaaaaaa-1111-2222-3333-444455556666";
+        let moved = "bbbbbbbb-1111-2222-3333-444455556666";
+        let wt = repo.join(".claude/worktrees/w");
+
+        // One filed under the worktree it works in, one filed at the root.
+        for (dir, id) in [(wt.clone(), here), (repo.clone(), moved)] {
+            let d = projects.join(zrush_core::agent::claude::projects::slugify(&dir));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        }
+
+        let mut app = App::new(20, 5);
+        app.active_agent = "claude".into();
+        app.worktrees = z.worktrees().unwrap();
+        app.resumable = vec![
+            session(
+                here,
+                "filed right",
+                wt.to_str().unwrap(),
+                SessionKind::Resumable,
+            ),
+            session(
+                moved,
+                "moved here",
+                wt.to_str().unwrap(),
+                SessionKind::Resumable,
+            ),
+        ];
+        app.scanned = true;
+        rebuild(&mut app, &z);
+
+        let line = |id: &str| {
+            app.rows
+                .iter()
+                .find(|r| r.session_id.as_deref() == Some(id))
+                .map(|r| r.status.clone())
+                .unwrap()
+        };
+        assert!(
+            line(moved).contains("filed elsewhere"),
+            "the moved one must say so: {}",
+            line(moved)
+        );
+        assert!(
+            !line(here).contains("filed elsewhere"),
+            "the other must not: {}",
+            line(here)
+        );
+    }
+
+    /// No transcript at all is a different thing, and not worth a warning
+    /// on every row — which is what marking it produced.
+    #[test]
+    fn a_session_with_no_transcript_anywhere_is_not_called_misfiled() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (z, app) = loaded(&td);
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| r.status.contains("filed elsewhere")),
+            "nothing on disk, nothing to say"
+        );
+        drop(z);
     }
 
     #[test]
