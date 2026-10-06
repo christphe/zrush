@@ -207,11 +207,10 @@ while the first is out rather than queued.
 |---|---|
 | `↑` `↓` / `k` `j` | move |
 | `←` `→` / `h` `l` | fold, unfold a worktree's rows |
-| `enter` | **worktree**: drop the association and open the editor, so the panel starts a fresh session. **session**: bind it and open, so the panel resumes it. **orphan**: ask which worktree to resume it in — the main one, another, or a new one. **`[…more]`**: load older sessions |
+| `enter` | **worktree**: drop the association and open the editor, so the panel starts a fresh session. **session**: bind it and open, so the panel resumes it. **session filed elsewhere**: ask whether to file it here first, because opening it as-is cannot resume it — the row says `filed elsewhere`. A conversation is filed under the directory it was **started** in and never moves, so one that changed worktree is listed where it works and resumes where it began. **orphan**: ask which worktree to resume it in — the main one, another, or a new one. **`[…more]`**: load older sessions |
 | `ctrl-o` | a terminal of its own, leaving the association and the editor alone. On a session row it resumes that conversation; on a worktree it starts a fresh one |
 | `ctrl-w` | new worktree: it asks for a new branch or an existing one first. On a session row, hand that session to the new worktree |
 | `ctrl-d` | delete a conversation, or remove a worktree |
-| `ctrl-r` | file a session's transcript under the worktree it is listed in. A session is filed by the directory it was **started** in and never moves, so one that changed worktree is listed where it works and resumes where it began — the row says `filed elsewhere` when the two differ |
 | `ctrl-p` | purge: mark rows with `space`, `enter` removes the lot |
 | `ctrl-l` | reload |
 | `/` | filter, fuzzy by default. `'sub` `=exact` `^start` `end$` `!not`, as in fzf. A node and its children travel together, so the list stays a tree |

@@ -24,8 +24,11 @@ pub const EDITOR_COMMAND: &str = "Editor command";
 /// The two worktree inputs. Which one is up decides what enter means: a
 /// name to cut a branch at, or a branch that already exists — and the
 /// suggestion list only makes sense under the second.
-/// Refiling a session under the worktree it is listed in.
-pub const REFILE: &str = "File it here";
+/// `enter` on a session whose transcript is filed under another
+/// directory, which is the only case where opening it cannot resume it.
+pub const MISFILED: &str = "Filed elsewhere";
+pub const MISFILED_FILE: &str = "File it here and open";
+pub const MISFILED_ANYWAY: &str = "Open anyway, fresh conversation";
 
 /// Resuming an orphan. The agent files a conversation by the directory it
 /// was started in and resumes only what it finds for the current one, so
@@ -509,7 +512,6 @@ impl App {
                 self.open_settings();
                 Action::Redraw
             }
-            (KeyCode::Char('r'), true) => self.ask_refile(),
             (KeyCode::Char('d'), true) => self.ask_delete(),
             (KeyCode::Char('p'), true) => {
                 // Marking rows you cannot see would be a trap: unfold first.
@@ -555,6 +557,7 @@ impl App {
         let Some(row) = self.current() else {
             return Action::None;
         };
+        let (misfiled, label) = (row.misfiled, row.label.clone());
         match row.kind {
             // Not an action: it raises this node's cap and redraws, so enter
             // after enter keeps unfolding.
@@ -581,11 +584,18 @@ impl App {
                 let Some(worktree) = self.worktree_at_cursor() else {
                     return Action::None;
                 };
-                self.session_at_cursor()
-                    .map_or(Action::None, |bind| Action::Open {
-                        worktree,
-                        bind: Some(bind),
-                    })
+                let Some(bind) = self.session_at_cursor() else {
+                    return Action::None;
+                };
+                // Filed somewhere else, this very enter is what opens an
+                // empty panel. Ask instead of doing it and saying nothing.
+                if misfiled {
+                    return self.ask_misfiled(&label, bind, worktree);
+                }
+                Action::Open {
+                    worktree,
+                    bind: Some(bind),
+                }
             }
             // An orphan's worktree is gone — removed, or never zrush's to
             // begin with. The conversation outlived it, so the question is
@@ -668,37 +678,29 @@ impl App {
             .map(|s| s.cwd.clone())
     }
 
-    /// Put a session's transcript where the worktree it is listed under
-    /// would look for it. Only a session has one to move, and only the
-    /// worktree it is shown under is a sensible destination.
-    fn ask_refile(&mut self) -> Action {
-        let Some(row) = self.current().cloned() else {
-            return Action::None;
-        };
-        if row.kind != RowKind::Session {
-            self.flash("nothing to file here");
-            return Action::Redraw;
-        }
-        let (Some(session), NodeId::Worktree(worktree)) = (self.session_at_cursor(), &row.node)
-        else {
-            return Action::None;
-        };
+    /// `enter` on a session the agent would not find from here. The second
+    /// answer is what enter did before, named for what it actually does.
+    fn ask_misfiled(&mut self, label: &str, bind: (String, String), worktree: PathBuf) -> Action {
         let name = worktree
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         self.pending = Pending {
-            session: Some(session),
-            worktree: Some(worktree.clone()),
+            session: Some(bind),
+            worktree: Some(worktree),
             at: None,
         };
         self.modal = Some(Modal::Confirm {
-            title: REFILE.into(),
+            title: MISFILED.into(),
             body: format!(
-                "{}\nIts transcript moves under {name}, so resuming it there finds it.",
-                row.label.trim()
+                "{}\nIt was started elsewhere, so resuming it in {name} would\nopen an empty panel.",
+                label.trim()
             ),
-            choices: vec![Choice::new(REFILE), Choice::new("Cancel")],
+            choices: vec![
+                Choice::new(MISFILED_FILE),
+                Choice::new(MISFILED_ANYWAY),
+                Choice::new("Cancel"),
+            ],
             at: 0,
         });
         Action::Redraw
@@ -1112,14 +1114,24 @@ impl App {
                 self.open_branch_input(existing);
                 Action::Redraw
             }
-            REFILE => match (self.pending.session.clone(), self.pending.worktree.clone()) {
-                (Some((agent, id)), Some(worktree)) => Action::AdoptSession {
-                    agent,
-                    id,
-                    worktree,
-                },
-                _ => Action::Redraw,
-            },
+            MISFILED => {
+                let picked = choices.get(at).map(|c| c.label.clone()).unwrap_or_default();
+                match (self.pending.session.clone(), self.pending.worktree.clone()) {
+                    (Some((agent, id)), Some(worktree)) if picked == MISFILED_FILE => {
+                        Action::AdoptSession {
+                            agent,
+                            id,
+                            worktree,
+                        }
+                    }
+                    // What enter used to do, now chosen rather than suffered.
+                    (Some(bind), Some(worktree)) if picked == MISFILED_ANYWAY => Action::Open {
+                        worktree,
+                        bind: Some(bind),
+                    },
+                    _ => Action::Redraw,
+                }
+            }
             "Delete session" => {
                 self.pending
                     .session
@@ -1232,6 +1244,7 @@ mod tests {
             search: label.into(),
             badge: String::new(),
             status: String::new(),
+            misfiled: false,
             location: String::new(),
         }
     }
@@ -1454,13 +1467,32 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ctrl_r_files_a_session_under_the_worktree_it_is_listed_in() {
+    // ------------------------------------------------------- misfiled ---
+
+    /// enter is the key that could not work: the panel it opens cannot
+    /// resume a conversation filed somewhere else. So enter asks.
+    fn with_misfiled() -> App {
         let mut a = app();
-        a.on_key(code(KeyCode::Down)); // onto the session under /repo
-        assert_eq!(a.on_key(ctrl('r')), Action::Redraw);
+        let mut rows = a.rows.clone();
+        rows[1].misfiled = true;
+        a.set_rows(rows);
+        a.cursor = 1;
+        a
+    }
+
+    #[test]
+    fn enter_on_a_misfiled_session_asks_instead_of_opening_an_empty_panel() {
+        let mut a = with_misfiled();
+        assert_eq!(a.on_key(code(KeyCode::Enter)), Action::Redraw);
         match a.modal.as_ref().unwrap() {
-            Modal::Confirm { title, .. } => assert_eq!(title, REFILE),
+            Modal::Confirm {
+                title, choices, at, ..
+            } => {
+                assert_eq!(title, MISFILED);
+                assert_eq!(choices[*at].label, MISFILED_FILE);
+                let labels: Vec<&str> = choices.iter().map(|c| c.label.as_str()).collect();
+                assert_eq!(labels, vec![MISFILED_FILE, MISFILED_ANYWAY, "Cancel"]);
+            }
             other => panic!("wrong modal: {other:?}"),
         }
         assert_eq!(
@@ -1473,12 +1505,34 @@ mod tests {
         );
     }
 
+    /// The second answer is what enter did before, now named for what it
+    /// really does rather than promising a resume.
     #[test]
-    fn ctrl_r_on_a_worktree_has_nothing_to_file() {
+    fn opening_it_anyway_is_the_old_behaviour_under_its_own_name() {
+        let mut a = with_misfiled();
+        a.on_key(code(KeyCode::Enter));
+        a.on_key(code(KeyCode::Down));
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::Open {
+                worktree: "/repo".into(),
+                bind: Some(("claude".into(), "dead".into())),
+            }
+        );
+    }
+
+    /// A session filed where it is listed must not gain a question.
+    #[test]
+    fn enter_on_an_ordinary_session_still_just_opens_it() {
         let mut a = app();
-        assert_eq!(a.on_key(ctrl('r')), Action::Redraw);
-        assert!(a.modal.is_none());
-        assert!(a.flash.unwrap().contains("nothing to file"));
+        a.on_key(code(KeyCode::Down));
+        assert_eq!(
+            a.on_key(code(KeyCode::Enter)),
+            Action::Open {
+                worktree: "/repo".into(),
+                bind: Some(("claude".into(), "dead".into())),
+            }
+        );
     }
 
     // ------------------------------------------- a question's target ---

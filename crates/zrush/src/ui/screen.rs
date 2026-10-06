@@ -219,6 +219,7 @@ fn mark_misfiled(rows: &mut [tree::Row], sessions: &[zrush_core::model::Session]
         };
         if z.filing(session.agent, &id, worktree) == zrush_core::agent::Filing::Elsewhere {
             row.status = format!("{} · filed elsewhere", row.status);
+            row.misfiled = true;
         }
     }
 }

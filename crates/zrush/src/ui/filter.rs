@@ -221,6 +221,7 @@ mod tests {
             search: label.into(),
             badge: String::new(),
             status: String::new(),
+            misfiled: false,
             location: location.into(),
         }
     }
@@ -235,6 +236,7 @@ mod tests {
             search: title.into(),
             badge: String::new(),
             status: String::new(),
+            misfiled: false,
             location: String::new(),
         }
     }
@@ -418,6 +420,7 @@ mod tests {
                 search: String::new(),
                 badge: "+3 older".into(),
                 status: String::new(),
+                misfiled: false,
                 location: String::new(),
             },
         );
@@ -436,6 +439,7 @@ mod tests {
             search: String::new(),
             badge: "+3 older".into(),
             status: String::new(),
+            misfiled: false,
             location: String::new(),
         });
         assert_eq!(apply(&rows, "main"), vec![0, 1]);

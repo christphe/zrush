@@ -45,6 +45,10 @@ pub struct Row {
     pub search: String,
     pub badge: String,
     pub status: String,
+    /// The agent would not find this conversation from the worktree the
+    /// row sits under: it was started somewhere else and filed there.
+    /// `enter` asks rather than opening a panel that cannot resume it.
+    pub misfiled: bool,
     pub location: String,
 }
 
@@ -173,6 +177,7 @@ pub fn build(input: &TreeInput<'_>) -> Vec<Row> {
                 .get(&w.path)
                 .map(GitStatus::badge)
                 .unwrap_or_default(),
+            misfiled: false,
             location: w.path.to_string_lossy().into_owned(),
         });
         if !collapsed {
@@ -196,6 +201,7 @@ pub fn build(input: &TreeInput<'_>) -> Vec<Row> {
             search: "orphaned sessions".into(),
             badge: format!("◌ {}", children.len()),
             status: String::new(),
+            misfiled: false,
             location: "worktree gone".into(),
         });
         if !collapsed {
@@ -290,6 +296,7 @@ fn push_children(
             search: a.session.title.clone(),
             badge: status,
             status: String::new(),
+            misfiled: false,
             location: String::new(),
         });
     }
@@ -303,6 +310,7 @@ fn push_children(
             search: String::new(),
             badge: format!("+{hidden} older"),
             status: String::new(),
+            misfiled: false,
             location: String::new(),
         });
     }

@@ -259,6 +259,7 @@ mod tests {
             search: label.into(),
             badge: badge.into(),
             status: status.into(),
+            misfiled: false,
             location: String::new(),
         }
     }
@@ -419,6 +420,7 @@ mod highlight_tests {
             search: title.into(),
             badge: String::new(),
             status: String::new(),
+            misfiled: false,
             location: String::new(),
         }
     }

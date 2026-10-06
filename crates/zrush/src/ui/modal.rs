@@ -129,6 +129,7 @@ const HELP: &[(&str, &str)] = &[
     ("← → / h l", "fold, unfold"),
     ("enter", "worktree: open with a fresh session"),
     ("", "session: bind it and open"),
+    ("", "session filed elsewhere: asks before opening"),
     ("", "[…more]: load older sessions"),
     ("", "orphan: asks which worktree to resume it in"),
     ("ctrl-o", "a terminal of its own: a session resumes, a"),
