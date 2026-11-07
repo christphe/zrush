@@ -30,9 +30,10 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # The version, clippy and rustfmt all come from rust-toolchain.toml,
+      # the same file a local cargo reads.
+      - name: Toolchain
+        run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
 
@@ -54,9 +55,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      - name: Toolchain
+        run: rustup toolchain install
       - run: cargo fmt --all --check
       - uses: EmbarkStudios/cargo-deny-action@v2
 
@@ -66,6 +66,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.88.0
+      # Without this, rust-toolchain.toml would win and the MSRV would go
+      # untested.
+      - run: echo "RUSTUP_TOOLCHAIN=1.88.0" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --locked
 
@@ -86,9 +89,10 @@ jobs:
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      - name: Toolchain
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
 
       # The only target that needs a cross linker; the rest build natively.
