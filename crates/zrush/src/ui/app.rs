@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use zrush_core::model::tree::{NodeId, Row, RowKind};
 use zrush_core::model::{GitStatus, Session, Worktree};
 
@@ -461,6 +461,11 @@ impl App {
     // ------------------------------------------------------------- keys ---
 
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
+        // Windows reports every key twice, going down and coming back up.
+        // Only the first is a key press; a held key repeats and still counts.
+        if key.kind == KeyEventKind::Release {
+            return Action::None;
+        }
         // A modal owns the keyboard while it is up. No key means two things.
         if self.modal.is_some() {
             return self.modal_key(key);
@@ -1317,6 +1322,36 @@ mod tests {
         assert_eq!(a.cursor, 3);
         a.on_key(code(KeyCode::Down));
         assert_eq!(a.cursor, 0);
+    }
+
+    /// The same key as `code`, but as the terminal reports it going up or
+    /// held down. Windows sends both for every key; Unix only presses.
+    fn kind(c: KeyCode, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(c, KeyModifiers::NONE, kind)
+    }
+
+    #[test]
+    fn a_key_coming_back_up_does_nothing() {
+        let mut a = app();
+        a.on_key(code(KeyCode::Down));
+        assert_eq!(
+            a.on_key(kind(KeyCode::Down, KeyEventKind::Release)),
+            Action::None
+        );
+        assert_eq!(a.cursor, 1);
+        // Not even Esc, which would otherwise quit.
+        assert_eq!(
+            a.on_key(kind(KeyCode::Esc, KeyEventKind::Release)),
+            Action::None
+        );
+    }
+
+    #[test]
+    fn a_key_held_down_keeps_moving() {
+        let mut a = app();
+        a.on_key(code(KeyCode::Down));
+        a.on_key(kind(KeyCode::Down, KeyEventKind::Repeat));
+        assert_eq!(a.cursor, 2);
     }
 
     #[test]
