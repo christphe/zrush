@@ -6,7 +6,7 @@ members = ["crates/zrush-core", "crates/zrush"]
 [workspace.package]
 version = "0.0.3"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.99"
 license = "GPL-3.0-only"
 repository = "https://github.com/christphe/zrush"
 
@@ -18,14 +18,14 @@ zrush-core = { path = "crates/zrush-core", version = "0.0.3" }
 
 clap = { version = "4.6.7", features = ["derive"] }
 crossterm = "0.29.0"
-dirs = "6.0.0"
+dirs = "7.0.0"
 jiff = "0.2.15"
 nucleo-matcher = "0.3.1"
 ratatui = "0.30.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.12"
-toml = "0.9.8"
+toml = "1.2.0"
 # The update check: one GET a day. rustls, so there is no OpenSSL to find
 # on Linux and nothing to install on Windows.
 ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }

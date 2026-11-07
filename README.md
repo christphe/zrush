@@ -414,7 +414,7 @@ they are available locally:
 
 - the Windows half of the platform code, with `rustup target add
   x86_64-pc-windows-msvc` — `cargo clippy --target` needs no linker;
-- a build against the MSRV, with `rustup toolchain install 1.88`.
+- a build against the MSRV, with `rustup toolchain install 1.99`.
 
 Both are skipped when not installed, so `./check` still works on a bare
 setup — it just stops catching those two.

@@ -19,6 +19,10 @@ updates:
       interval: weekly
     commit-message:
       prefix: ci
+    ignore:
+      # Its tag is the Rust version to install (the MSRV job's), not a
+      # release of the action: bumping it breaks the MSRV promise.
+      - dependency-name: dtolnay/rust-toolchain
     groups:
       actions:
         patterns: ["*"]
