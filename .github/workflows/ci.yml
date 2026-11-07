@@ -106,7 +106,8 @@ jobs:
       - run: cargo build --release --locked --target ${{ matrix.target }} -p zrush
 
       # What ships is what install.sh expects to find next to it: the
-      # binary, the installer, and the Zed files it copies.
+      # binary, the installer, and the Zed files it copies. Windows gets
+      # install.ps1 as well, for PowerShell; install.sh serves Git Bash.
       - name: Pack
         id: pack
         shell: bash
@@ -116,11 +117,12 @@ jobs:
           mkdir -p "dist/$name"
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${{ matrix.target }}/release/zrush.exe" "dist/$name/"
+            cp install.ps1 "dist/$name/"
           else
             cp "target/${{ matrix.target }}/release/zrush" "dist/$name/"
-            cp install.sh "dist/$name/"
-            cp -R zed "dist/$name/"
           fi
+          cp install.sh "dist/$name/"
+          cp -R zed "dist/$name/"
           cp README.md LICENSE "dist/$name/"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 

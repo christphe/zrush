@@ -21,6 +21,19 @@ bin_dir="$HOME/.local/bin"
 cfg_dir="${XDG_CONFIG_HOME:-$HOME/.config}/zrush"
 zed_dir="${XDG_CONFIG_HOME:-$HOME/.config}/zed"
 
+# Git Bash, MSYS2 or Cygwin: the binary is zrush.exe, Zed keeps its config
+# under %APPDATA%, and ~/.local/bin has to reach the Windows Path as well as
+# this shell's, or PowerShell and the editors never find zrush.
+win=0
+exe=""
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    win=1
+    exe=".exe"
+    if [ -n "${APPDATA:-}" ]; then zed_dir="$(cygpath -u "$APPDATA")/Zed"; fi
+    ;;
+esac
+
 editor=""
 bin=""
 while [ $# -gt 0 ]; do
@@ -34,7 +47,7 @@ done
 # Next to this script in a release archive; under target/ in a checkout that
 # has already been built.
 if [ -z "$bin" ]; then
-  for c in "$here/zrush" "$here/target/release/zrush"; do
+  for c in "$here/zrush$exe" "$here/target/release/zrush$exe"; do
     if [ -x "$c" ]; then bin="$c"; break; fi
   done
 fi
@@ -52,13 +65,22 @@ mkdir -p "$bin_dir" "$cfg_dir"
 
 # A previous install left a symlink here, pointing into a checkout. Writing
 # through it edits that checkout instead of installing, so unlink first.
-if [ -L "$bin_dir/zrush" ]; then
-  echo "removing the old symlink $bin_dir/zrush -> $(readlink "$bin_dir/zrush")"
-  rm -f "$bin_dir/zrush"
+dst="$bin_dir/zrush$exe"
+if [ -L "$dst" ]; then
+  echo "removing the old symlink $dst -> $(readlink "$dst")"
+  rm -f "$dst"
 fi
 
-install -m 755 "$bin" "$bin_dir/zrush"
-echo "installed $bin_dir/zrush ($("$bin_dir/zrush" --version 2>/dev/null || echo unknown))"
+# Windows will not overwrite an exe that is running — in an editor's
+# terminal panel, say — but it will rename one. The old copy goes aside and
+# is cleaned up by the next install that finds it free.
+if [ "$win" -eq 1 ]; then
+  rm -f "$dst.old" 2>/dev/null || true
+  if [ -e "$dst" ]; then mv -f "$dst" "$dst.old" 2>/dev/null || true; fi
+fi
+
+install -m 755 "$bin" "$dst"
+echo "installed $dst ($("$dst" --version 2>/dev/null || echo unknown))"
 
 # The bash version shipped a second command. `zrush session` replaced it, so
 # the old one is taken away rather than kept alive as a shim.
@@ -71,6 +93,43 @@ case ":$PATH:" in
   *":$bin_dir:"*) ;;
   *) echo "warning: $bin_dir is not in your PATH" ;;
 esac
+
+# This shell's PATH is not Windows': Git Bash builds its own from ~/.bashrc.
+# Asked, never done behind your back, since it outlives this install.
+if [ "$win" -eq 1 ] && command -v powershell.exe >/dev/null 2>&1; then
+  win_bin=$(cygpath -w "$bin_dir")
+  ps_has='$d = $env:ZRUSH_BIN_DIR.TrimEnd([char]92)
+$p = [Environment]::GetEnvironmentVariable("Path","User") + ";" + [Environment]::GetEnvironmentVariable("Path","Machine")
+if (($p -split ";" | ForEach-Object { $_.TrimEnd([char]92) }) -contains $d) { "yes" } else { "no" }'
+  # The registry, not SetEnvironmentVariable: that one would write back the
+  # Path expanded, turning every %USERPROFILE% in it into a fixed string.
+  ps_add='$d = $env:ZRUSH_BIN_DIR
+$k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+$old = $k.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+$new = if ($old) { $old.TrimEnd(";") + ";" + $d } else { $d }
+$k.SetValue("Path", $new, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+# Setting any variable broadcasts the change, so new terminals see it.
+[Environment]::SetEnvironmentVariable("ZRUSH_PATH_PING", "1", "User")
+[Environment]::SetEnvironmentVariable("ZRUSH_PATH_PING", $null, "User")'
+  has=$(ZRUSH_BIN_DIR="$win_bin" powershell.exe -NoProfile -NonInteractive -Command "$ps_has" 2>/dev/null | tr -d '\r')
+  if [ "$has" = "no" ]; then
+    answer=""
+    if [ -t 0 ]; then
+      printf '%s is not on the Windows Path; add it for your user? [y/N] ' "$win_bin"
+      read -r answer || answer=""
+    fi
+    case "$answer" in
+      y|Y|yes|o|O|oui)
+        ZRUSH_BIN_DIR="$win_bin" powershell.exe -NoProfile -NonInteractive -Command "$ps_add" >/dev/null
+        echo "added $win_bin to your Windows Path; new terminals will find zrush"
+        ;;
+      *)
+        echo "note: $win_bin is not on the Windows Path, so PowerShell and the"
+        echo "      editors will not find zrush. install.ps1 next to this script adds it."
+        ;;
+    esac
+  fi
+fi
 
 # The old shell-syntax config is imported on first run and left in place, so
 # there is nothing to do here for an existing setup.

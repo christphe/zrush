@@ -41,15 +41,18 @@ done
 die() { echo "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is needed and not here"; }
 
-# The five targets CI builds. Windows is a zip to unpack by hand: there is
-# no ~/.local/bin to install into there anyway.
+# The five targets CI builds. Windows comes as a zip, reached here from Git
+# Bash, MSYS2 or Cygwin; from PowerShell, bootstrap.ps1 does the same job.
 os=$(uname -s)
 arch=$(uname -m)
+ext=tar.gz
 case "$os/$arch" in
   Darwin/arm64)          target=aarch64-apple-darwin ;;
   Darwin/x86_64)         target=x86_64-apple-darwin ;;
   Linux/x86_64)          target=x86_64-unknown-linux-gnu ;;
   Linux/aarch64|Linux/arm64) target=aarch64-unknown-linux-gnu ;;
+  MINGW*/x86_64|MSYS*/x86_64|CYGWIN*/x86_64)
+                         target=x86_64-pc-windows-msvc; ext=zip ;;
   *) die "no build for $os/$arch; build it yourself with ./install-dev.sh" ;;
 esac
 
@@ -70,7 +73,7 @@ if [ "$nightly" -eq 1 ]; then
   root="$tmp"
 else
   need curl
-  need tar
+  if [ "$ext" = zip ]; then need unzip; else need tar; fi
   tag="$want"
   if [ -z "$tag" ]; then
     # 2>/dev/null: no release yet is a 404, and curl's own complaint about
@@ -80,18 +83,19 @@ else
     [ -n "$tag" ] || die "no release published yet; try --nightly"
   fi
   name="zrush-$target"
-  url="https://github.com/$REPO/releases/download/$tag/$name.tar.gz"
+  file="$name.$ext"
+  url="https://github.com/$REPO/releases/download/$tag/$file"
   echo "release $tag, $target"
-  curl -fsSL -o "$tmp/$name.tar.gz" "$url" || die "no such asset: $url"
+  curl -fsSL -o "$tmp/$file" "$url" || die "no such asset: $url"
 
   # Best effort: a release published without checksums still installs, a
   # checksum that is there and disagrees stops everything.
-  if curl -fsSL -o "$tmp/$name.tar.gz.sha256" "$url.sha256" 2>/dev/null; then
-    want_sum=$(awk '{print $1}' "$tmp/$name.tar.gz.sha256")
+  if curl -fsSL -o "$tmp/$file.sha256" "$url.sha256" 2>/dev/null; then
+    want_sum=$(awk '{print $1}' "$tmp/$file.sha256")
     if command -v sha256sum >/dev/null 2>&1; then
-      got=$(sha256sum "$tmp/$name.tar.gz" | awk '{print $1}')
+      got=$(sha256sum "$tmp/$file" | awk '{print $1}')
     else
-      got=$(shasum -a 256 "$tmp/$name.tar.gz" | awk '{print $1}')
+      got=$(shasum -a 256 "$tmp/$file" | awk '{print $1}')
     fi
     [ "$got" = "$want_sum" ] || die "checksum mismatch: expected $want_sum, got $got"
     echo "checksum ok"
@@ -99,11 +103,17 @@ else
     echo "note: no .sha256 alongside the archive; not verified"
   fi
 
-  tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
+  if [ "$ext" = zip ]; then
+    unzip -q "$tmp/$file" -d "$tmp"
+  else
+    tar -xzf "$tmp/$file" -C "$tmp"
+  fi
   root="$tmp/$name"
 fi
 
+# v0.0.1 shipped its Windows zip without one; that release needs the
+# workaround in the README.
 [ -f "$root/install.sh" ] || die "no install.sh in what was downloaded"
 # A zipped artifact loses the executable bit on the way out of GitHub.
-chmod +x "$root/install.sh" "$root/zrush" 2>/dev/null || true
+chmod +x "$root/install.sh" "$root/zrush" "$root/zrush.exe" 2>/dev/null || true
 "$root/install.sh"

@@ -60,6 +60,19 @@ v0.0.1` pins a version; `sh bootstrap.sh --nightly` takes the last green build
 of `main` instead, which needs [`gh`](https://cli.github.com) logged in because
 run artifacts are not public.
 
+On Windows, from PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/christphe/zrush/main/bootstrap.ps1 | iex
+```
+
+or from Git Bash, the `curl … | sh` line above. Both put `zrush.exe` in
+`%USERPROFILE%\.local\bin` and offer to add that folder to your Windows `Path`
+(Git Bash's own `PATH` is not the one PowerShell and the editors see). Zed's
+files go to `%APPDATA%\Zed`. To pin a version from PowerShell:
+`& ([scriptblock]::Create((irm …/bootstrap.ps1))) <tag>`, or `-Nightly`.
+v0.0.1's zip has no installer in it; take a later release.
+
 Or unpack a [release](https://github.com/christphe/zrush/releases) yourself and
 run the `install.sh` next to the binary. Or, from a checkout:
 
