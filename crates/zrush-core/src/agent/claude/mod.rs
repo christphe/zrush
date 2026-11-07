@@ -261,7 +261,10 @@ mod tests {
         fixture(&dirs, root, id, "old work", "/home/u/repo");
 
         let live: HashSet<String> = std::iter::once(id.to_string()).collect();
-        assert!(find_resumable(&dirs, &Config::default(), &scope(root, &live)).is_empty());
+        assert_eq!(
+            find_resumable(&dirs, &Config::default(), &scope(root, &live)),
+            Vec::<Session>::new()
+        );
     }
 
     #[test]
@@ -272,8 +275,9 @@ mod tests {
         let d = dirs.claude_projects.join(projects::slugify(root));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("notes.jsonl"), "{}\n").unwrap();
-        assert!(
-            find_resumable(&dirs, &Config::default(), &scope(root, &HashSet::new())).is_empty()
+        assert_eq!(
+            find_resumable(&dirs, &Config::default(), &scope(root, &HashSet::new())),
+            Vec::<Session>::new()
         );
     }
 
@@ -324,6 +328,9 @@ mod tests {
             resumable_max: 0,
             ..Config::default()
         };
-        assert!(find_resumable(&dirs, &cfg, &scope(root, &HashSet::new())).is_empty());
+        assert_eq!(
+            find_resumable(&dirs, &cfg, &scope(root, &HashSet::new())),
+            Vec::<Session>::new()
+        );
     }
 }

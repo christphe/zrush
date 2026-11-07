@@ -891,7 +891,10 @@ mod tests {
         assert_eq!(host.editor.lock().unwrap().as_slice(), &["hx", "-n"]);
         assert_eq!(z.editor_label(), "hx -n");
         z.set_editor("zed").unwrap();
-        assert!(Config::load(&dirs).unwrap().editor_cmd.is_empty());
+        assert_eq!(
+            Config::load(&dirs).unwrap().editor_cmd,
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -1069,7 +1072,7 @@ mod tests {
         )
         .unwrap();
         assert!(z.active_agent().is_none());
-        assert!(z.live_sessions().is_empty());
+        assert_eq!(z.live_sessions(), Vec::<Session>::new());
         assert_eq!(z.worktrees().unwrap().len(), 1);
     }
 

@@ -2042,7 +2042,7 @@ mod tests {
         a.on_key(ctrl('p'));
         a.on_key(code(KeyCode::Char(' '))); // the main worktree
         let (worktrees, _, _, skipped) = a.purge_plan();
-        assert!(worktrees.is_empty());
+        assert_eq!(worktrees, Vec::<PathBuf>::new());
         assert_eq!(skipped, 1);
     }
 
@@ -2053,7 +2053,7 @@ mod tests {
         a.cursor = 3;
         a.on_key(code(KeyCode::Char(' ')));
         let (_, sessions, kept_live, _) = a.purge_plan();
-        assert!(sessions.is_empty());
+        assert_eq!(sessions, Vec::<(String, String)>::new());
         assert_eq!(kept_live, 1);
     }
 
@@ -2225,7 +2225,7 @@ mod tests {
                 title, suggestions, ..
             } => {
                 assert_eq!(title, NEW_BRANCH);
-                assert!(suggestions.is_empty());
+                assert_eq!(*suggestions, Vec::<String>::new());
             }
             other => panic!("wrong modal: {other:?}"),
         }

@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn malformed_json_yields_no_sessions_rather_than_an_error() {
-        assert!(parse("{not json").is_empty());
+        assert_eq!(parse("{not json"), Vec::<Entry>::new());
     }
 
     #[test]

@@ -486,7 +486,7 @@ mod tests {
             ..Config::default()
         };
         c.set("editor", "code").unwrap();
-        assert!(c.editor_cmd.is_empty());
+        assert_eq!(c.editor_cmd, Vec::<String>::new());
         assert_eq!(c.editor_command(), vec!["code", "-n"]);
         assert_eq!(c.editor_key(), "code");
     }

@@ -275,13 +275,13 @@ mod tests {
         // `/Users/christphe/projects/lafourche/wt` holds r, u, s and t in
         // order, so with fuzzy matching every row matched every needle.
         let rows = vec![node("main", "/Users/christphe/projects/lafourche/wt")];
-        assert!(apply(&rows, "rust").is_empty());
+        assert_eq!(apply(&rows, "rust"), Vec::<usize>::new());
     }
 
     #[test]
     fn the_tree_glyphs_are_not_searched() {
         let rows = vec![child("nothing alike", "/w")];
-        assert!(apply(&rows, "'●").is_empty());
+        assert_eq!(apply(&rows, "'●"), Vec::<usize>::new());
     }
 
     fn kept(needle: &str) -> Vec<String> {
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn nothing_matching_yields_nothing() {
-        assert!(apply(&real(), "zzzzzz").is_empty());
+        assert_eq!(apply(&real(), "zzzzzz"), Vec::<usize>::new());
     }
 
     #[test]
