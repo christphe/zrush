@@ -29,7 +29,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # The version, clippy and rustfmt all come from rust-toolchain.toml,
       # the same file a local cargo reads.
       - name: Toolchain
@@ -54,7 +54,7 @@ jobs:
     name: fmt and deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Toolchain
         run: rustup toolchain install
       - run: cargo fmt --all --check
@@ -64,7 +64,7 @@ jobs:
     name: msrv
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.88.0
       # Without this, rust-toolchain.toml would win and the MSRV would go
       # untested.
@@ -88,7 +88,7 @@ jobs:
           - { os: ubuntu-latest,  target: aarch64-unknown-linux-gnu }
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Toolchain
         run: |
           rustup toolchain install
