@@ -65,10 +65,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.99.0
       # Without this, rust-toolchain.toml would win and the MSRV would go
       # untested.
-      - run: echo "RUSTUP_TOOLCHAIN=1.88.0" >> "$GITHUB_ENV"
+      - run: echo "RUSTUP_TOOLCHAIN=1.99.0" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --locked
 
