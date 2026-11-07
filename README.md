@@ -88,8 +88,21 @@ is `zrush session`. Piped from `curl` there is nobody to ask
 which editor, so that part is skipped — run `install.sh zed` from the unpacked
 archive to do it.
 
+### Updating
+
+A release build looks for a newer release when it starts, once a day and
+in the background; when there is one, the header says so and `U` installs
+it. `zrush update` does the same on demand. The installer is the one that
+fits the shell zrush runs in now — `bootstrap.sh` from Git Bash or a Unix
+shell, `bootstrap.ps1` from PowerShell or anywhere else on Windows — taken
+from the new release's own tag. `update_check = false` (or
+`ZRUSH_UPDATE_CHECK=0`) turns the check off. A nightly or a build from a
+checkout never asks: update those with `--nightly` or `git pull`.
+
 A tag `v*` is what publishes: CI builds the five targets, attaches
 `zrush-<target>.tar.gz` (`.zip` on Windows) and a checksum to the release.
+The build says what it is through `ZRUSH_CHANNEL`: `release` on a tag,
+`nightly` on main, and nothing — a dev build — anywhere else.
 
 ### Zed
 

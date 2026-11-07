@@ -55,6 +55,7 @@ pub fn draw(f: &mut Frame, app: &App, z: &Zrush, prev: &Preview) {
             live: app.live.len(),
             resumable: app.resumable.len(),
             loaded: app.scanned,
+            update: app.update.as_deref(),
         },
     );
 
@@ -325,6 +326,7 @@ pub fn apply(
             }
         }
         E::Failed(_, e) => app.flash(e),
+        E::Update(tag) => app.update = Some(tag),
     }
     true
 }
@@ -410,6 +412,16 @@ fn handle(
             let r = z.edit_config(|c| settings_error = c.toggle(&key).err());
             settings_done(app, z, probes, &key, settings_error.map_or(r, Err));
         }
+        // The installer needs the terminal: it is run once the interface
+        // has let go of it, by whoever called `run`.
+        Action::Update(tag) => {
+            app.install = Some(tag);
+            return false;
+        }
+        Action::SkipUpdate(tag) => match zrush_core::update::skip(z.dirs(), &tag) {
+            Ok(()) => app.flash(format!("{tag} skipped; the next release will show")),
+            Err(e) => app.error("Skip this version", e),
+        },
     }
     true
 }
@@ -615,17 +627,25 @@ fn switch_agent(app: &mut App, z: &Arc<Zrush>, probes: &crate::probe::Probes, id
     }
 }
 
-/// Run the interface until it is told to stop.
 /// How often the spinner turns while a worker is out. Fast enough to read
 /// as motion, slow enough that a long action is not a busy loop.
 const SPIN_EVERY: std::time::Duration = std::time::Duration::from_millis(90);
 
-pub fn run(mut app: App, z: &Arc<Zrush>) -> zrush_core::error::Result<()> {
+/// Run the interface until it is told to stop. What comes back is the
+/// release to install, when that is why it stopped.
+pub fn run(
+    mut app: App,
+    z: &Arc<Zrush>,
+    check_updates: bool,
+) -> zrush_core::error::Result<Option<String>> {
     let mut term = ratatui::init();
     let (tx, rx) = mpsc::channel();
     let probes = crate::probe::Probes::new(tx);
     probes.spawn_input();
     probes.refresh(z, false);
+    if check_updates {
+        probes.spawn_update_check(z.dirs().clone());
+    }
 
     let out = loop {
         want_preview(&mut app, z, &probes);
@@ -663,7 +683,7 @@ pub fn run(mut app: App, z: &Arc<Zrush>) -> zrush_core::error::Result<()> {
         }
     };
     ratatui::restore();
-    out
+    out.map(|()| app.install)
 }
 
 #[cfg(test)]

@@ -139,6 +139,10 @@ impl Zrush {
         })
     }
 
+    pub fn dirs(&self) -> &Dirs {
+        &self.dirs
+    }
+
     /// A copy, because the real one is behind a lock that no caller should
     /// hold across a git call.
     pub fn config(&self) -> Config {

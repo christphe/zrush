@@ -143,6 +143,7 @@ const HELP: &[(&str, &str)] = &[
     ),
     ("ctrl-p", "purge: mark rows with space, enter to remove"),
     ("ctrl-l", "reload"),
+    ("U", "install the newer release the header offers"),
     ("/", "filter — fuzzy; \x27 = ^ $ ! as in fzf"),
     (",", "settings"),
     (":", "command bar — :agent, :editor, :set, :help, :q"),

@@ -158,13 +158,15 @@ if [ ! -f "$cfg_dir/config.toml" ] && [ ! -f "$cfg_dir/config" ]; then
 # more_step = 20         # rows added by one [...more]
 # title_width = 48       # truncate session titles here
 # preview_turns = 14     # conversation turns in the preview pane
+# update_check = true    # look for a newer release at startup, once a day
 CFG
   echo "wrote $cfg_dir/config.toml"
 fi
 
 # Piped from curl there is no one to ask, so the editor step is skipped
-# rather than guessed at.
-if [ -z "$editor" ] && [ -t 0 ]; then
+# rather than guessed at. An editor already chosen is not asked about
+# again: an update runs this too, and the answer has not changed.
+if [ -z "$editor" ] && [ -t 0 ] && ! grep -q '^editor = ' "$cfg_dir/config.toml" 2>/dev/null; then
   printf 'editor [zed/cursor/code, enter to skip]: '
   read -r editor || editor=""
 fi

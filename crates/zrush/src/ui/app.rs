@@ -27,6 +27,9 @@ pub const EDITOR_COMMAND: &str = "Editor command";
 /// `enter` on a session whose transcript is filed under another
 /// directory, which is the only case where opening it cannot resume it.
 pub const MISFILED: &str = "Filed elsewhere";
+pub const UPDATE: &str = "Update zrush";
+pub const UPDATE_NOW: &str = "Update now";
+pub const UPDATE_SKIP: &str = "Skip this version";
 pub const MISFILED_FILE: &str = "File it here and open";
 pub const MISFILED_ANYWAY: &str = "Open anyway, fresh conversation";
 
@@ -117,6 +120,10 @@ pub enum Action {
         value: String,
     },
     ToggleSetting(String),
+    /// Leave the interface and run the installer for this tag.
+    Update(String),
+    /// Never offer this tag again.
+    SkipUpdate(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +195,13 @@ pub struct App {
     /// the process happens to be able to see.
     pub home: Option<PathBuf>,
 
+    /// A newer release the check found, until it is installed, skipped or
+    /// put off.
+    pub update: Option<String>,
+    /// The tag to install once the interface is down, when the answer was
+    /// to update now.
+    pub install: Option<String>,
+
     pub more_step: usize,
     pub resumable_max: usize,
     /// The row the cursor sat on before the last rebuild, so a reload does
@@ -232,6 +246,8 @@ impl App {
             home: std::env::var_os("HOME").map(PathBuf::from),
             more_step,
             resumable_max,
+            update: None,
+            install: None,
             anchor: None,
         }
     }
@@ -540,6 +556,7 @@ impl App {
                 self.modal = Some(Modal::Help);
                 Action::Redraw
             }
+            (KeyCode::Char('U'), false) => self.ask_update(),
             _ => Action::None,
         }
     }
@@ -705,6 +722,30 @@ impl App {
                 Choice::new(MISFILED_FILE),
                 Choice::new(MISFILED_ANYWAY),
                 Choice::new("Cancel"),
+            ],
+            at: 0,
+        });
+        Action::Redraw
+    }
+
+    /// `U`, when the header offers a release. Nothing to ask otherwise.
+    fn ask_update(&mut self) -> Action {
+        let Some(tag) = self.update.clone() else {
+            return Action::None;
+        };
+        self.modal = Some(Modal::Confirm {
+            title: UPDATE.into(),
+            body: format!(
+                "zrush {tag} is out; this is {}.
+
+Updating leaves zrush and runs the installer here.
+Other zrush windows keep the old one until they restart.",
+                zrush_core::update::current()
+            ),
+            choices: vec![
+                Choice::new(UPDATE_NOW),
+                Choice::new(UPDATE_SKIP),
+                Choice::new("Later"),
             ],
             at: 0,
         });
@@ -1084,6 +1125,10 @@ impl App {
                 self.leave_purge();
                 return Action::Reload;
             }
+            // Later: out of the header until the next start.
+            if title == UPDATE {
+                self.update = None;
+            }
             return Action::Redraw;
         }
         match title {
@@ -1118,6 +1163,19 @@ impl App {
                 let existing = choices.get(at).is_some_and(|c| c.label == EXISTING_BRANCH);
                 self.open_branch_input(existing);
                 Action::Redraw
+            }
+            UPDATE => {
+                let picked = choices.get(at).map(|c| c.label.clone()).unwrap_or_default();
+                let Some(tag) = self.update.take() else {
+                    return Action::Redraw;
+                };
+                if picked == UPDATE_NOW {
+                    Action::Update(tag)
+                } else if picked == UPDATE_SKIP {
+                    Action::SkipUpdate(tag)
+                } else {
+                    Action::Redraw
+                }
             }
             MISFILED => {
                 let picked = choices.get(at).map(|c| c.label.clone()).unwrap_or_default();
@@ -2383,5 +2441,84 @@ mod tests_helpers {
 
     pub fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
+    }
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    fn shift_u() -> KeyEvent {
+        // What a terminal sends for U: the capital, with shift held.
+        KeyEvent::new(KeyCode::Char('U'), KeyModifiers::SHIFT)
+    }
+
+    fn enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+    }
+
+    fn down() -> KeyEvent {
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)
+    }
+
+    fn offered() -> App {
+        let mut a = App::new(20, 5);
+        a.update = Some("v9.9.9".into());
+        a
+    }
+
+    #[test]
+    fn u_does_nothing_until_a_release_is_offered() {
+        let mut a = App::new(20, 5);
+        assert!(matches!(a.on_key(shift_u()), Action::None));
+        assert!(a.modal.is_none());
+    }
+
+    #[test]
+    fn u_asks_with_update_now_under_the_cursor() {
+        let mut a = offered();
+        a.on_key(shift_u());
+        match &a.modal {
+            Some(Modal::Confirm {
+                title, choices, at, ..
+            }) => {
+                assert_eq!(title, UPDATE);
+                assert_eq!(choices[*at].label, UPDATE_NOW);
+            }
+            other => panic!("wrong modal: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_now_hands_the_tag_over() {
+        let mut a = offered();
+        a.on_key(shift_u());
+        match a.on_key(enter()) {
+            Action::Update(tag) => assert_eq!(tag, "v9.9.9"),
+            other => panic!("wrong action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skip_names_the_tag_and_clears_the_header() {
+        let mut a = offered();
+        a.on_key(shift_u());
+        a.on_key(down());
+        match a.on_key(enter()) {
+            Action::SkipUpdate(tag) => assert_eq!(tag, "v9.9.9"),
+            other => panic!("wrong action: {other:?}"),
+        }
+        assert_eq!(a.update, None);
+    }
+
+    #[test]
+    fn later_hides_it_without_skipping_anything() {
+        let mut a = offered();
+        a.on_key(shift_u());
+        a.on_key(down());
+        a.on_key(down());
+        assert!(matches!(a.on_key(enter()), Action::Redraw));
+        assert_eq!(a.update, None);
+        assert!(a.modal.is_none());
     }
 }

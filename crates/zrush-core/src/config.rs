@@ -34,6 +34,12 @@ impl Dirs {
         self.config.join("config.toml")
     }
 
+    /// What the update check last found, beside the session cache rather
+    /// than in it: the cache is swept, this must survive.
+    pub fn update_file(&self) -> PathBuf {
+        self.cache.with_file_name("update.toml")
+    }
+
     /// The shell-syntax file the bash version sourced.
     pub fn legacy_config_file(&self) -> PathBuf {
         self.config.join("config")
@@ -89,6 +95,9 @@ pub struct Config {
     pub more_step: usize,
     pub title_width: usize,
     pub preview_turns: usize,
+    /// Look for a newer release at startup, once a day. Release builds
+    /// only: a nightly or a build from a checkout never asks.
+    pub update_check: bool,
     /// One row per pair that has something better than a terminal.
     pub surface: Vec<SurfaceRow>,
 }
@@ -108,6 +117,7 @@ impl Default for Config {
             more_step: 20,
             title_width: 48,
             preview_turns: 14,
+            update_check: true,
             surface: default_surfaces(),
         }
     }
@@ -159,6 +169,7 @@ impl Config {
         }
         set_bool(&mut self.titles, get("ZRUSH_TITLES").as_deref());
         set_bool(&mut self.status, get("ZRUSH_STATUS").as_deref());
+        set_bool(&mut self.update_check, get("ZRUSH_UPDATE_CHECK").as_deref());
         set_usize(
             &mut self.resumable_max,
             get("ZRUSH_RESUMABLE_MAX").as_deref(),
@@ -225,6 +236,7 @@ pub const SETTINGS: &[(&str, Kind)] = &[
     ("title_width", Kind::Number),
     ("preview_turns", Kind::Number),
     ("default_repo", Kind::Path),
+    ("update_check", Kind::Flag),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,6 +293,7 @@ impl Config {
             "agent" => self.agent.clone().unwrap_or_default(),
             "titles" => on_off(self.titles),
             "status" => on_off(self.status),
+            "update_check" => on_off(self.update_check),
             "resumable_max" => self.resumable_max.to_string(),
             "resumable_scan" => self.resumable_scan.to_string(),
             "more_step" => self.more_step.to_string(),
@@ -312,6 +325,7 @@ impl Config {
             "agent" => self.agent = (!v.is_empty()).then(|| v.to_string()),
             "titles" => self.titles = flag(v)?,
             "status" => self.status = flag(v)?,
+            "update_check" => self.update_check = flag(v)?,
             "resumable_max" => self.resumable_max = number(v)?,
             "resumable_scan" => self.resumable_scan = number(v)?,
             "more_step" => self.more_step = number(v)?,
@@ -330,6 +344,7 @@ impl Config {
         let now = match key {
             "titles" => self.titles,
             "status" => self.status,
+            "update_check" => self.update_check,
             other => return Err(ZrushError::Config(format!("not a flag: {other}"))),
         };
         self.set(key, if now { "off" } else { "on" })

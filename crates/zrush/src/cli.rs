@@ -67,6 +67,9 @@ pub enum Command {
     },
     /// One line per session of a worktree, for `session --list`.
     Sessions { path: PathBuf },
+    /// Install the latest release, if it is newer than this one, with the
+    /// installer that fits the shell this runs in.
+    Update,
 }
 
 /// Where the repo comes from: the flag, then the current directory, then
@@ -101,6 +104,7 @@ pub fn main() -> Result<()> {
     match &cli.command {
         Some(Command::Session { list }) => return crate::session::run(&dirs, &cfg, *list),
         Some(Command::Tab { editor, print }) => return tab(&cfg, &dirs, editor.as_deref(), *print),
+        Some(Command::Update) => return update(),
         Some(Command::Sessions { path }) => {
             let z = build(&cli, &cfg, &dirs, path.clone(), Box::new(NullHost))?;
             let live = z.live_sessions();
@@ -148,7 +152,74 @@ pub fn main() -> Result<()> {
     } else if let Some(a) = z.missing_configured_agent() {
         app.flash(format!("{a} is configured, but not installed here"));
     }
-    crate::ui::screen::run(app, &z)
+    // Release builds only: a nightly has no version to compare, and a
+    // build from a checkout is updated with git.
+    let check = cfg.update_check && zrush_core::update::channel() == "release";
+    match crate::ui::screen::run(app, &z, check)? {
+        Some(tag) => install_release(&tag),
+        None => Ok(()),
+    }
+}
+
+/// `zrush update`: ask now, whatever the cache says, and install what is
+/// newer. A skipped release is still installed here — asking by name is
+/// not the same as being offered it.
+fn update() -> Result<()> {
+    use zrush_core::update;
+    match update::channel() {
+        "release" => {}
+        "nightly" => {
+            println!(
+                "this is a nightly build; update it with bootstrap.sh --nightly (or bootstrap.ps1 -Nightly)"
+            );
+            return Ok(());
+        }
+        _ => {
+            println!(
+                "this zrush was built from a checkout; update it with git pull && ./install-dev.sh"
+            );
+            return Ok(());
+        }
+    }
+    let latest = update::fetch_latest(&update::latest_url())
+        .map_err(|e| ZrushError::msg(format!("could not ask for the latest release: {e}")))?;
+    if let Some(tag) = update::newer(&latest, update::current(), None) {
+        install_release(&tag)
+    } else {
+        println!("zrush {} is the latest", update::current());
+        Ok(())
+    }
+}
+
+/// Hand the terminal to the installer for `tag`, and wait for it. On
+/// Windows the running zrush.exe cannot be overwritten, but the installers
+/// rename it aside, so this works from inside the process being replaced.
+fn install_release(tag: &str) -> Result<()> {
+    use zrush_core::update;
+    let shell = update::shell_here();
+    let argv = update::command(&shell, tag);
+    let program = update::which(&argv[0]).unwrap_or_else(|| PathBuf::from(&argv[0]));
+    println!(
+        "updating zrush {} to {tag}, with {}",
+        update::current(),
+        program.display()
+    );
+    let status = std::process::Command::new(&program)
+        .args(&argv[1..])
+        .status()
+        .map_err(|e| ZrushError::msg(format!("could not run {}: {e}", program.display())))?;
+    if !status.success() {
+        return Err(ZrushError::msg(format!(
+            "the installer failed ({status}); zrush {} is still the one installed",
+            update::current()
+        )));
+    }
+    println!(
+        "
+zrush {tag} is installed. Start zrush again to use it; other zrush windows keep {} until they restart.",
+        update::current()
+    );
+    Ok(())
 }
 
 fn build(

@@ -20,6 +20,9 @@ allow = [
   "CC0-1.0",
   # xxhash-rust, the transcript cache's hasher.
   "BSL-1.0",
+  # webpki-roots, the root certificates the update check trusts: a
+  # permissive licence for data.
+  "CDLA-Permissive-2.0",
   # zrush's own crates.
   "GPL-3.0-only",
 ]

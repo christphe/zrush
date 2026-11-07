@@ -46,6 +46,9 @@ pub enum Event {
     Acted(Done),
     /// A probe gave up. Not fatal: the row simply has no badge.
     Failed(u64, String),
+    /// A newer release, by its tag. Never stale: a reload changes nothing
+    /// about what was published.
+    Update(String),
 }
 
 /// What a long action came back with: the line to show, or what went
@@ -61,7 +64,7 @@ impl Event {
     /// never stale.
     pub fn generation(&self) -> Option<u64> {
         match self {
-            Self::Key(_) | Self::Resize(..) | Self::Acted(_) => None,
+            Self::Key(_) | Self::Resize(..) | Self::Acted(_) | Self::Update(_) => None,
             Self::Worktrees(g, _)
             | Self::Status(g, ..)
             | Self::History(g, ..)
@@ -127,6 +130,21 @@ impl Probes {
         std::thread::spawn(move || {
             let result = f();
             let _ = tx.send(Event::Acted(Done { label, result }));
+        });
+    }
+
+    /// Ask whether a newer release exists, once, without holding anything
+    /// up. Silent unless there is one to offer.
+    pub fn spawn_update_check(&self, dirs: zrush_core::config::Dirs) {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            use zrush_core::update;
+            let url = update::latest_url();
+            if let Some(tag) = update::check(&dirs, update::current(), update::now(), || {
+                update::fetch_latest(&url)
+            }) {
+                let _ = tx.send(Event::Update(tag));
+            }
         });
     }
 

@@ -122,12 +122,15 @@ if (-not (Test-Path -LiteralPath $cfg_file) -and -not (Test-Path -LiteralPath (J
 # more_step = 20         # rows added by one [...more]
 # title_width = 48       # truncate session titles here
 # preview_turns = 14     # conversation turns in the preview pane
+# update_check = true    # look for a newer release at startup, once a day
 
 '@
     Write-Host "wrote $cfg_file"
 }
 
-if (-not $Editor) {
+# An editor already chosen is not asked about again: an update runs this
+# too, and the answer has not changed.
+if (-not $Editor -and -not (Select-String -Quiet -Pattern "^editor = " -LiteralPath $cfg_file)) {
     $Editor = Read-Host "editor [zed/cursor/code, enter to skip]"
 }
 

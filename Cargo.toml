@@ -10,15 +10,9 @@ rust-version = "1.88"
 license = "GPL-3.0-only"
 repository = "https://github.com/christphe/zrush"
 
-# Shared with a Zed fork, which is where these crates are vendored for now.
-# Cargo unifies a dependency to one version across a workspace, so anything
-# Zed also uses has to state a floor its version satisfies — that is why
-# some of these look older than they need to be. Raising one is not a
-# cosmetic change: it breaks the vendored build.
-#
-# Only two of them actually move our own lock; the rest are floors that let
-# Zed's older pin win once the workspaces are one. Run `cargo build
-# --locked` after touching any of it, or CI will be the one to notice.
+# Every crate states its dependencies through these, so a version is decided
+# once. Run `cargo build --locked` after touching any of it, or CI will be
+# the one to notice.
 [workspace.dependencies]
 zrush-core = { path = "crates/zrush-core", version = "0.0.2" }
 
@@ -32,6 +26,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.12"
 toml = "0.9.8"
+# The update check: one GET a day. rustls, so there is no OpenSSL to find
+# on Linux and nothing to install on Windows.
+ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 unicode-width = "0.2.2"
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
 

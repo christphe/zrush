@@ -327,3 +327,18 @@ fn a_worktree_row_carries_its_path_for_a_shell_helper() {
         .expect("a path field");
     assert_eq!(Path::new(path), sb.repo.as_path());
 }
+
+#[test]
+fn a_build_from_a_checkout_is_updated_with_git_not_downloaded() {
+    let sb = sandbox();
+    let mut c = Command::cargo_bin("zrush").expect("binary");
+    // Tests build without ZRUSH_CHANNEL, which is what a checkout does. The
+    // URL points nowhere, so reaching for the network would fail loudly.
+    c.env("HOME", &sb.home)
+        .env("XDG_CONFIG_HOME", sb.home.join(".config"))
+        .env("ZRUSH_UPDATE_URL", "file:/nowhere/latest.json")
+        .arg("update")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("built from a checkout"));
+}

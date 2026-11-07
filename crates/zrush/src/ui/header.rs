@@ -32,10 +32,13 @@ pub struct Info<'a> {
     /// False until the transcript scan has answered, so the counts can say
     /// they are still arriving instead of lying about being zero.
     pub loaded: bool,
+    /// A newer release, once the check has found one. It takes the fifth
+    /// row, which the logo leaves free.
+    pub update: Option<&'a str>,
 }
 
 impl Info<'_> {
-    fn rows(&self) -> [(&'static str, String); 4] {
+    fn rows(&self) -> Vec<(&'static str, String)> {
         let counts = if self.loaded {
             format!(
                 "{} · ●{} live · ◌{} resumable",
@@ -44,12 +47,16 @@ impl Info<'_> {
         } else {
             format!("{} · loading…", self.worktrees)
         };
-        [
+        let mut rows = vec![
             ("Repo", self.repo.to_string()),
             ("Branch", self.branch.to_string()),
             ("Agent", self.agent.to_string()),
             ("Worktrees", counts),
-        ]
+        ];
+        if let Some(tag) = self.update {
+            rows.push(("Update", format!("{tag} available · <U> install")));
+        }
+        rows
     }
 }
 
@@ -160,6 +167,7 @@ pub mod tests {
             live,
             resumable,
             loaded,
+            update: None,
         }
     }
 
@@ -190,6 +198,20 @@ pub mod tests {
                 "ragged: |{l}|"
             );
         }
+    }
+
+    #[test]
+    fn a_newer_release_takes_the_fifth_row() {
+        let plain = draw(&info(1, 1, true), 160);
+        assert!(!plain.contains("Update"));
+        let mut i = info(1, 1, true);
+        i.update = Some("v9.9.9");
+        let out = draw(&i, 160);
+        let last = out.lines().nth(4).unwrap_or_default();
+        assert!(
+            last.contains("Update") && last.contains("v9.9.9 available"),
+            "{out}"
+        );
     }
 
     #[test]
