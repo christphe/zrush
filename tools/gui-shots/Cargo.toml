@@ -1,0 +1,19 @@
+# Renders the desktop app to PNG files, for looking at it while working on
+# its looks. Not part of the workspace: it pulls in wgpu, which nothing else
+# needs.
+#
+#   cargo run --manifest-path tools/gui-shots/Cargo.toml --target-dir target/shots -- OUT_DIR [REPO]
+[package]
+name = "gui-shots"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+zrush-core = { path = "../../crates/zrush-core" }
+zrush-gui = { path = "../../crates/zrush-gui" }
+eframe = { version = "0.36.2", features = ["persistence"] }
+egui = "0.36.2"
+egui_kittest = { version = "0.36.2", features = ["eframe", "wgpu"] }

@@ -26,15 +26,30 @@ pub fn show(ui: &mut egui::Ui, tab: &mut Tab, md: &mut CommonMarkCache) -> Optio
     // A tab whose repository could not be opened has only its error.
     tab.zrush()?;
     let mut asked = None;
+    let palette = crate::theme::palette(ui.ctx());
+    let side = palette.map_or(ui.visuals().faint_bg_color, |p| p.panel_bg);
+    let main = palette.map_or(ui.visuals().panel_fill, |p| p.window_bg);
     egui::Panel::left(egui::Id::new(("tree", &tab.repo)))
         .resizable(true)
         .default_size(380.0)
+        .size_range(260.0..=700.0)
+        .frame(
+            egui::Frame::new()
+                .fill(side)
+                .inner_margin(egui::Margin::symmetric(10, 10)),
+        )
         .show(ui, |ui| asked = tree_view::show(ui, tab));
-    egui::CentralPanel::default().show(ui, |ui| {
-        if let Some(q) = conversation::show(ui, tab, md) {
-            asked = Some(q);
-        }
-    });
+    egui::CentralPanel::default()
+        .frame(
+            egui::Frame::new()
+                .fill(main)
+                .inner_margin(egui::Margin::symmetric(24, 16)),
+        )
+        .show(ui, |ui| {
+            if let Some(q) = conversation::show(ui, tab, md) {
+                asked = Some(q);
+            }
+        });
     asked
 }
 
@@ -135,12 +150,12 @@ mod tests {
 
     fn until(h: &mut Harness<'static, State>, what: &str) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        while h.query_by_label_contains(what).is_none() && Instant::now() < deadline {
+        while h.query_all_by_label_contains(what).next().is_none() && Instant::now() < deadline {
             h.step();
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(
-            h.query_by_label_contains(what).is_some(),
+            h.query_all_by_label_contains(what).next().is_some(),
             "never showed {what}"
         );
     }
@@ -173,7 +188,7 @@ mod tests {
         let repo = scratch_repo(&td);
         let (mut h, host) = harness(&td, &repo);
         until(&mut h, "main");
-        h.get_by_label("IDE").click();
+        h.get_by_label("Open").click();
         h.run_steps(2);
         assert_eq!(*host.opened.lock().unwrap(), vec![repo.clone()]);
         assert!(h.state().tab.zrush().unwrap().binding(&repo).is_none());

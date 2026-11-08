@@ -265,8 +265,64 @@ pub fn apply(ctx: &egui::Context, t: &Theme) {
     v.widgets.hovered.bg_fill = p.selection;
     v.widgets.active.weak_bg_fill = p.selection;
     v.widgets.active.bg_fill = p.selection;
-    ctx.set_visuals(v);
+    // A window's title bar, an open combo: the panel colour, not egui's grey.
+    v.widgets.open.weak_bg_fill = p.panel_bg;
+    v.widgets.open.bg_fill = p.panel_bg;
+    v.widgets.open.bg_stroke = egui::Stroke::new(1.0, p.border);
+    let round = egui::CornerRadius::same(6);
+    for w in [
+        &mut v.widgets.noninteractive,
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+    ] {
+        w.corner_radius = round;
+    }
+    v.window_corner_radius = egui::CornerRadius::same(10);
+    v.window_shadow = egui::Shadow {
+        offset: [0, 6],
+        blur: 24,
+        spread: 0,
+        color: egui::Color32::from_black_alpha(if t.dark { 110 } else { 40 }),
+    };
+    v.popup_shadow = v.window_shadow;
+    ctx.global_style_mut(|s| {
+        s.visuals = v;
+        layout(s);
+    });
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("zrush-palette"), *p));
+}
+
+/// One rhythm for the whole window: 8 px steps, roomy buttons, a 14 px
+/// body, and headings that stand out without shouting.
+fn layout(s: &mut egui::Style) {
+    use egui::{FontFamily, FontId, TextStyle};
+    s.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    s.spacing.button_padding = egui::vec2(10.0, 4.0);
+    s.spacing.interact_size.y = 26.0;
+    s.spacing.window_margin = egui::Margin::same(16);
+    s.spacing.indent = 18.0;
+    s.text_styles = [
+        (
+            TextStyle::Heading,
+            FontId::new(19.0, FontFamily::Proportional),
+        ),
+        (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
+        (
+            TextStyle::Button,
+            FontId::new(14.0, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Small,
+            FontId::new(11.5, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Monospace,
+            FontId::new(13.0, FontFamily::Monospace),
+        ),
+    ]
+    .into();
 }
 
 /// The palette `apply` last set, for the parts egui does not colour

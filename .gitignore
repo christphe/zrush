@@ -7,3 +7,6 @@
 __pycache__/
 .DS_Store
 *.pyc
+
+# The screenshot tool resolves its own dependencies.
+tools/gui-shots/Cargo.lock

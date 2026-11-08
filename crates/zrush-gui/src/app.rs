@@ -193,25 +193,31 @@ impl GuiApp {
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label("Repository");
+            ui.label(egui::RichText::new("zrush").strong().size(16.0));
+            ui.add_space(12.0);
             let field = ui.add(
                 egui::TextEdit::singleline(&mut self.new_repo)
-                    .hint_text("path to a repository")
-                    .desired_width(360.0),
+                    .hint_text("Add a repository: paste its path")
+                    .desired_width(380.0)
+                    .margin(egui::Margin::symmetric(8, 4)),
             );
             let typed = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             let mut pick: Option<PathBuf> = None;
-            if ui.button("Open").clicked() || typed {
+            if ui.button("Add").clicked() || typed {
                 let p = self.new_repo.trim();
                 if !p.is_empty() {
                     pick = Some(PathBuf::from(p));
                 }
             }
-            if ui.button("Browse…").clicked() {
+            if ui
+                .button("Browse…")
+                .on_hover_text("Pick a repository's folder")
+                .clicked()
+            {
                 pick = rfd::FileDialog::new().pick_folder();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Settings").clicked() {
+                if ui.button("⚙ Settings").clicked() {
                     self.settings.open = !self.settings.open;
                 }
             });
@@ -226,14 +232,79 @@ impl GuiApp {
             }
         });
         if let Some(b) = self.banner.clone() {
-            ui.horizontal(|ui| {
-                ui.colored_label(ui.visuals().error_fg_color, b);
-                if ui.small_button("✕").clicked() {
-                    self.banner = None;
-                }
-            });
+            ui.add_space(6.0);
+            let error = ui.visuals().error_fg_color;
+            egui::Frame::new()
+                .fill(error.gamma_multiply(0.12))
+                .stroke(egui::Stroke::new(1.0, error.gamma_multiply(0.5)))
+                .corner_radius(6)
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(b).color(error));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Dismiss").clicked() {
+                                self.banner = None;
+                            }
+                        });
+                    });
+                });
         }
     }
+
+    /// `egui_dock`'s tabs, in the theme's colours, without the buttons a
+    /// window of repositories has no use for.
+    fn dock_style(ui: &egui::Ui) -> Style {
+        let v = ui.visuals();
+        let palette = crate::theme::palette(ui.ctx());
+        let bar = palette.map_or(v.faint_bg_color, |p| p.panel_bg);
+        let body = palette.map_or(v.panel_fill, |p| p.window_bg);
+        let border = palette.map_or(v.widgets.noninteractive.bg_stroke.color, |p| p.border);
+        let text = palette.map_or(v.text_color(), |p| p.text);
+        let muted = v.weak_text_color();
+        let mut s = Style::from_egui(ui.style().as_ref());
+        s.dock_area_padding = None;
+        s.main_surface_border_stroke = egui::Stroke::NONE;
+        s.main_surface_border_rounding = egui::CornerRadius::ZERO;
+        s.tab_bar.bg_fill = bar;
+        s.tab_bar.height = 34.0;
+        s.tab_bar.hline_color = border;
+        s.tab.active.bg_fill = body;
+        s.tab.active.text_color = text;
+        s.tab.active.outline_color = border;
+        s.tab.focused = s.tab.active.clone();
+        s.tab.inactive.bg_fill = bar;
+        s.tab.inactive.text_color = muted;
+        s.tab.inactive.outline_color = egui::Color32::TRANSPARENT;
+        s.tab.hovered.bg_fill = body;
+        s.tab.hovered.text_color = text;
+        s.tab.tab_body.bg_fill = body;
+        s.tab.tab_body.stroke = egui::Stroke::NONE;
+        s.tab.tab_body.inner_margin = egui::Margin::ZERO;
+        s.tab.minimum_width = Some(120.0);
+        s
+    }
+}
+
+/// No repository open yet: say how to add one.
+fn welcome(ui: &mut egui::Ui) {
+    let muted = ui.visuals().weak_text_color();
+    ui.vertical_centered(|ui| {
+        ui.add_space(ui.available_height() * 0.35);
+        ui.label(
+            egui::RichText::new("No repository open")
+                .heading()
+                .color(muted),
+        );
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(
+                "Paste a repository's path above, or Browse… to pick its folder. \
+                 It comes back as a tab every time zrush opens.",
+            )
+            .color(muted),
+        );
+    });
 }
 
 /// Draws one tab; collects what was closed, to be saved after the frame.
@@ -284,16 +355,32 @@ impl eframe::App for GuiApp {
             self.shown_title = title;
         }
 
-        egui::Panel::top("bar").show(ui, |ui| self.top_bar(ui));
+        let bar_fill =
+            crate::theme::palette(ui.ctx()).map_or(ui.visuals().faint_bg_color, |p| p.panel_bg);
+        egui::Panel::top("bar")
+            .frame(
+                egui::Frame::new()
+                    .fill(bar_fill)
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
+            )
+            .show(ui, |ui| self.top_bar(ui));
         let mut viewer = Viewer {
             closed: Vec::new(),
             md: &mut self.md,
         };
-        egui::CentralPanel::default().show(ui, |ui| {
-            DockArea::new(&mut self.dock)
-                .style(Style::from_egui(ui.style().as_ref()))
-                .show_inside(ui, &mut viewer);
-        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new())
+            .show(ui, |ui| {
+                if self.dock.iter_all_tabs().next().is_none() {
+                    welcome(ui);
+                    return;
+                }
+                DockArea::new(&mut self.dock)
+                    .style(Self::dock_style(ui))
+                    .show_leaf_collapse_buttons(false)
+                    .show_leaf_close_all_buttons(false)
+                    .show_inside(ui, &mut viewer);
+            });
         if !viewer.closed.is_empty() {
             self.save_repos();
         }
@@ -421,13 +508,13 @@ mod tests {
             .build_eframe(|_cc| a);
         // Both tabs are in the bar; the gone one's body says why.
         let deadline = Instant::now() + Duration::from_secs(10);
-        while h.query_by_label_contains("main").is_none() && Instant::now() < deadline {
+        while h.query_all_by_label_contains("main").next().is_none() && Instant::now() < deadline {
             h.step();
             std::thread::sleep(Duration::from_millis(20));
         }
         // The good tab loaded (its main worktree is listed) and the gone one
         // is there too; showing it shows why it is empty.
-        assert!(h.query_by_label_contains("main").is_some());
+        assert!(h.query_all_by_label_contains("main").next().is_some());
         assert_eq!(h.state().tab_count(), 2);
         h.state_mut().focus(&gone);
         h.run_steps(3);

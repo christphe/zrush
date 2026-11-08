@@ -45,30 +45,39 @@ pub fn show(
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_width(520.0)
+        .default_size([600.0, 640.0])
+        .anchor(egui::Align2::CENTER_TOP, [0.0, 72.0])
         .show(ctx, |ui| {
-            let cfg = match state.saved.clone() {
-                Some(c) => c,
-                None => {
-                    let c = Config::load(z.dirs()).unwrap_or_else(|_| z.config());
-                    state.saved = Some(c.clone());
-                    c
-                }
-            };
-            if let Some(c) = theme_row(ui, state, z, &cfg, themes) {
-                changed = Some(c);
-            }
-            ui.separator();
-            egui::Grid::new("settings")
-                .num_columns(2)
-                .spacing([16.0, 8.0])
-                .striped(true)
+            let cfg = state
+                .saved
+                .get_or_insert_with(|| Config::load(z.dirs()).unwrap_or_else(|_| z.config()))
+                .clone();
+            egui::ScrollArea::vertical()
+                .max_height(560.0)
                 .show(ui, |ui| {
-                    for (key, kind) in SETTINGS {
-                        if let Some(c) = row(ui, state, z, &cfg, key, *kind) {
-                            changed = Some(c);
-                        }
-                        ui.end_row();
+                    section(ui, "Appearance");
+                    if let Some(c) = theme_row(ui, state, z, &cfg, themes) {
+                        changed = Some(c);
+                    }
+                    for (title, keys) in SECTIONS {
+                        ui.add_space(10.0);
+                        section(ui, title);
+                        egui::Grid::new(("settings", *title))
+                            .num_columns(2)
+                            .spacing([20.0, 10.0])
+                            .min_col_width(170.0)
+                            .show(ui, |ui| {
+                                for key in *keys {
+                                    let Some((_, kind)) = SETTINGS.iter().find(|(k, _)| k == key)
+                                    else {
+                                        continue;
+                                    };
+                                    if let Some(c) = row(ui, state, z, &cfg, key, *kind) {
+                                        changed = Some(c);
+                                    }
+                                    ui.end_row();
+                                }
+                            });
                     }
                 });
         });
@@ -77,6 +86,64 @@ pub fn show(
         state.saved = None;
     }
     changed
+}
+
+/// The settings, grouped the way someone looks for them.
+const SECTIONS: &[(&str, &[&str])] = &[
+    (
+        "Editor and agent",
+        &["editor", "editor_cmd", "terminal", "agent"],
+    ),
+    (
+        "The list",
+        &[
+            "titles",
+            "status",
+            "resumable_max",
+            "more_step",
+            "resumable_scan",
+            "title_width",
+            "preview_turns",
+        ],
+    ),
+    ("Starting up", &["default_repo", "update_check"]),
+];
+
+/// What a setting is called on screen; its `config.toml` name shows on
+/// hover.
+fn label_for(key: &str) -> &'static str {
+    match key {
+        "editor" => "Editor",
+        "editor_cmd" => "Editor command",
+        "terminal" => "Terminal",
+        "agent" => "Agent",
+        "titles" => "Session titles",
+        "status" => "Git status column",
+        "resumable_max" => "Sessions per worktree",
+        "more_step" => "Show more by",
+        "resumable_scan" => "Transcripts scanned",
+        "title_width" => "Title width (terminal)",
+        "preview_turns" => "Preview turns (terminal)",
+        "default_repo" => "Default repository",
+        "update_check" => "Check for updates",
+        _ => "Setting",
+    }
+}
+
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.label(
+        egui::RichText::new(title.to_uppercase())
+            .small()
+            .strong()
+            .color(ui.visuals().weak_text_color()),
+    );
+    ui.add_space(2.0);
+}
+
+/// The name on the left of a row, with the file's name for it on hover.
+fn name(ui: &mut egui::Ui, key: &str) -> egui::Response {
+    ui.label(label_for(key))
+        .on_hover_text(format!("{key} in config.toml"))
 }
 
 fn row(
@@ -91,7 +158,11 @@ fn row(
         Kind::Flag => {
             ui.label("");
             let mut on = cfg.show(key) == "on";
-            if ui.checkbox(&mut on, key).changed() {
+            if ui
+                .checkbox(&mut on, label_for(key))
+                .on_hover_text(format!("{key} in config.toml"))
+                .changed()
+            {
                 Some(z.edit_config(|c| {
                     let _ = c.toggle(key);
                 }))
@@ -100,11 +171,11 @@ fn row(
             }
         }
         Kind::Editor => {
-            let label = ui.label(key);
+            let label = name(ui, key);
             editor(ui, state, z, cfg, label.id)
         }
         Kind::Agent => {
-            ui.label(key);
+            name(ui, key);
             let current = cfg.agent.clone().unwrap_or_default();
             let mut picked = None;
             ui.horizontal(|ui| {
@@ -117,7 +188,7 @@ fn row(
             picked.map(|id| actions::switch_agent(z, id))
         }
         Kind::Number | Kind::Words | Kind::Path => {
-            let label = ui.label(key);
+            let label = name(ui, key);
             let mut out = None;
             ui.vertical(|ui| {
                 let draft = state
@@ -138,7 +209,10 @@ fn row(
                     }
                 }
                 if let Some(e) = state.errors.get(key) {
-                    ui.colored_label(ui.visuals().error_fg_color, format!("{key}: {e}"));
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        format!("{}: {e}", label_for(key)),
+                    );
                 }
             });
             out
@@ -167,9 +241,10 @@ fn theme_row(
 ) -> Option<Changed> {
     let mut picked: Option<String> = None;
     ui.horizontal_wrapped(|ui| {
-        ui.label("Theme");
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
         if ui
             .selectable_label(cfg.gui_theme == "auto", "Auto")
+            .on_hover_text("Follows the system's light or dark mode")
             .clicked()
         {
             picked = Some("auto".into());
@@ -285,7 +360,7 @@ mod tests {
     fn a_flag_toggled_here_is_saved_and_every_tab_sees_it() {
         let td = tempfile::TempDir::new().unwrap();
         let mut h = harness(two_tabs(&td));
-        h.get_by_label("titles").click();
+        h.get_by_label("Session titles").click_accesskit();
         h.run_steps(3);
         assert!(!saved(&td).unwrap().titles);
         assert_eq!(h.state().tab_count(), 2);
@@ -299,12 +374,15 @@ mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let before = saved(&td).map(|c| c.resumable_max);
         let mut h = harness(two_tabs(&td));
-        let field = h.get_by_label("resumable_max");
+        let field = h.get_by_label("Sessions per worktree");
         field.focus();
         field.type_text("lots");
         h.key_press(egui::Key::Enter);
         h.run_steps(3);
-        assert!(h.query_by_label_contains("resumable_max:").is_some());
+        assert!(
+            h.query_by_label_contains("Sessions per worktree:")
+                .is_some()
+        );
         assert_eq!(saved(&td).map(|c| c.resumable_max), before);
     }
 
@@ -314,7 +392,7 @@ mod tests {
         // for itself; the settings must show, and keep, the saved value.
         let td = tempfile::TempDir::new().unwrap();
         let h = harness(two_tabs(&td));
-        let field = h.get_by_label("preview_turns");
+        let field = h.get_by_label("Preview turns (terminal)");
         assert_eq!(field.value().as_deref(), Some("14"));
     }
 
