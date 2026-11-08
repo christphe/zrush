@@ -59,11 +59,13 @@ pub fn show(ui: &mut egui::Ui, tab: &mut Tab, md: &mut CommonMarkCache) -> Optio
                 Preview::Conversation(turns) => {
                     for (i, t) in turns.iter().enumerate() {
                         ui.add_space(10.0);
-                        let who = match t.role {
-                            Role::User => "You",
-                            Role::Assistant => "Agent",
+                        let palette = crate::theme::palette(ui.ctx());
+                        let (who, colour) = match t.role {
+                            Role::User => ("You", palette.map(|p| p.user_turn)),
+                            Role::Assistant => ("Agent", palette.map(|p| p.agent_turn)),
                         };
-                        ui.weak(egui::RichText::new(who).small());
+                        let colour = colour.unwrap_or_else(|| ui.visuals().weak_text_color());
+                        ui.label(egui::RichText::new(who).small().strong().color(colour));
                         ui.push_id(i, |ui| {
                             CommonMarkViewer::new().show(ui, md, &t.text);
                         });

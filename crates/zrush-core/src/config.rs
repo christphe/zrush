@@ -34,6 +34,11 @@ impl Dirs {
         self.config.join("config.toml")
     }
 
+    /// Where the desktop app looks for theme files.
+    pub fn themes_dir(&self) -> PathBuf {
+        self.config.join("themes")
+    }
+
     /// What the update check last found, beside the session cache rather
     /// than in it: the cache is swept, this must survive.
     pub fn update_file(&self) -> PathBuf {
@@ -103,6 +108,8 @@ pub struct Config {
     /// The repositories the desktop app had open, in tab order. Not a
     /// setting: the window keeps it.
     pub gui_repos: Vec<PathBuf>,
+    /// The desktop app's theme, by file name; `auto` follows the system.
+    pub gui_theme: String,
 }
 
 impl Default for Config {
@@ -123,6 +130,7 @@ impl Default for Config {
             update_check: true,
             surface: default_surfaces(),
             gui_repos: Vec::new(),
+            gui_theme: "auto".into(),
         }
     }
 }

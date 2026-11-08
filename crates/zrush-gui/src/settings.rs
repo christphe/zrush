@@ -7,6 +7,8 @@ use zrush_core::actions;
 use zrush_core::app::Zrush;
 use zrush_core::config::{Config, KNOWN_EDITORS, Kind, SETTINGS};
 
+use crate::theme::Theme;
+
 /// A change that went through, for the window to pass on to every tab.
 pub enum Changed {
     Config(Config),
@@ -24,7 +26,12 @@ pub struct SettingsState {
 
 /// Draw the window when it is open. `z` is the service the change goes
 /// through; the window applies what comes back to the other tabs.
-pub fn show(ctx: &egui::Context, state: &mut SettingsState, z: &Zrush) -> Option<Changed> {
+pub fn show(
+    ctx: &egui::Context,
+    state: &mut SettingsState,
+    z: &Zrush,
+    themes: &[Theme],
+) -> Option<Changed> {
     if !state.open {
         return None;
     }
@@ -37,6 +44,10 @@ pub fn show(ctx: &egui::Context, state: &mut SettingsState, z: &Zrush) -> Option
         .default_width(520.0)
         .show(ctx, |ui| {
             let cfg = z.config();
+            if let Some(c) = theme_row(ui, state, z, &cfg, themes) {
+                changed = Some(c);
+            }
+            ui.separator();
             egui::Grid::new("settings")
                 .num_columns(2)
                 .spacing([16.0, 8.0])
@@ -127,6 +138,42 @@ fn row(
         }
         Err(e) => {
             state.errors.insert(key.to_string(), e.to_string());
+            None
+        }
+    }
+}
+
+/// The theme, by its label; `auto` follows the system's light or dark.
+fn theme_row(
+    ui: &mut egui::Ui,
+    state: &mut SettingsState,
+    z: &Zrush,
+    cfg: &Config,
+    themes: &[Theme],
+) -> Option<Changed> {
+    let mut picked: Option<String> = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Theme");
+        if ui
+            .selectable_label(cfg.gui_theme == "auto", "Auto")
+            .clicked()
+        {
+            picked = Some("auto".into());
+        }
+        for t in themes {
+            if ui
+                .selectable_label(cfg.gui_theme == t.name, &t.label)
+                .clicked()
+            {
+                picked = Some(t.name.clone());
+            }
+        }
+    });
+    let name = picked?;
+    match z.edit_config(|c| c.gui_theme = name) {
+        Ok(cfg) => Some(Changed::Config(cfg)),
+        Err(e) => {
+            state.errors.insert("gui_theme".into(), e.to_string());
             None
         }
     }
@@ -245,6 +292,15 @@ mod tests {
         h.run_steps(3);
         assert!(h.query_by_label_contains("resumable_max:").is_some());
         assert_eq!(saved(&td).map(|c| c.resumable_max), before);
+    }
+
+    #[test]
+    fn picking_a_theme_saves_it() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut h = harness(two_tabs(&td));
+        h.get_by_label("Nord").click();
+        h.run_steps(2);
+        assert_eq!(saved(&td).unwrap().gui_theme, "nord");
     }
 
     #[test]

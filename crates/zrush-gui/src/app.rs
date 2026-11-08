@@ -29,6 +29,9 @@ pub struct GuiApp {
     shown_title: String,
     md: egui_commonmark::CommonMarkCache,
     settings: crate::settings::SettingsState,
+    themes: Vec<crate::theme::Theme>,
+    /// The theme name and system mode last applied, to apply on change only.
+    applied: Option<(String, bool)>,
 }
 
 impl GuiApp {
@@ -50,7 +53,14 @@ impl GuiApp {
             shown_title: String::new(),
             md: egui_commonmark::CommonMarkCache::default(),
             settings: crate::settings::SettingsState::default(),
+            themes: Vec::new(),
+            applied: None,
         };
+        let (themes, errors) = crate::theme::load_all(&app.dirs.themes_dir());
+        app.themes = themes;
+        if !errors.is_empty() {
+            app.banner = Some(format!("Some themes were skipped: {}", errors.join("; ")));
+        }
         for repo in repos {
             let tab = app.open_tab(&repo);
             // A saved repository that is gone still gets its tab, saying
@@ -122,6 +132,18 @@ impl GuiApp {
 
     pub fn tab_count(&self) -> usize {
         self.tabs().count()
+    }
+
+    /// Put the configured theme on, when it or the system's mode changed.
+    fn apply_theme(&mut self, ctx: &egui::Context) {
+        let os_dark = ctx.system_theme() != Some(egui::Theme::Light);
+        let want = (self.cfg.gui_theme.clone(), os_dark);
+        if self.applied.as_ref() == Some(&want) || self.themes.is_empty() {
+            return;
+        }
+        let t = crate::theme::pick(&self.themes, &want.0, os_dark);
+        crate::theme::apply(ctx, t);
+        self.applied = Some(want);
     }
 
     pub fn open_settings(&mut self) {
@@ -249,6 +271,7 @@ impl TabViewer for Viewer<'_> {
 
 impl eframe::App for GuiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.apply_theme(ui.ctx());
         let now = Instant::now();
         for t in self.tabs_mut() {
             t.poll();
@@ -277,7 +300,7 @@ impl eframe::App for GuiApp {
         if self.settings.open {
             if let Some(z) = self.settings_service() {
                 if let Some(crate::settings::Changed::Config(cfg)) =
-                    crate::settings::show(ui.ctx(), &mut self.settings, &z)
+                    crate::settings::show(ui.ctx(), &mut self.settings, &z, &self.themes)
                 {
                     self.apply_settings(&cfg);
                 }

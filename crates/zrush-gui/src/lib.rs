@@ -15,6 +15,7 @@ pub mod repos;
 pub mod settings;
 pub mod status;
 pub mod tab;
+pub mod theme;
 pub mod tree_view;
 
 #[cfg(test)]

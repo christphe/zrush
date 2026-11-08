@@ -1,0 +1,18 @@
+label = "Zed One Dark"
+dark = true
+
+[colors]
+window_bg = "#282c33"
+panel_bg = "#2f343e"
+text = "#dce0e5"
+muted = "#a9afbc"
+border = "#464b57"
+selection = "#394a63"
+accent = "#74ade8"
+live = "#a1c181"
+resumable = "#a9afbc"
+warning = "#dec184"
+error = "#d07277"
+code_bg = "#2f343e"
+user_turn = "#74ade8"
+agent_turn = "#be5046"

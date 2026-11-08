@@ -1,0 +1,18 @@
+label = "Solarized Light"
+dark = false
+
+[colors]
+window_bg = "#fdf6e3"
+panel_bg = "#eee8d5"
+text = "#657b83"
+muted = "#93a1a1"
+border = "#d9d2bf"
+selection = "#e4ddc8"
+accent = "#268bd2"
+live = "#859900"
+resumable = "#93a1a1"
+warning = "#b58900"
+error = "#dc322f"
+code_bg = "#eee8d5"
+user_turn = "#268bd2"
+agent_turn = "#6c71c4"
