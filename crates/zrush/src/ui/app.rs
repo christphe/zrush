@@ -10,11 +10,11 @@ use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use zrush_core::model::tree::{NodeId, Row, RowKind};
-use zrush_core::model::{GitStatus, Session, Worktree};
 
 use super::modal::{CUSTOM, Choice, Modal};
 use zrush_core::app::BranchKind;
 use zrush_core::filter;
+use zrush_core::snapshot::{RepoSnapshot, TreeView};
 
 /// The input modal that asks for an editor command line rather than a
 /// branch name. Which one is up is told by its title, the way a confirm
@@ -159,17 +159,8 @@ pub struct App {
     /// never by a key.
     pub spin: usize,
 
-    pub worktrees: Vec<Worktree>,
-    pub statuses: HashMap<PathBuf, GitStatus>,
-    pub history: HashMap<PathBuf, usize>,
-    pub live: Vec<Session>,
-    pub resumable: Vec<Session>,
-    pub scanned: bool,
-    /// Previews already fetched, and the ones a worker is fetching. Both
-    /// are keyed by `preview_key`, so moving the cursor back onto a row
-    /// costs nothing.
-    pub previews: HashMap<String, crate::ui::preview::Preview>,
-    pub preview_pending: HashSet<String>,
+    /// The repository as loaded so far, previews included.
+    pub snap: RepoSnapshot,
 
     /// Every agent installed here, and which one is being listed. The
     /// header shows it, and `:agent` picks from it.
@@ -182,9 +173,6 @@ pub struct App {
     settings_at: usize,
     /// What the open question is about, captured when it was asked.
     pending: Pending,
-    /// Branches a worktree could be opened on, for the suggestion list.
-    /// Fetched with everything else, so the input is instant.
-    pub branches: Vec<String>,
     pub agent_names: Vec<String>,
     pub active_agent: String,
     /// How the editor is named in the picker: `zed`, or the command line
@@ -227,19 +215,11 @@ impl App {
             flash: None,
             busy: None,
             spin: 0,
-            worktrees: Vec::new(),
-            statuses: HashMap::new(),
-            history: HashMap::new(),
-            live: Vec::new(),
-            resumable: Vec::new(),
-            scanned: false,
-            previews: HashMap::new(),
-            preview_pending: HashSet::new(),
+            snap: RepoSnapshot::default(),
             cfg: zrush_core::config::Config::default(),
             settings_open: false,
             settings_at: 0,
             pending: Pending::default(),
-            branches: Vec::new(),
             agent_names: Vec::new(),
             active_agent: String::new(),
             editor: String::new(),
@@ -252,18 +232,19 @@ impl App {
         }
     }
 
-    /// Identifies a row for the preview cache: a session by its id, a
-    /// worktree by its path. Stable across a reload.
+    /// Identifies a row for the preview cache: see
+    /// `zrush_core::snapshot::preview_key`.
     pub fn preview_key(row: &Row) -> Option<String> {
-        match row.kind {
-            RowKind::Session | RowKind::Orphan => {
-                row.session_id.as_ref().map(|id| format!("s:{id}"))
-            }
-            RowKind::Worktree => match &row.node {
-                NodeId::Worktree(p) => Some(format!("w:{}", p.display())),
-                NodeId::Orphans => None,
-            },
-            RowKind::Orphans | RowKind::More => None,
+        zrush_core::snapshot::preview_key(row)
+    }
+
+    /// How the tree is laid out right now, for the snapshot to build.
+    pub fn tree_view(&self) -> TreeView {
+        TreeView {
+            collapsed: self.collapsed.clone(),
+            expanded: self.expanded.clone(),
+            resumable_max: self.resumable_max,
+            show_all: self.show_all,
         }
     }
 
@@ -323,9 +304,10 @@ impl App {
         let row = self.current()?;
         let id = row.session_id.clone()?;
         let agent = self
+            .snap
             .live
             .iter()
-            .chain(self.resumable.iter())
+            .chain(self.snap.resumable.iter())
             .find(|s| s.id == id)
             .map(|s| s.agent.to_string())?;
         Some((agent, id))
@@ -339,7 +321,7 @@ impl App {
     }
 
     fn is_running(&self, id: &str) -> bool {
-        self.live.iter().any(|s| s.id == id)
+        self.snap.live.iter().any(|s| s.id == id)
     }
 
     /// The agent question: at startup when nothing settled it, and any
@@ -405,7 +387,7 @@ impl App {
     /// waiting for the first keystroke.
     fn open_branch_input(&mut self, existing: bool) {
         let suggestions = if existing {
-            self.branches.clone()
+            self.snap.branches.clone()
         } else {
             Vec::new()
         };
@@ -427,7 +409,7 @@ impl App {
     /// prefix: branches are named `fix/2358-thing` and nobody types the
     /// prefix they already know.
     fn refilter_suggestions(&mut self) {
-        let all = self.branches.clone();
+        let all = self.snap.branches.clone();
         let Some(Modal::Input {
             title,
             value,
@@ -693,9 +675,10 @@ impl App {
     /// a directory that no longer exists, which is what makes it an orphan.
     fn cwd_at_cursor(&self) -> Option<PathBuf> {
         let id = self.current()?.session_id.clone()?;
-        self.live
+        self.snap
+            .live
             .iter()
-            .chain(self.resumable.iter())
+            .chain(self.snap.resumable.iter())
             .find(|s| s.id == id)
             .map(|s| s.cwd.clone())
     }
@@ -926,6 +909,7 @@ Other zrush windows keep the old one until they restart.",
     /// goes with the worktree, so the count never says it twice.
     fn purge_plan(&self) -> (Vec<PathBuf>, Vec<(String, String)>, usize, usize) {
         let main = self
+            .snap
             .worktrees
             .iter()
             .find(|w| w.is_main)
@@ -959,9 +943,10 @@ Other zrush windows keep the old one until they restart.",
                         continue;
                     }
                     let agent = self
+                        .snap
                         .live
                         .iter()
-                        .chain(self.resumable.iter())
+                        .chain(self.snap.resumable.iter())
                         .find(|s| s.id == id)
                         .map_or_else(String::new, |s| s.agent.to_string());
                     let owner = match &row.node {
@@ -1150,7 +1135,8 @@ Other zrush windows keep the old one until they restart.",
                 let Some((agent, id)) = self.pending.session.clone() else {
                     return Action::Redraw;
                 };
-                self.worktrees
+                self.snap
+                    .worktrees
                     .iter()
                     .find(|w| w.is_main)
                     .map_or(Action::Redraw, |w| Action::AdoptSession {
@@ -1283,7 +1269,7 @@ Other zrush windows keep the old one until they restart.",
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zrush_core::model::SessionKind;
+    use zrush_core::model::{Session, SessionKind, Worktree};
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
@@ -1338,9 +1324,9 @@ mod tests {
     /// One worktree with one dead session, plus an orphan node.
     fn app() -> App {
         let mut a = App::new(20, 5);
-        a.worktrees = vec![wt("/repo", true), wt("/repo/.claude/worktrees/x", false)];
-        a.resumable = vec![session("dead", SessionKind::Resumable)];
-        a.live = vec![session("alive", SessionKind::Live)];
+        a.snap.worktrees = vec![wt("/repo", true), wt("/repo/.claude/worktrees/x", false)];
+        a.snap.resumable = vec![session("dead", SessionKind::Resumable)];
+        a.snap.live = vec![session("alive", SessionKind::Live)];
         a.set_rows(vec![
             row(
                 RowKind::Worktree,
@@ -1635,7 +1621,7 @@ mod tests {
     #[test]
     fn a_rebuild_under_the_question_does_not_move_its_target() {
         let mut a = app();
-        a.resumable.push(Session {
+        a.snap.resumable.push(Session {
             agent: "claude",
             id: "other".into(),
             title: "someone else".into(),
@@ -1748,7 +1734,7 @@ mod tests {
     /// still carries the directory it was held in.
     fn with_orphan() -> App {
         let mut a = app();
-        a.resumable[0].cwd = "/repo/.claude/worktrees/gone".into();
+        a.snap.resumable[0].cwd = "/repo/.claude/worktrees/gone".into();
         let mut rows = a.rows.clone();
         rows.push(row(
             RowKind::Orphan,
@@ -2158,7 +2144,9 @@ mod tests {
         a.on_key(code(KeyCode::Char(' '))); // worktree x
         a.on_key(code(KeyCode::Char(' '))); // its live session, which is kept
         // Now a dead session under a marked worktree.
-        a.resumable.push(session("dead2", SessionKind::Resumable));
+        a.snap
+            .resumable
+            .push(session("dead2", SessionKind::Resumable));
         let mut rows = a.rows.clone();
         rows.push(row(
             RowKind::Session,
@@ -2311,7 +2299,7 @@ mod tests {
     #[test]
     fn a_new_branch_gets_no_suggestions_to_be_mistaken_for_a_choice() {
         let mut a = app();
-        a.branches = vec!["main".into(), "feat".into()];
+        a.snap.branches = vec!["main".into(), "feat".into()];
         ask_new_branch(&mut a);
         match a.modal.as_ref().unwrap() {
             Modal::Input {
@@ -2327,7 +2315,7 @@ mod tests {
     #[test]
     fn an_existing_branch_offers_the_list_and_narrows_it_as_you_type() {
         let mut a = app();
-        a.branches = vec!["main".into(), "fix/2358-reader".into(), "feat".into()];
+        a.snap.branches = vec!["main".into(), "fix/2358-reader".into(), "feat".into()];
         a.on_key(ctrl('w'));
         a.on_key(code(KeyCode::Down));
         a.on_key(code(KeyCode::Enter));

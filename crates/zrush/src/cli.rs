@@ -273,33 +273,14 @@ fn tab(cfg: &Config, dirs: &Dirs, editor: Option<&str>, print: bool) -> Result<(
 
 /// `--list`: the rows as plain text, for a script or a quick look.
 fn list(z: &Zrush) -> Result<()> {
-    let worktrees = z.worktrees()?;
-    let live = z.live_sessions();
-    let resumable = z.resumable_sessions(&worktrees, &live, false);
-    let mut sessions = live.clone();
-    sessions.extend(resumable);
-
-    let new_root = z.new_root();
-    let assigned = zrush_core::model::tree::assign(&sessions, &worktrees, z.main_root(), &new_root);
-    let history = worktrees
-        .iter()
-        .map(|w| (w.path.clone(), z.history_count(&w.path)))
-        .collect();
-    let statuses = worktrees
-        .iter()
-        .filter_map(|w| z.status(&w.path).ok().map(|s| (w.path.clone(), s)))
-        .collect();
-
-    let rows = zrush_core::model::tree::build(&zrush_core::model::tree::TreeInput {
-        worktrees: &worktrees,
-        assigned: &assigned,
-        statuses: &statuses,
-        history: &history,
-        collapsed: &std::collections::HashSet::new(),
-        expanded: &std::collections::HashMap::new(),
-        resumable_max: z.config().resumable_max,
-        show_all: false,
-    });
+    let snap = zrush_core::snapshot::RepoSnapshot::load(z)?;
+    let rows = snap.rows(
+        z,
+        &zrush_core::snapshot::TreeView {
+            resumable_max: z.config().resumable_max,
+            ..zrush_core::snapshot::TreeView::default()
+        },
+    );
     for r in rows {
         println!(
             "{}{}\t{}\t{}\t{}",

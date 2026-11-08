@@ -9,7 +9,6 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use zrush_core::app::Zrush;
-use zrush_core::model::tree::{self, NodeId, RowKind, TreeInput};
 
 use super::app::{Action, App, Mode};
 use super::preview::Preview;
@@ -31,6 +30,7 @@ pub fn draw(f: &mut Frame, app: &App, z: &Zrush, prev: &Preview) {
         .split(f.area());
 
     let branch = app
+        .snap
         .worktrees
         .iter()
         .find(|w| w.is_main)
@@ -51,10 +51,10 @@ pub fn draw(f: &mut Frame, app: &App, z: &Zrush, prev: &Preview) {
             } else {
                 &app.active_agent
             },
-            worktrees: app.worktrees.len(),
-            live: app.live.len(),
-            resumable: app.resumable.len(),
-            loaded: app.scanned,
+            worktrees: app.snap.worktrees.len(),
+            live: app.snap.live.len(),
+            resumable: app.snap.resumable.len(),
+            loaded: app.snap.scanned,
             update: app.update.as_deref(),
         },
     );
@@ -87,7 +87,7 @@ pub fn draw(f: &mut Frame, app: &App, z: &Zrush, prev: &Preview) {
         .collect();
     let title = match app.mode {
         Mode::Purge => format!("Purge — {} marked", app.marked.len()),
-        _ => format!("Worktrees({})", app.worktrees.len()),
+        _ => format!("Worktrees({})", app.snap.worktrees.len()),
     };
     table::render(
         f,
@@ -158,71 +158,8 @@ fn status_line(f: &mut Frame, area: Rect, app: &App) {
 
 /// Rebuild the rows from whatever has arrived so far.
 pub fn rebuild(app: &mut App, z: &Zrush) {
-    let mut sessions = app.live.clone();
-    sessions.extend(app.resumable.clone());
-    let new_root = z.new_root();
-    let assigned = tree::assign(&sessions, &app.worktrees, z.main_root(), &new_root);
-
-    // Until the scan has answered, the badge shows the cheap disk count.
-    // Afterwards it counts what was actually assigned, so the two numbers
-    // can never contradict each other.
-    let history = if app.scanned {
-        let mut counted: std::collections::HashMap<std::path::PathBuf, usize> =
-            std::collections::HashMap::new();
-        for a in &assigned {
-            if let NodeId::Worktree(p) = &a.owner {
-                *counted.entry(p.clone()).or_default() += 1;
-            }
-        }
-        counted
-    } else {
-        app.history.clone()
-    };
-
-    let mut rows = tree::build(&TreeInput {
-        worktrees: &app.worktrees,
-        assigned: &assigned,
-        statuses: &app.statuses,
-        history: &history,
-        collapsed: &app.collapsed,
-        expanded: &app.expanded,
-        resumable_max: app.resumable_max,
-        show_all: app.show_all,
-    });
-    mark_misfiled(&mut rows, &sessions, z);
+    let rows = app.snap.rows(z, &app.tree_view());
     app.set_rows(rows);
-}
-
-/// Say so when a session is listed somewhere the agent would not find it.
-///
-/// zrush assigns a conversation to the worktree it last worked in; the
-/// agent files it under the one it was *started* in, and never moves it.
-/// Resuming from the row then opens an empty panel and says nothing, which
-/// is the most confusing thing zrush can do.
-fn mark_misfiled(rows: &mut [tree::Row], sessions: &[zrush_core::model::Session], z: &Zrush) {
-    for row in rows {
-        let (RowKind::Session | RowKind::Orphan) = row.kind else {
-            continue;
-        };
-        let NodeId::Worktree(worktree) = &row.node else {
-            continue;
-        };
-        let Some(id) = row.session_id.clone() else {
-            continue;
-        };
-        // A live session is already attached to its panel; where its
-        // transcript sits only matters to resuming one.
-        let Some(session) = sessions
-            .iter()
-            .find(|s| s.id == id && s.kind == zrush_core::model::SessionKind::Resumable)
-        else {
-            continue;
-        };
-        if z.filing(session.agent, &id, worktree) == zrush_core::agent::Filing::Elsewhere {
-            row.status = format!("{} · filed elsewhere", row.status);
-            row.misfiled = true;
-        }
-    }
 }
 
 /// What the preview pane should draw for the row under the cursor: whatever
@@ -230,8 +167,7 @@ fn mark_misfiled(rows: &mut [tree::Row], sessions: &[zrush_core::model::Session]
 pub fn preview_for(app: &App) -> Preview {
     app.current()
         .and_then(App::preview_key)
-        .and_then(|k| app.previews.get(&k).cloned())
-        .unwrap_or(Preview::Empty)
+        .map_or(Preview::Empty, |k| app.snap.preview(&k))
 }
 
 /// Ask for the preview of the row under the cursor, once.
@@ -239,33 +175,9 @@ pub fn want_preview(app: &mut App, z: &Arc<Zrush>, probes: &zrush_core::loader::
     let Some(row) = app.current().cloned() else {
         return;
     };
-    let Some(key) = App::preview_key(&row) else {
-        return;
-    };
-    if app.previews.contains_key(&key) || !app.preview_pending.insert(key.clone()) {
-        return;
+    if let Some((key, job)) = app.snap.want_preview(&row, &app.active_agent) {
+        probes.request_preview(z, key, job);
     }
-    let job = match row.kind {
-        RowKind::Session | RowKind::Orphan => {
-            let Some(id) = row.session_id.clone() else {
-                return;
-            };
-            let agent = app
-                .live
-                .iter()
-                .chain(app.resumable.iter())
-                .find(|s| s.id == id)
-                .map_or(app.active_agent.as_str(), |s| s.agent)
-                .to_string();
-            zrush_core::loader::PreviewJob::Conversation { agent, id }
-        }
-        RowKind::Worktree => match row.node {
-            NodeId::Worktree(p) => zrush_core::loader::PreviewJob::Worktree(p),
-            NodeId::Orphans => return,
-        },
-        RowKind::Orphans | RowKind::More => return,
-    };
-    probes.request_preview(z, key, job);
 }
 
 /// Apply one event. Returns false when the interface should stop.
@@ -276,7 +188,7 @@ pub fn apply(
     msg: crate::probe::Msg,
 ) -> bool {
     use crate::probe::Msg;
-    use zrush_core::loader::Event as E;
+    use zrush_core::snapshot::Applied;
 
     // A result from a superseded reload must not paint over the new one.
     if msg.generation().is_some_and(|g| g != probes.generation()) {
@@ -288,38 +200,10 @@ pub fn apply(
         Msg::Resize(..) => return true,
         Msg::Core(e) => e,
     };
-    match event {
-        E::Worktrees(_, w) => {
-            app.worktrees = w;
-            app.scanned = false;
-            // Whatever was fetched described the previous state of the repo.
-            app.previews.clear();
-            app.preview_pending.clear();
-            rebuild(app, z);
-        }
-        E::Status(_, p, s) => {
-            app.statuses.insert(p, s);
-            rebuild(app, z);
-        }
-        E::History(_, p, n) => {
-            app.history.insert(p, n);
-            rebuild(app, z);
-        }
-        E::Live(_, s) => {
-            app.live = s;
-            rebuild(app, z);
-        }
-        E::Branches(_, b) => app.branches = b,
-        E::Resumable(_, s) => {
-            app.resumable = s;
-            app.scanned = true;
-            rebuild(app, z);
-        }
-        E::Preview(_, key, preview) => {
-            app.preview_pending.remove(&key);
-            app.previews.insert(key, preview);
-        }
-        E::Acted(done) => {
+    match app.snap.apply(event, probes.generation()) {
+        Applied::Stale | Applied::Preview | Applied::Nothing => {}
+        Applied::Rows => rebuild(app, z),
+        Applied::Acted(done) => {
             app.busy = None;
             match done.result {
                 Ok(msg) => {
@@ -329,8 +213,8 @@ pub fn apply(
                 Err(e) => app.error(done.label, e),
             }
         }
-        E::Failed(_, e) => app.flash(e),
-        E::Update(tag) => app.update = Some(tag),
+        Applied::Failed(e) => app.flash(e),
+        Applied::Update(tag) => app.update = Some(tag),
     }
     true
 }
@@ -494,13 +378,7 @@ fn remove(
     path: std::path::PathBuf,
     with_sessions: bool,
 ) {
-    let mine: Vec<_> = app
-        .live
-        .iter()
-        .chain(app.resumable.iter())
-        .filter(|s| s.cwd.starts_with(&path))
-        .cloned()
-        .collect();
+    let mine = app.snap.sessions_in(&path);
     let z = Arc::clone(z);
     start(app, probes, "Remove worktree", move || {
         let r = z.remove_worktree(&path, &mine, with_sessions)?;
@@ -618,9 +496,9 @@ fn switch_agent(app: &mut App, z: &Arc<Zrush>, probes: &zrush_core::loader::Load
             adopt(app, &cfg);
             app.active_agent = id;
             // Everything listed belonged to the agent we just left.
-            app.live.clear();
-            app.resumable.clear();
-            app.scanned = false;
+            app.snap.live.clear();
+            app.snap.resumable.clear();
+            app.snap.scanned = false;
             rebuild(app, z);
             probes.refresh(z, app.show_all);
             if app.settings_open {
@@ -744,20 +622,20 @@ pub mod tests {
         let mut app = App::new(20, 5);
         app.active_agent = "claude".into();
         app.agent_names = vec!["claude".into()];
-        app.worktrees = z.worktrees().unwrap();
-        app.live = vec![session(
+        app.snap.worktrees = z.worktrees().unwrap();
+        app.snap.live = vec![session(
             "aaaaaaaa-1111-2222-3333-444455556666",
             "Conversion en Rust",
             repo.join(".claude/worktrees/rust").to_str().unwrap(),
             SessionKind::Live,
         )];
-        app.resumable = vec![session(
+        app.snap.resumable = vec![session(
             "bbbbbbbb-1111-2222-3333-444455556666",
             "Publier zrush sur GitHub",
             repo.to_str().unwrap(),
             SessionKind::Resumable,
         )];
-        app.scanned = true;
+        app.snap.scanned = true;
         rebuild(&mut app, &z);
         (z, app)
     }
@@ -830,14 +708,14 @@ pub mod tests {
 
         let mut app = App::new(20, 5);
         app.active_agent = "claude".into();
-        app.worktrees = z.worktrees().unwrap();
-        app.resumable = vec![session(
+        app.snap.worktrees = z.worktrees().unwrap();
+        app.snap.resumable = vec![session(
             id,
             "orphan",
             gone.to_str().unwrap(),
             SessionKind::Resumable,
         )];
-        app.scanned = true;
+        app.snap.scanned = true;
         rebuild(&mut app, &z);
         // Onto the orphan row.
         app.cursor = app
@@ -940,8 +818,8 @@ pub mod tests {
 
         let mut app = App::new(20, 5);
         app.active_agent = "claude".into();
-        app.worktrees = z.worktrees().unwrap();
-        app.resumable = vec![
+        app.snap.worktrees = z.worktrees().unwrap();
+        app.snap.resumable = vec![
             session(
                 here,
                 "filed right",
@@ -955,7 +833,7 @@ pub mod tests {
                 SessionKind::Resumable,
             ),
         ];
-        app.scanned = true;
+        app.snap.scanned = true;
         rebuild(&mut app, &z);
 
         let line = |id: &str| {
@@ -1055,9 +933,9 @@ pub mod tests {
     fn before_the_scan_lands_the_badge_is_the_cheap_disk_count() {
         let td = tempfile::TempDir::new().unwrap();
         let (z, mut app) = loaded(&td);
-        app.scanned = false;
-        app.resumable.clear();
-        app.history.insert(z.main_root().to_path_buf(), 12);
+        app.snap.scanned = false;
+        app.snap.resumable.clear();
+        app.snap.history.insert(z.main_root().to_path_buf(), 12);
         rebuild(&mut app, &z);
         let text = frame(&app, &z, 120, 20);
         assert!(text.contains("12 resumable"), "the immediate number");
@@ -1070,8 +948,8 @@ pub mod tests {
         // amount of pressing [...more] reconciles them.
         let td = tempfile::TempDir::new().unwrap();
         let (z, mut app) = loaded(&td);
-        app.history.insert(z.main_root().to_path_buf(), 12);
-        app.scanned = true;
+        app.snap.history.insert(z.main_root().to_path_buf(), 12);
+        app.snap.scanned = true;
         rebuild(&mut app, &z);
         let text = frame(&app, &z, 120, 20);
         assert!(!text.contains("12 resumable"));
@@ -1099,8 +977,14 @@ pub mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let (z, mut app) = loaded(&td);
         let key = App::preview_key(app.current().unwrap()).unwrap();
-        app.previews
-            .insert(key, Preview::Worktree(vec!["## main...origin/main".into()]));
+        app.snap.apply(
+            zrush_core::loader::Event::Preview(
+                0,
+                key,
+                Preview::Worktree(vec!["## main...origin/main".into()]),
+            ),
+            0,
+        );
         assert!(frame(&app, &z, 140, 24).contains("origin/main"));
     }
 
@@ -1108,12 +992,13 @@ pub mod tests {
     fn a_row_is_only_asked_for_once() {
         let td = tempfile::TempDir::new().unwrap();
         let (z, mut app) = loaded(&td);
-        let (tx, _rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
         let probes = crate::probe::loader(tx);
         want_preview(&mut app, &z, &probes);
-        assert_eq!(app.preview_pending.len(), 1);
         want_preview(&mut app, &z, &probes);
-        assert_eq!(app.preview_pending.len(), 1, "asked twice for the same row");
+        drop(probes);
+        let fetched = rx.iter().count();
+        assert_eq!(fetched, 1, "asked twice for the same row");
     }
 
     #[test]

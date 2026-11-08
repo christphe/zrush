@@ -136,19 +136,19 @@ mod screenshot {
         let mut app = App::new(20, 5);
         app.active_agent = "claude".into();
         app.agent_names = vec!["claude".into()];
-        app.worktrees = z.worktrees().expect("worktrees");
-        app.live = vec![
+        app.snap.worktrees = z.worktrees().expect("worktrees");
+        app.snap.live = vec![
             session("a", "refonte du picker", &repo, SessionKind::Live, "4m"),
             session("b", "port ratatui", &rust, SessionKind::Live, "0m"),
         ];
-        app.resumable = vec![session(
+        app.snap.resumable = vec![session(
             "c",
             "fix CI zip",
             &repo,
             SessionKind::Resumable,
             "2d",
         )];
-        app.scanned = true;
+        app.snap.scanned = true;
         app.cursor = 3;
         app.home = Some(base);
         screen::rebuild(&mut app, &z);
@@ -157,18 +157,23 @@ mod screenshot {
         // here. Seed the row the cursor is on: an empty pane says nothing
         // about what the pane is for.
         if let Some(key) = app.current().and_then(App::preview_key) {
-            app.previews.insert(
-                key,
-                zrush::ui::preview::Preview::Conversation(vec![
-                    Turn {
-                        role: Role::User,
-                        text: "port it to rust".into(),
-                    },
-                    Turn {
-                        role: Role::Assistant,
-                        text: "On y va. Le port garde tout ce que faisait la version sh.".into(),
-                    },
-                ]),
+            app.snap.apply(
+                zrush_core::loader::Event::Preview(
+                    0,
+                    key,
+                    zrush::ui::preview::Preview::Conversation(vec![
+                        Turn {
+                            role: Role::User,
+                            text: "port it to rust".into(),
+                        },
+                        Turn {
+                            role: Role::Assistant,
+                            text: "On y va. Le port garde tout ce que faisait la version sh."
+                                .into(),
+                        },
+                    ]),
+                ),
+                0,
             );
         }
 

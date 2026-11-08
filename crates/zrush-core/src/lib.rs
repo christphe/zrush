@@ -31,6 +31,7 @@ pub mod host;
 pub mod loader;
 pub mod model;
 pub mod paths;
+pub mod snapshot;
 pub mod state;
 pub mod surface;
 pub mod update;
