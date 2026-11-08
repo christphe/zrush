@@ -29,6 +29,7 @@ pub mod error;
 pub mod filter;
 pub mod git;
 pub mod host;
+pub mod intent;
 pub mod loader;
 pub mod model;
 pub mod paths;

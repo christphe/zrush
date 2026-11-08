@@ -14,6 +14,7 @@ use zrush_core::model::tree::{NodeId, Row, RowKind};
 use super::modal::{CUSTOM, Choice, Modal};
 use zrush_core::app::BranchKind;
 use zrush_core::filter;
+use zrush_core::intent::{self, Intent, Outcome};
 use zrush_core::snapshot::{RepoSnapshot, TreeView};
 
 /// The input modal that asks for an editor command line rather than a
@@ -24,22 +25,12 @@ pub const EDITOR_COMMAND: &str = "Editor command";
 /// The two worktree inputs. Which one is up decides what enter means: a
 /// name to cut a branch at, or a branch that already exists — and the
 /// suggestion list only makes sense under the second.
-/// `enter` on a session whose transcript is filed under another
-/// directory, which is the only case where opening it cannot resume it.
-pub const MISFILED: &str = "Filed elsewhere";
+pub use zrush_core::intent::{
+    MISFILED, MISFILED_ANYWAY, MISFILED_FILE, RESUME, RESUME_RECREATE, RESUME_ROOT,
+};
 pub const UPDATE: &str = "Update zrush";
 pub const UPDATE_NOW: &str = "Update now";
 pub const UPDATE_SKIP: &str = "Skip this version";
-pub const MISFILED_FILE: &str = "File it here and open";
-pub const MISFILED_ANYWAY: &str = "Open anyway, fresh conversation";
-
-/// Resuming an orphan. The agent files a conversation by the directory it
-/// was started in and resumes only what it finds for the current one, so
-/// putting the directory back is the answer that changes nothing else —
-/// hence the default. Moving it is a real move, and says so.
-pub const RESUME: &str = "Resume this session";
-pub const RESUME_RECREATE: &str = "Recreate its worktree";
-pub const RESUME_ROOT: &str = "Move it to the main worktree";
 
 pub const NEW_BRANCH: &str = "New branch";
 pub const EXISTING_BRANCH: &str = "Existing branch";
@@ -57,6 +48,8 @@ struct Pending {
     worktree: Option<PathBuf>,
     /// Where a recreated worktree must land: an orphan's own old path.
     at: Option<PathBuf>,
+    /// The misfiled or orphan question that is up, as core asked it.
+    question: Option<intent::Question>,
 }
 
 /// What the event loop must do once a key has been handled. Anything with a
@@ -507,6 +500,7 @@ impl App {
                     session: self.session_at_cursor(),
                     worktree: None,
                     at: None,
+                    question: None,
                 };
                 self.ask_branch_kind();
                 Action::Redraw
@@ -561,12 +555,11 @@ impl App {
         let Some(row) = self.current() else {
             return Action::None;
         };
-        let (misfiled, label) = (row.misfiled, row.label.clone());
-        match row.kind {
+        match intent::enter(row, &self.snap) {
+            Intent::Nothing => Action::None,
             // Not an action: it raises this node's cap and redraws, so enter
             // after enter keeps unfolding.
-            RowKind::More => {
-                let node = row.node.clone();
+            Intent::ShowMore(node) => {
                 let cur = self
                     .expanded
                     .get(&node)
@@ -575,37 +568,8 @@ impl App {
                 self.expanded.insert(node, cur + self.more_step);
                 Action::ReloadUncapped
             }
-            // A worktree always means a fresh session; a session means
-            // resume that one.
-            RowKind::Worktree => {
-                self.worktree_at_cursor()
-                    .map_or(Action::None, |worktree| Action::Open {
-                        worktree,
-                        bind: None,
-                    })
-            }
-            RowKind::Session => {
-                let Some(worktree) = self.worktree_at_cursor() else {
-                    return Action::None;
-                };
-                let Some(bind) = self.session_at_cursor() else {
-                    return Action::None;
-                };
-                // Filed somewhere else, this very enter is what opens an
-                // empty panel. Ask instead of doing it and saying nothing.
-                if misfiled {
-                    return self.ask_misfiled(&label, bind, worktree);
-                }
-                Action::Open {
-                    worktree,
-                    bind: Some(bind),
-                }
-            }
-            // An orphan's worktree is gone — removed, or never zrush's to
-            // begin with. The conversation outlived it, so the question is
-            // where to pick it up, and only you can answer that.
-            RowKind::Orphan => self.ask_where(),
-            RowKind::Orphans => Action::None,
+            Intent::Open { worktree, bind } => Action::Open { worktree, bind },
+            Intent::Ask(q) => self.ask(q),
         }
     }
 
@@ -627,87 +591,34 @@ impl App {
         });
     }
 
-    /// Where to resume an orphan: the main worktree, another one, or a new
-    /// one. Three answers because the third is a different question — it
-    /// asks for a branch — and folding them together would hide that.
-    fn ask_where(&mut self) -> Action {
-        let Some(row) = self.current() else {
-            return Action::None;
-        };
-        if self.session_at_cursor().is_none() {
-            return Action::None;
-        }
-        let title = row.label.trim().to_string();
-        let gone = self.cwd_at_cursor();
-        self.pending = Pending {
-            session: self.session_at_cursor(),
-            worktree: None,
-            at: gone.clone(),
-        };
-        let where_ = gone.as_ref().map_or_else(
-            || "Its worktree is gone.".to_string(),
-            |p| {
-                let name = p
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                format!("It was held in {name}, which is gone.")
-            },
-        );
-        let mut choices = Vec::new();
-        // Only offered when we know where it was: recreating it anywhere
-        // else would not bring the conversation back.
-        if gone.is_some() {
-            choices.push(Choice::new(RESUME_RECREATE));
-        }
-        choices.push(Choice::new(RESUME_ROOT));
-        choices.push(Choice::new("Cancel"));
-        self.modal = Some(Modal::Confirm {
-            title: RESUME.into(),
-            body: format!("{title}\n{where_}"),
-            choices,
-            at: 0,
-        });
-        Action::Redraw
-    }
-
-    /// Where the session under the cursor was held. For an orphan that is
-    /// a directory that no longer exists, which is what makes it an orphan.
-    fn cwd_at_cursor(&self) -> Option<PathBuf> {
-        let id = self.current()?.session_id.clone()?;
-        self.snap
-            .live
-            .iter()
-            .chain(self.snap.resumable.iter())
-            .find(|s| s.id == id)
-            .map(|s| s.cwd.clone())
-    }
-
-    /// `enter` on a session the agent would not find from here. The second
-    /// answer is what enter did before, named for what it actually does.
-    fn ask_misfiled(&mut self, label: &str, bind: (String, String), worktree: PathBuf) -> Action {
-        let name = worktree
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        self.pending = Pending {
-            session: Some(bind),
-            worktree: Some(worktree),
-            at: None,
-        };
-        self.modal = Some(Modal::Confirm {
-            title: MISFILED.into(),
-            body: format!(
-                "{}\nIt was started elsewhere, so resuming it in {name} would\nopen an empty panel.",
-                label.trim()
+    /// Put core's question up, remembering what it is about.
+    fn ask(&mut self, q: intent::Question) -> Action {
+        let (session, worktree, at) = match &q.topic {
+            intent::Topic::Misfiled {
+                agent,
+                id,
+                worktree,
+            } => (
+                Some((agent.clone(), id.clone())),
+                Some(worktree.clone()),
+                None,
             ),
-            choices: vec![
-                Choice::new(MISFILED_FILE),
-                Choice::new(MISFILED_ANYWAY),
-                Choice::new("Cancel"),
-            ],
+            intent::Topic::Orphan { agent, id, gone } => {
+                (Some((agent.clone(), id.clone())), None, gone.clone())
+            }
+        };
+        self.modal = Some(Modal::Confirm {
+            title: q.title.clone(),
+            body: q.body.clone(),
+            choices: q.choices.iter().map(|a| Choice::new(a.label())).collect(),
             at: 0,
         });
+        self.pending = Pending {
+            session,
+            worktree,
+            at,
+            question: Some(q),
+        };
         Action::Redraw
     }
 
@@ -753,6 +664,7 @@ Other zrush windows keep the old one until they restart.",
                     session: Some((agent, id)),
                     worktree: self.worktree_at_cursor(),
                     at: None,
+                    question: None,
                 };
                 self.modal = Some(Modal::Confirm {
                     title: "Delete session".into(),
@@ -770,6 +682,7 @@ Other zrush windows keep the old one until they restart.",
                     session: None,
                     worktree: Some(path.clone()),
                     at: None,
+                    question: None,
                 };
                 let node = NodeId::Worktree(path.clone());
                 let n = self
@@ -1117,33 +1030,36 @@ Other zrush windows keep the old one until they restart.",
             return Action::Redraw;
         }
         match title {
-            RESUME => {
-                // `label == CONST`, not `Some(CONST)`: an unknown name in a
-                // pattern is a binding that matches anything, which is how
-                // the first arm here once swallowed every answer.
+            RESUME | MISFILED => {
                 let picked = choices.get(at).map(|c| c.label.clone()).unwrap_or_default();
-                if picked == RESUME_RECREATE {
+                let (Some(q), Some(a)) = (
+                    self.pending.question.clone(),
+                    intent::Answer::from_label(&picked),
+                ) else {
+                    return Action::Redraw;
+                };
+                match intent::answer(&q, a, &self.snap) {
+                    Outcome::Nothing => Action::Redraw,
+                    Outcome::Open { worktree, bind } => Action::Open { worktree, bind },
+                    Outcome::Adopt {
+                        agent,
+                        id,
+                        worktree,
+                    } => Action::AdoptSession {
+                        agent,
+                        id,
+                        worktree,
+                    },
                     // Which branch it gets is a second question — git does
                     // not remember the one the removed worktree had, and
                     // `pending.at` already holds where it must land.
-                    self.ask_branch_kind();
-                    return Action::Redraw;
+                    Outcome::NeedBranch { at, hand_over } => {
+                        self.pending.at = at;
+                        self.pending.session = Some(hand_over);
+                        self.ask_branch_kind();
+                        Action::Redraw
+                    }
                 }
-                if picked != RESUME_ROOT {
-                    return Action::Redraw;
-                }
-                let Some((agent, id)) = self.pending.session.clone() else {
-                    return Action::Redraw;
-                };
-                self.snap
-                    .worktrees
-                    .iter()
-                    .find(|w| w.is_main)
-                    .map_or(Action::Redraw, |w| Action::AdoptSession {
-                        agent,
-                        id,
-                        worktree: w.path.clone(),
-                    })
             }
             "New worktree" => {
                 let existing = choices.get(at).is_some_and(|c| c.label == EXISTING_BRANCH);
@@ -1161,24 +1077,6 @@ Other zrush windows keep the old one until they restart.",
                     Action::SkipUpdate(tag)
                 } else {
                     Action::Redraw
-                }
-            }
-            MISFILED => {
-                let picked = choices.get(at).map(|c| c.label.clone()).unwrap_or_default();
-                match (self.pending.session.clone(), self.pending.worktree.clone()) {
-                    (Some((agent, id)), Some(worktree)) if picked == MISFILED_FILE => {
-                        Action::AdoptSession {
-                            agent,
-                            id,
-                            worktree,
-                        }
-                    }
-                    // What enter used to do, now chosen rather than suffered.
-                    (Some(bind), Some(worktree)) if picked == MISFILED_ANYWAY => Action::Open {
-                        worktree,
-                        bind: Some(bind),
-                    },
-                    _ => Action::Redraw,
                 }
             }
             "Delete session" => {
