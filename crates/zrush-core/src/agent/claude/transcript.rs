@@ -121,7 +121,8 @@ pub fn turns(path: &Path, tail_lines: usize, keep: usize) -> Vec<Turn> {
                 .filter_map(|p| p.get("text").and_then(serde_json::Value::as_str))
                 .filter_map(visible)
                 .collect::<Vec<_>>()
-                .join(" "),
+                // Each part a paragraph of its own.
+                .join("\n\n"),
             _ => continue,
         };
         if text.is_empty() {
@@ -152,7 +153,7 @@ const NOISE: &[&str] = &[
 ];
 
 fn visible(part: &str) -> Option<String> {
-    let t = squash(&strip_noise(part));
+    let t = tidy(&strip_noise(part));
     // Whatever is left opening with `<` is a tool-use blob, not speech.
     (!t.is_empty() && !t.starts_with('<')).then_some(t)
 }
@@ -193,6 +194,30 @@ fn open_tag(s: &str, tag: &str) -> Option<usize> {
 
 fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Speech as Markdown can still read it: line breaks and each line's
+/// indentation kept (lists, code), spaces inside a line squashed (what a
+/// cut-out block leaves behind), and never more than one blank line in a
+/// row.
+fn tidy(s: &str) -> String {
+    let mut out = String::new();
+    let mut blanks = 0;
+    for line in s.lines() {
+        let body = line.trim_start();
+        if body.is_empty() {
+            blanks += 1;
+            continue;
+        }
+        // The first line's lead is what a cut-out block left, not indent.
+        if !out.is_empty() {
+            out.push_str(if blanks > 0 { "\n\n" } else { "\n" });
+            out.push_str(&line[..line.len() - body.len()]);
+        }
+        blanks = 0;
+        out.push_str(&squash(body));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -300,6 +325,67 @@ mod tests {
             visible("said this <system-reminder>and then junk"),
             Some("said this".to_string())
         );
+    }
+
+    /// One assistant message, its text parts given as JSON strings.
+    fn said(td: &tempfile::TempDir, parts: &[&str]) -> Vec<String> {
+        let p = td.path().join("t.jsonl");
+        let parts: Vec<String> = parts
+            .iter()
+            .map(|t| {
+                format!(
+                    "{{\"type\":\"text\",\"text\":{}}}",
+                    serde_json::to_string(t).unwrap()
+                )
+            })
+            .collect();
+        std::fs::write(
+            &p,
+            format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{}]}}}}\n",
+                parts.join(",")
+            ),
+        )
+        .unwrap();
+        turns(&p, 400, 14).into_iter().map(|t| t.text).collect()
+    }
+
+    #[test]
+    fn markdown_keeps_its_line_breaks() {
+        let td = tempfile::TempDir::new().unwrap();
+        let md = "Plan:\n\n- one\n- two\n\n```rs\nfn x() {}\n```";
+        assert_eq!(said(&td, &[md]), vec![md.to_string()]);
+    }
+
+    #[test]
+    fn indentation_is_kept_for_nested_lists_and_code() {
+        let td = tempfile::TempDir::new().unwrap();
+        let md = "- a\n  - b\n\n```\nif x {\n    y();\n}\n```";
+        assert_eq!(said(&td, &[md]), vec![md.to_string()]);
+    }
+
+    #[test]
+    fn two_text_parts_are_two_paragraphs() {
+        let td = tempfile::TempDir::new().unwrap();
+        assert_eq!(
+            said(&td, &["First.", "Second."]),
+            vec!["First.\n\nSecond.".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_thinking_block_cut_out_leaves_no_blank_lead() {
+        let td = tempfile::TempDir::new().unwrap();
+        assert_eq!(
+            said(&td, &["<thinking>x</thinking>\n\nAnswer"]),
+            vec!["Answer".to_string()]
+        );
+    }
+
+    #[test]
+    fn blank_lines_never_pile_up() {
+        let td = tempfile::TempDir::new().unwrap();
+        assert_eq!(said(&td, &["a\n\n\n\nb"]), vec!["a\n\nb".to_string()]);
     }
 
     #[test]

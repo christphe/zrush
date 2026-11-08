@@ -7,7 +7,7 @@
 # Rust nor a checkout.
 #
 #   irm https://raw.githubusercontent.com/christphe/zrush/main/bootstrap.ps1 | iex
-#   & ([scriptblock]::Create((irm .../bootstrap.ps1))) v0.0.3      that release
+#   & ([scriptblock]::Create((irm .../bootstrap.ps1))) v0.0.4      that release
 #   & ([scriptblock]::Create((irm .../bootstrap.ps1))) -Nightly    last green main, via gh
 #
 # Keep this file ASCII: Windows PowerShell 5.1 reads a file without a BOM

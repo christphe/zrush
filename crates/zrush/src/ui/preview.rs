@@ -17,14 +17,7 @@ use zrush_core::agent::{Role, Turn};
 
 use super::theme;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Preview {
-    /// Nothing to show, or nothing fetched yet.
-    Empty,
-    /// Lines of `git status` and `git log`, already fetched.
-    Worktree(Vec<String>),
-    Conversation(Vec<Turn>),
-}
+pub use zrush_core::loader::Preview;
 
 pub fn render(f: &mut Frame, area: Rect, preview: &Preview) {
     let block = Block::default()
@@ -87,12 +80,12 @@ fn conversation(turns: &[Turn], width: usize) -> Vec<Line<'static>> {
 }
 
 /// Word wrap, breaking a word too long for a line of its own. The text
-/// arrives with its whitespace already squashed, so splitting on spaces is
-/// the whole job.
+/// keeps its line breaks for Markdown; here any whitespace, a line break
+/// included, is just a gap between words, so the turn flows as one text.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut rows: Vec<String> = Vec::new();
     let mut row = String::new();
-    for word in text.split(' ') {
+    for word in text.split_whitespace() {
         let mut word = word;
         if !row.is_empty() && row.chars().count() + 1 + word.chars().count() > width {
             rows.push(std::mem::take(&mut row));
@@ -195,6 +188,13 @@ mod tests {
         );
         assert_eq!(wrap("ab cd", 4), vec!["ab".to_string(), "cd".to_string()]);
         assert_eq!(wrap("", 4), vec![String::new()]);
+    }
+
+    #[test]
+    fn a_line_break_wraps_like_a_space() {
+        // Core keeps a conversation's line breaks for the GUI's Markdown;
+        // the preview flows the text the way it always has.
+        assert_eq!(wrap("a\n\n- b\n  c", 80), vec!["a - b c".to_string()]);
     }
 
     #[test]

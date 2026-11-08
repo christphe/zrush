@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 dirs.workspace = true
+nucleo-matcher.workspace = true
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true

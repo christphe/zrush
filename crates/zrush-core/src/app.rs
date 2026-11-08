@@ -65,6 +65,40 @@ pub struct Zrush {
     /// changes which agent is listed.
     editor: std::sync::Mutex<String>,
     host: Box<dyn Host>,
+    /// What the command line forced for this run (`-S`), applied again on
+    /// every reload: the file is the base, these sit on top, and none of
+    /// them is ever written back.
+    overrides: std::sync::Mutex<Vec<Override>>,
+}
+
+type Override = Box<dyn Fn(&mut Config) + Send + Sync>;
+
+/// Which repository to open: the one named explicitly, then the one the
+/// current directory is inside, then the configured default.
+///
+/// `cwd` is only asked when nothing was named: the shell may be standing
+/// in a directory that no longer exists, a worktree zrush just removed.
+pub fn locate(
+    explicit: Option<&Path>,
+    cwd: impl FnOnce() -> std::io::Result<PathBuf>,
+    cfg: &Config,
+) -> Result<PathBuf> {
+    if let Some(p) = explicit {
+        if !p.is_dir() {
+            return Err(ZrushError::msg(format!("not a directory: {}", p.display())));
+        }
+        return Ok(p.to_path_buf());
+    }
+    let cwd = cwd()?;
+    if git::absolute_git_dir(&cwd).is_ok() {
+        return Ok(cwd);
+    }
+    match &cfg.default_repo {
+        Some(p) if p.is_dir() => Ok(p.clone()),
+        _ => Err(ZrushError::msg(
+            "not inside a git repository. Use --repo <path>, or set default_repo in the config",
+        )),
+    }
 }
 
 /// A typed command line is what the user sees; otherwise the editor's name.
@@ -112,6 +146,7 @@ impl Zrush {
                 must_choose: AtomicBool::new(false),
                 missing_configured: None,
                 host,
+                overrides: std::sync::Mutex::new(Vec::new()),
             });
         }
 
@@ -136,7 +171,33 @@ impl Zrush {
             must_choose: AtomicBool::new(must_choose),
             missing_configured,
             host,
+            overrides: std::sync::Mutex::new(Vec::new()),
         })
+    }
+
+    /// The service over `repo` with every installed agent, which is what
+    /// any interface wants. `no_sessions` means not looking for sessions at
+    /// all: no agents, and so `agent` has nothing left to select and is
+    /// dropped rather than failing to match an empty list.
+    pub fn for_repo(
+        dirs: &Dirs,
+        cfg: &Config,
+        repo: PathBuf,
+        host: Box<dyn Host>,
+        no_sessions: bool,
+        agent: Option<&str>,
+    ) -> Result<Self> {
+        if no_sessions {
+            return Self::new(dirs.clone(), cfg.clone(), repo, Vec::new(), host, None);
+        }
+        Self::new(
+            dirs.clone(),
+            cfg.clone(),
+            repo,
+            crate::agent::available(),
+            host,
+            agent,
+        )
     }
 
     pub fn dirs(&self) -> &Dirs {
@@ -155,9 +216,25 @@ impl Zrush {
     /// the terminal it now has; everything else is read per use, so it
     /// takes effect on the next probe.
     pub fn reload_config(&self) -> Result<Config> {
-        let fresh = Config::load(&self.dirs)?;
+        let mut fresh = Config::load(&self.dirs)?;
+        if let Ok(overrides) = self.overrides.lock() {
+            for o in overrides.iter() {
+                o(&mut fresh);
+            }
+        }
         self.apply(fresh.clone());
         Ok(fresh)
+    }
+
+    /// Force part of the config for the rest of this run, now and after
+    /// every reload, without ever saving it.
+    pub fn keep_override(&self, f: impl Fn(&mut Config) + Send + Sync + 'static) {
+        let mut cfg = self.config();
+        f(&mut cfg);
+        self.apply(cfg);
+        if let Ok(mut overrides) = self.overrides.lock() {
+            overrides.push(Box::new(f));
+        }
     }
 
     /// Replace the live config and push what the host caches out of it.
@@ -176,11 +253,15 @@ impl Zrush {
     /// Change one setting, save, and reload. Saving and reloading rather
     /// than mutating in place: the file is the truth, and a write that did
     /// not land must not leave the interface claiming it did.
+    ///
+    /// The change lands on the file as it is now, not on this process's
+    /// copy: another zrush may have written since, and the environment's
+    /// overrides are not settings to persist.
     pub fn edit_config<F>(&self, f: F) -> Result<Config>
     where
         F: FnOnce(&mut Config),
     {
-        let mut cfg = self.config();
+        let mut cfg = Config::load_file(&self.dirs)?;
         f(&mut cfg);
         cfg.save(&self.dirs)?;
         self.reload_config()
@@ -1090,6 +1171,154 @@ mod tests {
         let id = "aaaaaaaa-1111-2222-3333-444455556666";
         z.open(&dest, Some(("claude", id))).unwrap();
         assert_eq!(z.binding(&dest).unwrap().agent.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn the_flag_outranks_the_current_directory() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let other = td.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        assert_eq!(
+            locate(Some(&other), || Ok(repo.clone()), &Config::default()).unwrap(),
+            other
+        );
+    }
+
+    #[test]
+    fn a_named_repo_does_not_need_a_current_directory() {
+        // The shell may stand in a worktree zrush just removed: asking for
+        // the current directory then fails, and must not when it is unused.
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let gone = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(locate(Some(&repo), gone, &Config::default()).unwrap(), repo);
+    }
+
+    #[test]
+    fn a_flag_that_is_not_a_directory_is_refused() {
+        let td = tempfile::TempDir::new().unwrap();
+        let missing = td.path().join("missing");
+        let e = locate(
+            Some(&missing),
+            || Ok(td.path().to_path_buf()),
+            &Config::default(),
+        )
+        .unwrap_err();
+        assert!(e.to_string().starts_with("not a directory: "));
+    }
+
+    #[test]
+    fn inside_a_repo_the_current_directory_is_used() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        assert_eq!(
+            locate(None, || Ok(repo.clone()), &Config::default()).unwrap(),
+            repo
+        );
+    }
+
+    #[test]
+    fn outside_a_repo_the_default_repo_is_used() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let outside = td.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let cfg = Config {
+            default_repo: Some(repo.clone()),
+            ..Config::default()
+        };
+        assert_eq!(locate(None, || Ok(outside.clone()), &cfg).unwrap(), repo);
+    }
+
+    #[test]
+    fn nowhere_to_go_says_how_to_fix_it() {
+        let td = tempfile::TempDir::new().unwrap();
+        let e = locate(None, || Ok(td.path().to_path_buf()), &Config::default()).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("Use --repo <path>, or set default_repo in the config")
+        );
+    }
+
+    #[test]
+    fn no_sessions_means_no_agents_and_ignores_the_agent_asked_for() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = Zrush::for_repo(
+            &crate::config::dirs_under(td.path()),
+            &Config::default(),
+            scratch(&td),
+            Box::new(RecordingHost::default()),
+            true,
+            Some("nonexistent"),
+        )
+        .unwrap();
+        assert!(z.agents().is_empty());
+    }
+
+    #[test]
+    fn an_agent_asked_for_by_name_must_exist() {
+        let td = tempfile::TempDir::new().unwrap();
+        let r = Zrush::for_repo(
+            &crate::config::dirs_under(td.path()),
+            &Config::default(),
+            scratch(&td),
+            Box::new(RecordingHost::default()),
+            false,
+            Some("nonexistent"),
+        );
+        assert!(r.is_err());
+    }
+
+    /// What config.toml says, with no environment applied.
+    fn on_disk(td: &tempfile::TempDir) -> Config {
+        let dirs = crate::config::dirs_under(td.path());
+        toml::from_str(&std::fs::read_to_string(dirs.config_file()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn two_services_editing_the_config_keep_both_changes() {
+        // A TUI and a GUI open on the same config, each with its own copy.
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let a = zrush(&td, repo.clone());
+        let b = zrush(&td, repo);
+        a.edit_config(|c| c.more_step = 33).unwrap();
+        b.edit_config(|c| c.resumable_max = 9).unwrap();
+        let saved = on_disk(&td);
+        assert_eq!(saved.more_step, 33);
+        assert_eq!(saved.resumable_max, 9);
+    }
+
+    #[test]
+    fn a_command_line_override_outlives_a_settings_change() {
+        // `zrush -S`: no status column for this run, whatever the file says,
+        // even after a setting is saved and the config reloaded.
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch(&td));
+        z.keep_override(|c| c.status = false);
+        assert!(!z.config().status);
+        z.edit_config(|c| c.more_step = 3).unwrap();
+        assert!(!z.config().status, "the flag must survive the reload");
+        assert!(on_disk(&td).status, "and never be written to the file");
+    }
+
+    #[test]
+    fn an_env_override_is_never_saved() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        Config::default()
+            .save(&crate::config::dirs_under(td.path()))
+            .unwrap();
+        // The in-memory editor stands for one ZRUSH_EDITOR put there.
+        let cfg = Config {
+            editor: "from-env".into(),
+            ..Config::default()
+        };
+        let z = with(&td, repo, cfg, crate::agent::all(), None);
+        z.edit_config(|c| c.more_step = 7).unwrap();
+        assert_eq!(on_disk(&td).editor, "zed");
+        assert_eq!(on_disk(&td).more_step, 7);
     }
 
     /// Lets a test keep a handle on the host the service owns.

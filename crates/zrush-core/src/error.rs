@@ -10,6 +10,9 @@ pub enum ZrushError {
     NotARepo(PathBuf),
     #[error("git {args} failed: {stderr}")]
     Git { args: String, stderr: String },
+    /// Nothing to start: no agent asked for, and none installed to list.
+    #[error("no agent installed")]
+    NoAgent,
     #[error("missing dependency: {0}")]
     MissingDependency(&'static str),
     #[error("config: {0}")]

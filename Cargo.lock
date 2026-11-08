@@ -2541,13 +2541,12 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zrush"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "assert_cmd",
  "clap",
  "crossterm",
  "insta",
- "nucleo-matcher",
  "portable-pty",
  "predicates",
  "ratatui",
@@ -2558,10 +2557,11 @@ dependencies = [
 
 [[package]]
 name = "zrush-core"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "dirs",
  "jiff",
+ "nucleo-matcher",
  "serde",
  "serde_json",
  "tempfile",

@@ -39,7 +39,7 @@ pub fn current() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// A release version: `v1.2.3`, `1.2.3`, `1.2.3-rc.1`. Build metadata is
+/// A release version: `v1.2.3`, `cli-v1.2.3`, `1.2.3`, `1.2.3-rc.1`. Build metadata is
 /// ignored, anything else is not a version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Version {
@@ -50,7 +50,12 @@ pub struct Version {
 impl Version {
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
-        let s = s.strip_prefix('v').unwrap_or(s);
+        // CLI releases are tagged `cli-vX.Y.Z` from 0.0.5 on, beside the
+        // GUI's `gui-vX.Y.Z`; any other prefix is not the CLI's to install.
+        let s = s
+            .strip_prefix("cli-v")
+            .or_else(|| s.strip_prefix('v'))
+            .unwrap_or(s);
         let s = s.split('+').next()?;
         let (core, pre) = match s.split_once('-') {
             Some((c, p)) if !p.is_empty() => (c, Some(p.to_string())),
@@ -300,6 +305,23 @@ mod tests {
     #[test]
     fn garbage_is_not_a_version() {
         for s in ["", "v", "nightly", "1.2", "1.2.3.4", "1.x.3", "1.2.3-"] {
+            assert_eq!(Version::parse(s), None, "{s}");
+        }
+    }
+
+    #[test]
+    fn a_cli_tag_is_a_version() {
+        assert_eq!(v("cli-v0.0.5"), v("0.0.5"));
+        assert_eq!(
+            newer("cli-v0.0.5", "0.0.4", None).as_deref(),
+            Some("cli-v0.0.5")
+        );
+    }
+
+    #[test]
+    fn a_gui_tag_is_never_offered_to_the_cli() {
+        assert_eq!(newer("gui-v9.9.9", "0.0.4", None), None);
+        for s in ["gui-v1.2.3", "desktop-v1.2.3", "cli-1.2.3", "xcli-v1.2.3"] {
             assert_eq!(Version::parse(s), None, "{s}");
         }
     }
