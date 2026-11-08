@@ -12,9 +12,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use zrush_core::model::tree::{NodeId, Row, RowKind};
 use zrush_core::model::{GitStatus, Session, Worktree};
 
-use super::filter;
 use super::modal::{CUSTOM, Choice, Modal};
 use zrush_core::app::BranchKind;
+use zrush_core::filter;
 
 /// The input modal that asks for an editor command line rather than a
 /// branch name. Which one is up is told by its title, the way a confirm

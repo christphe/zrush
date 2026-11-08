@@ -30,9 +30,9 @@
 //!   sessions, and matching a session keeps the worktree that says where it
 //!   lives.
 
+use crate::model::tree::{Row, RowKind};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
-use zrush_core::model::tree::{Row, RowKind};
 
 /// How a needle is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,7 +209,7 @@ pub fn hits(rows: &[Row], needle: &str) -> Vec<Hit> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zrush_core::model::tree::NodeId;
+    use crate::model::tree::NodeId;
 
     fn node(label: &str, location: &str) -> Row {
         Row {

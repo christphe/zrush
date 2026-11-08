@@ -1,7 +1,6 @@
 //! The terminal interface.
 
 pub mod app;
-pub mod filter;
 pub mod header;
 pub mod modal;
 pub mod preview;

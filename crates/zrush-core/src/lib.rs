@@ -25,6 +25,7 @@ pub mod agent;
 pub mod app;
 pub mod config;
 pub mod error;
+pub mod filter;
 pub mod git;
 pub mod host;
 pub mod model;

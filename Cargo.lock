@@ -2547,7 +2547,6 @@ dependencies = [
  "clap",
  "crossterm",
  "insta",
- "nucleo-matcher",
  "portable-pty",
  "predicates",
  "ratatui",
@@ -2562,6 +2561,7 @@ version = "0.0.3"
 dependencies = [
  "dirs",
  "jiff",
+ "nucleo-matcher",
  "serde",
  "serde_json",
  "tempfile",
