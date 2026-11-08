@@ -72,27 +72,6 @@ pub enum Command {
     Update,
 }
 
-/// Where the repo comes from: the flag, then the current directory, then
-/// the configured default.
-fn locate(cli: &Cli, cfg: &Config) -> Result<PathBuf> {
-    if let Some(p) = &cli.repo {
-        if !p.is_dir() {
-            return Err(ZrushError::msg(format!("not a directory: {}", p.display())));
-        }
-        return Ok(p.clone());
-    }
-    let here = std::env::current_dir()?;
-    if zrush_core::git::absolute_git_dir(&here).is_ok() {
-        return Ok(here);
-    }
-    match &cfg.default_repo {
-        Some(p) if p.is_dir() => Ok(p.clone()),
-        _ => Err(ZrushError::msg(
-            "not inside a git repository. Use --repo <path>, or set default_repo in the config",
-        )),
-    }
-}
-
 pub fn main() -> Result<()> {
     let cli = Cli::parse();
     let dirs = Dirs::from_env()?;
@@ -106,7 +85,14 @@ pub fn main() -> Result<()> {
         Some(Command::Tab { editor, print }) => return tab(&cfg, &dirs, editor.as_deref(), *print),
         Some(Command::Update) => return update(),
         Some(Command::Sessions { path }) => {
-            let z = build(&cli, &cfg, &dirs, path.clone(), Box::new(NullHost))?;
+            let z = Zrush::for_repo(
+                &dirs,
+                &cfg,
+                path.clone(),
+                Box::new(NullHost),
+                cli.no_sessions,
+                cli.agent.as_deref(),
+            )?;
             let live = z.live_sessions();
             for s in &live {
                 println!("{}\t● {}  ({})", s.id, s.title, s.status);
@@ -120,13 +106,20 @@ pub fn main() -> Result<()> {
         None => {}
     }
 
-    let repo = locate(&cli, &cfg)?;
+    let repo = zrush_core::app::locate(cli.repo.as_deref(), &std::env::current_dir()?, &cfg)?;
     let host: Box<dyn Host> = if cli.list {
         Box::new(NullHost)
     } else {
         Box::new(ProcessHost::new(&cfg))
     };
-    let z = Arc::new(build(&cli, &cfg, &dirs, repo, host)?);
+    let z = Arc::new(Zrush::for_repo(
+        &dirs,
+        &cfg,
+        repo,
+        host,
+        cli.no_sessions,
+        cli.agent.as_deref(),
+    )?);
 
     // Derived data only, safe to drop: keep a month.
     zrush_core::agent::claude::cache::sweep(&dirs, 30);
@@ -220,29 +213,6 @@ zrush {tag} is installed. Start zrush again to use it; other zrush windows keep 
         update::current()
     );
     Ok(())
-}
-
-fn build(
-    cli: &Cli,
-    cfg: &Config,
-    dirs: &Dirs,
-    repo: PathBuf,
-    host: Box<dyn Host>,
-) -> Result<Zrush> {
-    // -n means: do not go looking for sessions at all. With no agent to
-    // list, naming one has nothing left to select, so -a is dropped rather
-    // than failing to match an empty list.
-    if cli.no_sessions {
-        return Zrush::new(dirs.clone(), cfg.clone(), repo, Vec::new(), host, None);
-    }
-    Zrush::new(
-        dirs.clone(),
-        cfg.clone(),
-        repo,
-        agent::available(),
-        host,
-        cli.agent.as_deref(),
-    )
 }
 
 /// `zrush tab`: the conversation bound to the worktree we are standing in,

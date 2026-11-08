@@ -67,6 +67,26 @@ pub struct Zrush {
     host: Box<dyn Host>,
 }
 
+/// Which repository to open: the one named explicitly, then the one `cwd`
+/// is inside, then the configured default.
+pub fn locate(explicit: Option<&Path>, cwd: &Path, cfg: &Config) -> Result<PathBuf> {
+    if let Some(p) = explicit {
+        if !p.is_dir() {
+            return Err(ZrushError::msg(format!("not a directory: {}", p.display())));
+        }
+        return Ok(p.to_path_buf());
+    }
+    if git::absolute_git_dir(cwd).is_ok() {
+        return Ok(cwd.to_path_buf());
+    }
+    match &cfg.default_repo {
+        Some(p) if p.is_dir() => Ok(p.clone()),
+        _ => Err(ZrushError::msg(
+            "not inside a git repository. Use --repo <path>, or set default_repo in the config",
+        )),
+    }
+}
+
 /// A typed command line is what the user sees; otherwise the editor's name.
 fn editor_label(cfg: &Config) -> String {
     if cfg.editor_cmd.is_empty() {
@@ -137,6 +157,31 @@ impl Zrush {
             missing_configured,
             host,
         })
+    }
+
+    /// The service over `repo` with every installed agent, which is what
+    /// any interface wants. `no_sessions` means not looking for sessions at
+    /// all: no agents, and so `agent` has nothing left to select and is
+    /// dropped rather than failing to match an empty list.
+    pub fn for_repo(
+        dirs: &Dirs,
+        cfg: &Config,
+        repo: PathBuf,
+        host: Box<dyn Host>,
+        no_sessions: bool,
+        agent: Option<&str>,
+    ) -> Result<Self> {
+        if no_sessions {
+            return Self::new(dirs.clone(), cfg.clone(), repo, Vec::new(), host, None);
+        }
+        Self::new(
+            dirs.clone(),
+            cfg.clone(),
+            repo,
+            crate::agent::available(),
+            host,
+            agent,
+        )
     }
 
     pub fn dirs(&self) -> &Dirs {
@@ -1094,6 +1139,85 @@ mod tests {
         let id = "aaaaaaaa-1111-2222-3333-444455556666";
         z.open(&dest, Some(("claude", id))).unwrap();
         assert_eq!(z.binding(&dest).unwrap().agent.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn the_flag_outranks_the_current_directory() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let other = td.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        assert_eq!(
+            locate(Some(&other), &repo, &Config::default()).unwrap(),
+            other
+        );
+    }
+
+    #[test]
+    fn a_flag_that_is_not_a_directory_is_refused() {
+        let td = tempfile::TempDir::new().unwrap();
+        let missing = td.path().join("missing");
+        let e = locate(Some(&missing), td.path(), &Config::default()).unwrap_err();
+        assert!(e.to_string().starts_with("not a directory: "));
+    }
+
+    #[test]
+    fn inside_a_repo_the_current_directory_is_used() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        assert_eq!(locate(None, &repo, &Config::default()).unwrap(), repo);
+    }
+
+    #[test]
+    fn outside_a_repo_the_default_repo_is_used() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let outside = td.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let cfg = Config {
+            default_repo: Some(repo.clone()),
+            ..Config::default()
+        };
+        assert_eq!(locate(None, &outside, &cfg).unwrap(), repo);
+    }
+
+    #[test]
+    fn nowhere_to_go_says_how_to_fix_it() {
+        let td = tempfile::TempDir::new().unwrap();
+        let e = locate(None, td.path(), &Config::default()).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("Use --repo <path>, or set default_repo in the config")
+        );
+    }
+
+    #[test]
+    fn no_sessions_means_no_agents_and_ignores_the_agent_asked_for() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = Zrush::for_repo(
+            &crate::config::dirs_under(td.path()),
+            &Config::default(),
+            scratch(&td),
+            Box::new(RecordingHost::default()),
+            true,
+            Some("nonexistent"),
+        )
+        .unwrap();
+        assert!(z.agents().is_empty());
+    }
+
+    #[test]
+    fn an_agent_asked_for_by_name_must_exist() {
+        let td = tempfile::TempDir::new().unwrap();
+        let r = Zrush::for_repo(
+            &crate::config::dirs_under(td.path()),
+            &Config::default(),
+            scratch(&td),
+            Box::new(RecordingHost::default()),
+            false,
+            Some("nonexistent"),
+        );
+        assert!(r.is_err());
     }
 
     /// What config.toml says, with no environment applied.
