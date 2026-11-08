@@ -3,7 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    # v* until 0.0.4; CLI releases are cli-v* after it (gui-v* is the GUI).
+    tags: ["v*", "cli-v*"]
   pull_request:
   workflow_dispatch:
 
@@ -109,7 +110,7 @@ jobs:
       # tag is a release and offers updates; main is a nightly and does not.
       - run: cargo build --release --locked --target ${{ matrix.target }} -p zrush
         env:
-          ZRUSH_CHANNEL: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || 'nightly' }}
+          ZRUSH_CHANNEL: ${{ (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/cli-v')) && 'release' || 'nightly' }}
 
       # What ships is what install.sh expects to find next to it: the
       # binary, the installer, and the Zed files it copies. Windows gets
@@ -142,7 +143,7 @@ jobs:
       # A tag, and only a tag, publishes. One archive per target, each with
       # its own checksum: five jobs writing one SHA256SUMS would race.
       - name: Archive
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/cli-v'))
         id: archive
         shell: bash
         run: |
@@ -164,7 +165,7 @@ jobs:
           echo "file=$file" >> "$GITHUB_OUTPUT"
 
       - name: Publish
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: (startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/tags/cli-v'))
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
