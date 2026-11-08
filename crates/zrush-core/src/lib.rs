@@ -28,8 +28,12 @@ pub mod error;
 pub mod filter;
 pub mod git;
 pub mod host;
+pub mod loader;
 pub mod model;
 pub mod paths;
 pub mod state;
 pub mod surface;
 pub mod update;
+
+#[cfg(test)]
+pub mod testing;

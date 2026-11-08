@@ -235,7 +235,7 @@ pub fn preview_for(app: &App) -> Preview {
 }
 
 /// Ask for the preview of the row under the cursor, once.
-pub fn want_preview(app: &mut App, z: &Arc<Zrush>, probes: &crate::probe::Probes) {
+pub fn want_preview(app: &mut App, z: &Arc<Zrush>, probes: &zrush_core::loader::Loader) {
     let Some(row) = app.current().cloned() else {
         return;
     };
@@ -257,10 +257,10 @@ pub fn want_preview(app: &mut App, z: &Arc<Zrush>, probes: &crate::probe::Probes
                 .find(|s| s.id == id)
                 .map_or(app.active_agent.as_str(), |s| s.agent)
                 .to_string();
-            crate::probe::PreviewJob::Conversation { agent, id }
+            zrush_core::loader::PreviewJob::Conversation { agent, id }
         }
         RowKind::Worktree => match row.node {
-            NodeId::Worktree(p) => crate::probe::PreviewJob::Worktree(p),
+            NodeId::Worktree(p) => zrush_core::loader::PreviewJob::Worktree(p),
             NodeId::Orphans => return,
         },
         RowKind::Orphans | RowKind::More => return,
@@ -272,19 +272,23 @@ pub fn want_preview(app: &mut App, z: &Arc<Zrush>, probes: &crate::probe::Probes
 pub fn apply(
     app: &mut App,
     z: &Arc<Zrush>,
-    probes: &crate::probe::Probes,
-    event: crate::probe::Event,
+    probes: &zrush_core::loader::Loader,
+    msg: crate::probe::Msg,
 ) -> bool {
-    use crate::probe::Event as E;
+    use crate::probe::Msg;
+    use zrush_core::loader::Event as E;
 
     // A result from a superseded reload must not paint over the new one.
-    if event.generation().is_some_and(|g| g != probes.generation()) {
+    if msg.generation().is_some_and(|g| g != probes.generation()) {
         return true;
     }
 
+    let event = match msg {
+        Msg::Key(k) => return handle(app, z, probes, k),
+        Msg::Resize(..) => return true,
+        Msg::Core(e) => e,
+    };
     match event {
-        E::Key(k) => return handle(app, z, probes, k),
-        E::Resize(..) => {}
         E::Worktrees(_, w) => {
             app.worktrees = w;
             app.scanned = false;
@@ -334,7 +338,7 @@ pub fn apply(
 fn handle(
     app: &mut App,
     z: &Arc<Zrush>,
-    probes: &crate::probe::Probes,
+    probes: &zrush_core::loader::Loader,
     key: crossterm::event::KeyEvent,
 ) -> bool {
     app.flash = None;
@@ -452,7 +456,7 @@ fn run_agent(
 /// Hand a long action to a worker and put the spinner up. A second one is
 /// refused rather than queued: two `git worktree` commands at once on the
 /// same repository is not something to find out about afterwards.
-fn start<F>(app: &mut App, probes: &crate::probe::Probes, label: &str, f: F)
+fn start<F>(app: &mut App, probes: &zrush_core::loader::Loader, label: &str, f: F)
 where
     F: FnOnce() -> zrush_core::error::Result<String> + Send + 'static,
 {
@@ -468,7 +472,7 @@ where
 fn create(
     app: &mut App,
     z: &Arc<Zrush>,
-    probes: &crate::probe::Probes,
+    probes: &zrush_core::loader::Loader,
     name: String,
     kind: zrush_core::app::BranchKind,
     at: Option<std::path::PathBuf>,
@@ -486,7 +490,7 @@ fn create(
 fn remove(
     app: &mut App,
     z: &Arc<Zrush>,
-    probes: &crate::probe::Probes,
+    probes: &zrush_core::loader::Loader,
     path: std::path::PathBuf,
     with_sessions: bool,
 ) {
@@ -512,7 +516,7 @@ fn remove(
 fn purge(
     app: &mut App,
     z: &Arc<Zrush>,
-    probes: &crate::probe::Probes,
+    probes: &zrush_core::loader::Loader,
     worktrees: Vec<std::path::PathBuf>,
     sessions: Vec<(String, String)>,
 ) {
@@ -548,7 +552,7 @@ fn purge(
 fn settings_done(
     app: &mut App,
     z: &Arc<Zrush>,
-    probes: &crate::probe::Probes,
+    probes: &zrush_core::loader::Loader,
     key: &str,
     r: zrush_core::error::Result<zrush_core::config::Config>,
 ) {
@@ -602,7 +606,7 @@ fn set_editor(app: &mut App, z: &Arc<Zrush>, saved: &zrush_core::error::Result<(
     }
 }
 
-fn switch_agent(app: &mut App, z: &Arc<Zrush>, probes: &crate::probe::Probes, id: String) {
+fn switch_agent(app: &mut App, z: &Arc<Zrush>, probes: &zrush_core::loader::Loader, id: String) {
     // Switching is what the interface lists; remembering it is what the
     // next run starts on. It used to do only the first, so the choice was
     // forgotten every time.
@@ -640,8 +644,8 @@ pub fn run(
 ) -> zrush_core::error::Result<Option<String>> {
     let mut term = ratatui::init();
     let (tx, rx) = mpsc::channel();
-    let probes = crate::probe::Probes::new(tx);
-    probes.spawn_input();
+    let probes = crate::probe::loader(tx.clone());
+    crate::probe::spawn_input(tx);
     probes.refresh(z, false);
     if check_updates {
         probes.spawn_update_check(z.dirs().clone());
@@ -843,7 +847,7 @@ pub mod tests {
             .unwrap();
 
         let (tx, rx) = mpsc::channel();
-        let probes = crate::probe::Probes::new(tx);
+        let probes = crate::probe::loader(tx);
         handle(&mut app, &z, &probes, key(crossterm::event::KeyCode::Enter));
         handle(&mut app, &z, &probes, key(crossterm::event::KeyCode::Down));
         handle(&mut app, &z, &probes, key(crossterm::event::KeyCode::Enter));
@@ -851,7 +855,7 @@ pub mod tests {
         // The worker answers; nothing else is listening.
         let done = rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
         match done {
-            crate::probe::Event::Acted(d) => d.result.unwrap(),
+            crate::probe::Msg::Core(zrush_core::loader::Event::Acted(d)) => d.result.unwrap(),
             other => panic!("expected the action to finish: {other:?}"),
         };
 
@@ -872,7 +876,7 @@ pub mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let z = zrush(&td, scratch_repo(&td));
         let (tx, _rx) = mpsc::channel();
-        let probes = crate::probe::Probes::new(tx);
+        let probes = crate::probe::loader(tx);
         let mut app = App::new(20, 5);
         app.cfg = z.config();
 
@@ -1009,7 +1013,7 @@ pub mod tests {
     #[test]
     fn a_second_long_action_is_refused_while_one_runs() {
         let (tx, _rx) = mpsc::channel();
-        let probes = crate::probe::Probes::new(tx);
+        let probes = crate::probe::loader(tx);
         let mut app = App::new(20, 5);
         app.busy = Some("remove worktree".into());
 
@@ -1105,7 +1109,7 @@ pub mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let (z, mut app) = loaded(&td);
         let (tx, _rx) = mpsc::channel();
-        let probes = crate::probe::Probes::new(tx);
+        let probes = crate::probe::loader(tx);
         want_preview(&mut app, &z, &probes);
         assert_eq!(app.preview_pending.len(), 1);
         want_preview(&mut app, &z, &probes);
@@ -1117,12 +1121,12 @@ pub mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let (z, mut app) = loaded(&td);
         let (tx, rx) = mpsc::channel();
-        let probes = crate::probe::Probes::new(tx);
+        let probes = crate::probe::loader(tx);
         want_preview(&mut app, &z, &probes);
         drop(probes);
         let events: Vec<_> = rx.iter().collect();
         let found = events.iter().any(|e| {
-            matches!(e, crate::probe::Event::Preview(_, _, Preview::Worktree(lines))
+            matches!(e, crate::probe::Msg::Core(zrush_core::loader::Event::Preview(_, _, Preview::Worktree(lines)))
                 if lines.iter().any(|l| l.contains("init")))
         });
         assert!(found, "the git log never came back: {events:?}");

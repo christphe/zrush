@@ -17,14 +17,7 @@ use zrush_core::agent::{Role, Turn};
 
 use super::theme;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Preview {
-    /// Nothing to show, or nothing fetched yet.
-    Empty,
-    /// Lines of `git status` and `git log`, already fetched.
-    Worktree(Vec<String>),
-    Conversation(Vec<Turn>),
-}
+pub use zrush_core::loader::Preview;
 
 pub fn render(f: &mut Frame, area: Rect, preview: &Preview) {
     let block = Block::default()
