@@ -22,6 +22,10 @@ pub struct SettingsState {
     drafts: HashMap<String, String>,
     errors: HashMap<String, String>,
     custom_editor: String,
+    /// The config as saved (file, then environment), read when the window
+    /// needs it and again after each change. Not the service's live copy:
+    /// that one carries the window's own overrides.
+    saved: Option<Config>,
 }
 
 /// Draw the window when it is open. `z` is the service the change goes
@@ -43,7 +47,14 @@ pub fn show(
         .resizable(true)
         .default_width(520.0)
         .show(ctx, |ui| {
-            let cfg = z.config();
+            let cfg = match state.saved.clone() {
+                Some(c) => c,
+                None => {
+                    let c = Config::load(z.dirs()).unwrap_or_else(|_| z.config());
+                    state.saved = Some(c.clone());
+                    c
+                }
+            };
             if let Some(c) = theme_row(ui, state, z, &cfg, themes) {
                 changed = Some(c);
             }
@@ -62,6 +73,9 @@ pub fn show(
                 });
         });
     state.open = open;
+    if changed.is_some() {
+        state.saved = None;
+    }
     changed
 }
 
@@ -292,6 +306,16 @@ mod tests {
         h.run_steps(3);
         assert!(h.query_by_label_contains("resumable_max:").is_some());
         assert_eq!(saved(&td).map(|c| c.resumable_max), before);
+    }
+
+    #[test]
+    fn settings_show_what_is_saved_not_the_windows_own_override() {
+        // The window reads whole conversations by overriding preview_turns
+        // for itself; the settings must show, and keep, the saved value.
+        let td = tempfile::TempDir::new().unwrap();
+        let h = harness(two_tabs(&td));
+        let field = h.get_by_label("preview_turns");
+        assert_eq!(field.value().as_deref(), Some("14"));
     }
 
     #[test]
