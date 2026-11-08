@@ -12,6 +12,7 @@ pub mod conversation;
 pub mod dialog;
 pub mod panes;
 pub mod repos;
+pub mod settings;
 pub mod status;
 pub mod tab;
 pub mod tree_view;

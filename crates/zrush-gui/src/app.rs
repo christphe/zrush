@@ -28,6 +28,7 @@ pub struct GuiApp {
     /// The title last sent to the window, so it is only sent on change.
     shown_title: String,
     md: egui_commonmark::CommonMarkCache,
+    settings: crate::settings::SettingsState,
 }
 
 impl GuiApp {
@@ -48,6 +49,7 @@ impl GuiApp {
             banner: None,
             shown_title: String::new(),
             md: egui_commonmark::CommonMarkCache::default(),
+            settings: crate::settings::SettingsState::default(),
         };
         for repo in repos {
             let tab = app.open_tab(&repo);
@@ -122,6 +124,29 @@ impl GuiApp {
         self.tabs().count()
     }
 
+    pub fn open_settings(&mut self) {
+        self.settings.open = true;
+    }
+
+    /// A setting changed through one tab's service: every other tab reads
+    /// the file again, and all of them ask again with the new values.
+    fn apply_settings(&mut self, cfg: &Config) {
+        self.cfg = cfg.clone();
+        for t in self.tabs_mut() {
+            if let Some(z) = t.zrush() {
+                let _ = z.reload_config();
+            }
+            t.view.resumable_max = cfg.resumable_max;
+            t.refresh();
+        }
+    }
+
+    /// The service settings go through: the first tab whose repository
+    /// opened. Any would do, they share one config file.
+    fn settings_service(&self) -> Option<Arc<zrush_core::app::Zrush>> {
+        self.tabs().find_map(|t| t.zrush().cloned())
+    }
+
     pub fn window_title(&self) -> String {
         let live: usize = self.tabs().map(Tab::live_count).sum();
         if live > 0 {
@@ -163,6 +188,11 @@ impl GuiApp {
             if ui.button("Browse…").clicked() {
                 pick = rfd::FileDialog::new().pick_folder();
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Settings").clicked() {
+                    self.settings.open = !self.settings.open;
+                }
+            });
             if let Some(p) = pick {
                 match self.add_repo(&p) {
                     Ok(()) => {
@@ -243,6 +273,18 @@ impl eframe::App for GuiApp {
         });
         if !viewer.closed.is_empty() {
             self.save_repos();
+        }
+        if self.settings.open {
+            if let Some(z) = self.settings_service() {
+                if let Some(crate::settings::Changed::Config(cfg)) =
+                    crate::settings::show(ui.ctx(), &mut self.settings, &z)
+                {
+                    self.apply_settings(&cfg);
+                }
+            } else {
+                self.settings.open = false;
+                self.banner = Some("Open a repository to change the settings".into());
+            }
         }
         // Idle tabs still ask again now and then.
         ui.ctx().request_repaint_after(REFRESH_EVERY);
