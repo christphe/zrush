@@ -8,8 +8,12 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod app;
+pub mod conversation;
+pub mod panes;
 pub mod repos;
+pub mod status;
 pub mod tab;
+pub mod tree_view;
 
 #[cfg(test)]
 pub mod testing;

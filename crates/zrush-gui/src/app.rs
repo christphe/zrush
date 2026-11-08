@@ -27,6 +27,7 @@ pub struct GuiApp {
     banner: Option<String>,
     /// The title last sent to the window, so it is only sent on change.
     shown_title: String,
+    md: egui_commonmark::CommonMarkCache,
 }
 
 impl GuiApp {
@@ -46,6 +47,7 @@ impl GuiApp {
             new_repo: String::new(),
             banner: None,
             shown_title: String::new(),
+            md: egui_commonmark::CommonMarkCache::default(),
         };
         for repo in repos {
             let tab = app.open_tab(&repo);
@@ -183,11 +185,12 @@ impl GuiApp {
 }
 
 /// Draws one tab; collects what was closed, to be saved after the frame.
-struct Viewer {
+struct Viewer<'a> {
     closed: Vec<PathBuf>,
+    md: &'a mut egui_commonmark::CommonMarkCache,
 }
 
-impl TabViewer for Viewer {
+impl TabViewer for Viewer<'_> {
     type Tab = Tab;
 
     fn id(&mut self, tab: &mut Tab) -> egui::Id {
@@ -202,12 +205,8 @@ impl TabViewer for Viewer {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Tab) {
-        if let Some(e) = &tab.error {
-            ui.colored_label(ui.visuals().error_fg_color, e.as_str());
-        }
-        for row in tab.rows() {
-            ui.label(format!("{}{}", row.glyph, row.label));
-        }
+        // Task 6 puts the question up; until then it is dropped.
+        let _ = crate::panes::show(ui, tab, self.md);
     }
 
     fn on_close(&mut self, tab: &mut Tab) -> OnCloseResponse {
@@ -231,7 +230,10 @@ impl eframe::App for GuiApp {
         }
 
         egui::Panel::top("bar").show(ui, |ui| self.top_bar(ui));
-        let mut viewer = Viewer { closed: Vec::new() };
+        let mut viewer = Viewer {
+            closed: Vec::new(),
+            md: &mut self.md,
+        };
         egui::CentralPanel::default().show(ui, |ui| {
             DockArea::new(&mut self.dock)
                 .style(Style::from_egui(ui.style().as_ref()))

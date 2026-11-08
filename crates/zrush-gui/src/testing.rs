@@ -57,3 +57,44 @@ pub fn zrush(td: &tempfile::TempDir, repo: PathBuf) -> Arc<Zrush> {
         .unwrap(),
     )
 }
+
+pub const SESSION_ID: &str = "aaaaaaaa-1111-2222-3333-444455556666";
+pub const SESSION_TITLE: &str = "port zrush to rust";
+
+/// A resumable conversation held in `cwd`, filed where Claude Code would
+/// file it under the scratch `claude_projects`: `turns` alternate user and
+/// agent, starting with the user.
+pub fn with_session(td: &tempfile::TempDir, cwd: &Path, turns: &[&str]) {
+    let dir = dirs_under(td.path())
+        .claude_projects
+        .join(zrush_core::agent::claude::projects::slugify(cwd));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cwd_json = serde_json_string(&cwd.to_string_lossy());
+    let mut lines = vec![format!(
+        "{{\"type\":\"ai-title\",\"aiTitle\":\"{SESSION_TITLE}\"}}"
+    )];
+    for (i, text) in turns.iter().enumerate() {
+        let text = serde_json_string(text);
+        let line = if i % 2 == 0 {
+            format!(
+                "{{\"type\":\"user\",\"message\":{{\"content\":{text}}},\"cwd\":{cwd_json},\"timestamp\":\"2026-11-08T10:00:00.000Z\"}}"
+            )
+        } else {
+            format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":{text}}}]}},\"cwd\":{cwd_json},\"timestamp\":\"2026-11-08T10:00:01.000Z\"}}"
+            )
+        };
+        lines.push(line);
+    }
+    std::fs::write(
+        dir.join(format!("{SESSION_ID}.jsonl")),
+        lines.join("\n") + "\n",
+    )
+    .unwrap();
+}
+
+/// A JSON string literal, quotes included. Rust's `Debug` escaping is
+/// JSON's for everything these fixtures hold.
+fn serde_json_string(s: &str) -> String {
+    format!("{s:?}")
+}

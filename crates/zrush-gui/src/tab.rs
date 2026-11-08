@@ -7,11 +7,14 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
+use zrush_core::actions;
 use zrush_core::app::Zrush;
 use zrush_core::config::{Config, Dirs};
+use zrush_core::error::ZrushError;
 use zrush_core::host::Host;
+use zrush_core::intent::{self, Intent, Question};
 use zrush_core::loader::{Event, Loader, Preview, Sink};
-use zrush_core::model::tree::Row;
+use zrush_core::model::tree::{NodeId, Row};
 use zrush_core::snapshot::{Applied, RepoSnapshot, TreeView, preview_key};
 
 /// Called after every loader result, from the loader's threads: the window
@@ -176,6 +179,65 @@ impl Tab {
         if let Some((key, job)) = self.snap.want_preview(row, listed) {
             l.loader.request_preview(&l.z, key, job);
         }
+    }
+
+    /// What enter does on this row: open now, unfold more, or a question
+    /// for the window to put up.
+    pub fn enter(&mut self, row: &Row) -> Option<Question> {
+        let l = self.live.as_ref()?;
+        match intent::enter(row, &self.snap) {
+            Intent::Nothing => None,
+            Intent::Ask(q) => Some(q),
+            Intent::Open { worktree, bind } => {
+                let bind = bind.as_ref().map(|(a, i)| (a.as_str(), i.as_str()));
+                if let Err(e) = l.z.open(&worktree, bind) {
+                    self.error = Some(format!("Open: {e}"));
+                }
+                None
+            }
+            Intent::ShowMore(node) => {
+                let step = l.z.config().more_step;
+                let cur = self
+                    .view
+                    .expanded
+                    .get(&node)
+                    .copied()
+                    .unwrap_or(self.view.resumable_max);
+                self.view.expanded.insert(node, cur + step);
+                self.last_refresh = Instant::now();
+                l.loader.refresh(&l.z, true);
+                None
+            }
+        }
+    }
+
+    /// The agent in a terminal of its own: resuming this row's session, or
+    /// a fresh one in this row's worktree.
+    pub fn run_agent(&mut self, row: &Row) {
+        let Some(l) = &self.live else {
+            return;
+        };
+        let NodeId::Worktree(worktree) = &row.node else {
+            return;
+        };
+        let session = row
+            .session_id
+            .as_deref()
+            .and_then(|id| self.snap.session(id))
+            .map(|s| (s.agent, s.id.as_str()));
+        match actions::run_agent(&l.z, worktree, session) {
+            Ok(()) => {}
+            Err(ZrushError::NoAgent) => self.flash = Some("no agent installed".into()),
+            Err(e) => self.error = Some(format!("New session: {e}")),
+        }
+    }
+
+    /// The row currently shown on the right, if it is still listed.
+    pub fn selected_row(&self) -> Option<&Row> {
+        let key = self.selected.as_ref()?;
+        self.rows
+            .iter()
+            .find(|r| preview_key(r).as_ref() == Some(key))
     }
 
     pub fn preview(&self) -> Preview {
