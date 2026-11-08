@@ -8,7 +8,9 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use zrush_core::actions;
 use zrush_core::app::Zrush;
+use zrush_core::error::ZrushError;
 
 use super::app::{Action, App, Mode};
 use super::preview::Preview;
@@ -252,15 +254,9 @@ fn handle(
             id,
             worktree,
         } => {
-            let z2 = Arc::clone(z);
-            let w = worktree.clone();
+            let z = Arc::clone(z);
             start(app, probes, "Resume this session", move || {
-                z2.adopt_session(&agent, &id, &w)?;
-                // Some, not None: None means "a fresh conversation here" and
-                // clears the association adopt_session just wrote, which is
-                // the whole point of adopting it.
-                z2.open(&w, Some((&agent, &id)))?;
-                Ok(format!("moved to {}", w.display()))
+                actions::adopt(&z, &agent, &id, &worktree)
             });
         }
         Action::DeleteSession {
@@ -270,8 +266,7 @@ fn handle(
         } => {
             let z = Arc::clone(z);
             start(app, probes, "Delete session", move || {
-                let n = z.delete_session(&agent, &id, false, worktree.as_deref())?;
-                Ok(format!("deleted {n} file(s)"))
+                actions::delete_session(&z, &agent, &id, worktree.as_deref())
             });
         }
         Action::RemoveWorktree {
@@ -326,15 +321,12 @@ fn run_agent(
     worktree: &std::path::Path,
     session: Option<&(String, String)>,
 ) {
-    // The session's own agent outranks the one being listed: a worktree
-    // bound under another agent still resumes correctly.
-    let listed = z.active_agent().map(zrush_core::agent::Agent::id);
-    let Some(agent) = session.map(|(a, _)| a.as_str()).or(listed) else {
-        app.flash("no agent installed");
-        return;
-    };
-    let resume = session.map(|(_, i)| i.as_str());
-    report(app, "New session", z.run_agent(worktree, agent, resume));
+    let session = session.map(|(a, i)| (a.as_str(), i.as_str()));
+    match actions::run_agent(z, worktree, session) {
+        // Nothing to start is a line, not an error box.
+        Err(ZrushError::NoAgent) => app.flash("no agent installed"),
+        r => report(app, "New session", r),
+    }
 }
 
 /// Hand a long action to a worker and put the spinner up. A second one is
@@ -364,10 +356,8 @@ fn create(
 ) {
     let z = Arc::clone(z);
     start(app, probes, "New worktree", move || {
-        let dest = z.create_worktree_at(at.as_deref(), &name, kind)?;
         let bind = hand_over.as_ref().map(|(a, i)| (a.as_str(), i.as_str()));
-        z.open(&dest, bind)?;
-        Ok(format!("created {name}"))
+        actions::create(&z, &name, kind, at.as_deref(), bind)
     });
 }
 
@@ -381,11 +371,7 @@ fn remove(
     let mine = app.snap.sessions_in(&path);
     let z = Arc::clone(z);
     start(app, probes, "Remove worktree", move || {
-        let r = z.remove_worktree(&path, &mine, with_sessions)?;
-        Ok(format!(
-            "removed, {} transcript(s) deleted, {} running kept",
-            r.transcripts, r.running_kept
-        ))
+        actions::remove(&z, &path, &mine, with_sessions)
     });
 }
 
@@ -400,27 +386,7 @@ fn purge(
 ) {
     let z = Arc::clone(z);
     start(app, probes, "Purge", move || {
-        let mut removed = 0;
-        let mut refused = 0;
-        for p in &worktrees {
-            if z.remove_worktree(p, &[], false).is_ok() {
-                removed += 1;
-            } else {
-                refused += 1;
-            }
-        }
-        let gone: usize = sessions
-            .iter()
-            .map(|(a, i)| z.delete_session(a, i, false, None).unwrap_or(0))
-            .sum();
-        let kept = if refused > 0 {
-            format!(", {refused} kept: git refused")
-        } else {
-            String::new()
-        };
-        Ok(format!(
-            "purged {removed} worktree(s), {gone} transcript(s){kept}"
-        ))
+        actions::purge(&z, &worktrees, &sessions)
     });
 }
 
@@ -488,10 +454,7 @@ fn switch_agent(app: &mut App, z: &Arc<Zrush>, probes: &zrush_core::loader::Load
     // Switching is what the interface lists; remembering it is what the
     // next run starts on. It used to do only the first, so the choice was
     // forgotten every time.
-    match z
-        .set_active_agent(&id)
-        .and_then(|()| z.edit_config(|c| c.agent = Some(id.clone())))
-    {
+    match actions::switch_agent(z, &id) {
         Ok(cfg) => {
             adopt(app, &cfg);
             app.active_agent = id;

@@ -21,6 +21,7 @@
 // non-test build of this same crate still denies both.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod actions;
 pub mod agent;
 pub mod app;
 pub mod config;
