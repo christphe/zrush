@@ -169,10 +169,27 @@ fn strip_noise(part: &str) -> String {
             let end = s[open..]
                 .find(&close)
                 .map_or(s.len(), |j| open + j + close.len());
-            s.replace_range(open..end, " ");
+            cut(&mut s, open, end);
         }
     }
     s
+}
+
+/// Remove `s[start..end]` and the spaces right after it, so the block
+/// leaves no gap behind — and the spaces before it too when it ended the
+/// line. Two words it sat between keep one space.
+fn cut(s: &mut String, start: usize, end: usize) {
+    let after = s[end..]
+        .find(|c: char| c != ' ' && c != '\t')
+        .map_or(s.len(), |i| end + i);
+    let line_ends = after == s.len() || s[after..].starts_with(['\n', '\r']);
+    let before = if line_ends {
+        s[..start].trim_end_matches([' ', '\t']).len()
+    } else {
+        start
+    };
+    let joins_words = before > 0 && !s[..before].ends_with(char::is_whitespace) && !line_ends;
+    s.replace_range(before..after, if joins_words { " " } else { "" });
 }
 
 /// Where `<tag>` opens, if it does. The name has to end there: `<think`
@@ -196,26 +213,25 @@ fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Speech as Markdown can still read it: line breaks and each line's
-/// indentation kept (lists, code), spaces inside a line squashed (what a
-/// cut-out block leaves behind), and never more than one blank line in a
-/// row.
+/// Speech as Markdown can read it: every character kept, except trailing
+/// spaces on a line, blank lines piling up, and blank lines at either end.
 fn tidy(s: &str) -> String {
     let mut out = String::new();
     let mut blanks = 0;
     for line in s.lines() {
-        let body = line.trim_start();
-        if body.is_empty() {
+        let line = line.trim_end();
+        if line.is_empty() {
             blanks += 1;
             continue;
         }
-        // The first line's lead is what a cut-out block left, not indent.
-        if !out.is_empty() {
+        if out.is_empty() {
+            // The first line's lead is what a cut-out block left, not indent.
+            out.push_str(line.trim_start());
+        } else {
             out.push_str(if blanks > 0 { "\n\n" } else { "\n" });
-            out.push_str(&line[..line.len() - body.len()]);
+            out.push_str(line);
         }
         blanks = 0;
-        out.push_str(&squash(body));
     }
     out
 }
@@ -288,12 +304,13 @@ mod tests {
     }
 
     #[test]
-    fn turns_drop_thinking_blocks_and_squash_whitespace() {
+    fn turns_drop_thinking_blocks() {
+        // The text as written: the terminal flows it, Markdown needs it.
         let td = tempfile::TempDir::new().unwrap();
         let p = td.path().join("t.jsonl");
         std::fs::write(&p, T).unwrap();
         let texts: Vec<String> = turns(&p, 400, 14).into_iter().map(|t| t.text).collect();
-        assert!(texts.iter().any(|t| t == "and now this"));
+        assert!(texts.iter().any(|t| t == "and	now   this"));
         assert!(texts.iter().any(|t| t == "done"));
         assert!(!texts.iter().any(|t| t.contains("hidden")));
     }
@@ -361,6 +378,25 @@ mod tests {
     fn indentation_is_kept_for_nested_lists_and_code() {
         let td = tempfile::TempDir::new().unwrap();
         let md = "- a\n  - b\n\n```\nif x {\n    y();\n}\n```";
+        assert_eq!(said(&td, &[md]), vec![md.to_string()]);
+    }
+
+    #[test]
+    fn a_code_block_keeps_its_alignment() {
+        let td = tempfile::TempDir::new().unwrap();
+        let md = "```
+let a  = 1;
+let bc = 2;
+```";
+        assert_eq!(said(&td, &[md]), vec![md.to_string()]);
+    }
+
+    #[test]
+    fn a_table_keeps_its_columns() {
+        let td = tempfile::TempDir::new().unwrap();
+        let md = "| a  | b |
+|----|---|
+| 1  | 2 |";
         assert_eq!(said(&td, &[md]), vec![md.to_string()]);
     }
 
