@@ -145,6 +145,14 @@ impl RepoSnapshot {
         rows
     }
 
+    /// Drop every session, keeping the worktrees: what was listed belonged
+    /// to an agent that is no longer the one being looked at.
+    pub fn forget_sessions(&mut self) {
+        self.live.clear();
+        self.resumable.clear();
+        self.scanned = false;
+    }
+
     /// A session by id: running ones first, then the ones that can resume.
     pub fn session(&self, id: &str) -> Option<&Session> {
         self.live
@@ -381,6 +389,23 @@ mod tests {
         let first = s.want_preview(&row, "claude");
         assert!(matches!(first, Some((_, PreviewJob::Worktree(_)))));
         assert!(s.want_preview(&row, "claude").is_none());
+    }
+
+    #[test]
+    fn forgetting_sessions_keeps_the_worktrees() {
+        let mut s = RepoSnapshot::default();
+        s.apply(Event::Worktrees(1, vec![wt("/a", true)]), 1);
+        s.apply(
+            Event::Live(1, vec![session("l", "/a", SessionKind::Live)]),
+            1,
+        );
+        s.apply(
+            Event::Resumable(1, vec![session("r", "/a", SessionKind::Resumable)]),
+            1,
+        );
+        s.forget_sessions();
+        assert!(s.live.is_empty() && s.resumable.is_empty() && !s.scanned);
+        assert_eq!(s.worktrees.len(), 1);
     }
 
     #[test]

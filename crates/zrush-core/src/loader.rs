@@ -161,7 +161,9 @@ impl Loader {
             spawn_status(&z, &sink, round, &worktrees);
             // Two `for-each-ref` calls, so it rides along here rather than
             // making ctrl-w wait for git.
-            let _ = sink(Event::Branches(round, z.openable_branches()));
+            if !sink(Event::Branches(round, z.openable_branches())) {
+                return;
+            }
 
             // These two are sequential because they have to be: the scan
             // must know which sessions are already running, so it does not
@@ -396,6 +398,44 @@ mod tests {
         p.refresh(&z, false);
         let events = drain(p, &rx);
         assert!(events.iter().any(|e| matches!(e, Event::Failed(..))));
+    }
+
+    #[test]
+    fn a_tab_closed_mid_round_stops_its_workers() {
+        // The window listens to the worktree list, then the tab is closed:
+        // every later send is refused, and the slow part — asking the agent
+        // what is running — must not start.
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch_repo(&td));
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+        let log = Arc::clone(&seen);
+        let sink: Sink = Arc::new(move |e| {
+            let kind = match e {
+                Event::Worktrees(..) => "Worktrees",
+                Event::Status(..) => "Status",
+                Event::History(..) => "History",
+                Event::Live(..) => "Live",
+                Event::Resumable(..) => "Resumable",
+                Event::Branches(..) => "Branches",
+                _ => "other",
+            };
+            let mut v = log.lock().unwrap();
+            v.push(kind);
+            kind == "Worktrees"
+        });
+        Loader::new(sink).refresh(&z, false);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && !seen.lock().unwrap().contains(&"Branches") {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.contains(&"Branches"),
+            "the round got that far: {seen:?}"
+        );
+        assert!(!seen.contains(&"Live"), "{seen:?}");
+        assert!(!seen.contains(&"Resumable"), "{seen:?}");
     }
 
     #[test]
