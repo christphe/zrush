@@ -176,11 +176,15 @@ impl Zrush {
     /// Change one setting, save, and reload. Saving and reloading rather
     /// than mutating in place: the file is the truth, and a write that did
     /// not land must not leave the interface claiming it did.
+    ///
+    /// The change lands on the file as it is now, not on this process's
+    /// copy: another zrush may have written since, and the environment's
+    /// overrides are not settings to persist.
     pub fn edit_config<F>(&self, f: F) -> Result<Config>
     where
         F: FnOnce(&mut Config),
     {
-        let mut cfg = self.config();
+        let mut cfg = Config::load_file(&self.dirs)?;
         f(&mut cfg);
         cfg.save(&self.dirs)?;
         self.reload_config()
@@ -1090,6 +1094,44 @@ mod tests {
         let id = "aaaaaaaa-1111-2222-3333-444455556666";
         z.open(&dest, Some(("claude", id))).unwrap();
         assert_eq!(z.binding(&dest).unwrap().agent.as_deref(), Some("claude"));
+    }
+
+    /// What config.toml says, with no environment applied.
+    fn on_disk(td: &tempfile::TempDir) -> Config {
+        let dirs = crate::config::dirs_under(td.path());
+        toml::from_str(&std::fs::read_to_string(dirs.config_file()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn two_services_editing_the_config_keep_both_changes() {
+        // A TUI and a GUI open on the same config, each with its own copy.
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let a = zrush(&td, repo.clone());
+        let b = zrush(&td, repo);
+        a.edit_config(|c| c.more_step = 33).unwrap();
+        b.edit_config(|c| c.resumable_max = 9).unwrap();
+        let saved = on_disk(&td);
+        assert_eq!(saved.more_step, 33);
+        assert_eq!(saved.resumable_max, 9);
+    }
+
+    #[test]
+    fn an_env_override_is_never_saved() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        Config::default()
+            .save(&crate::config::dirs_under(td.path()))
+            .unwrap();
+        // The in-memory editor stands for one ZRUSH_EDITOR put there.
+        let cfg = Config {
+            editor: "from-env".into(),
+            ..Config::default()
+        };
+        let z = with(&td, repo, cfg, crate::agent::all(), None);
+        z.edit_config(|c| c.more_step = 7).unwrap();
+        assert_eq!(on_disk(&td).editor, "zed");
+        assert_eq!(on_disk(&td).more_step, 7);
     }
 
     /// Lets a test keep a handle on the host the service owns.

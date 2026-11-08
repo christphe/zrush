@@ -128,8 +128,16 @@ impl Config {
     /// shell `config` beside it is imported once and written back as TOML,
     /// so an existing setup survives the upgrade. The old file is left alone.
     pub fn load(dirs: &Dirs) -> Result<Self> {
+        let mut cfg = Self::load_file(dirs)?;
+        cfg.apply_env(|k| std::env::var(k).ok());
+        Ok(cfg)
+    }
+
+    /// What the file says, with no environment applied: the base a change
+    /// is written on top of, so an override never ends up saved.
+    pub fn load_file(dirs: &Dirs) -> Result<Self> {
         let path = dirs.config_file();
-        let mut cfg = if path.exists() {
+        let cfg = if path.exists() {
             let text = std::fs::read_to_string(&path)?;
             toml::from_str(&text).map_err(|e| ZrushError::Config(e.to_string()))?
         } else if dirs.legacy_config_file().exists() {
@@ -140,7 +148,6 @@ impl Config {
         } else {
             Self::default()
         };
-        cfg.apply_env(|k| std::env::var(k).ok());
         Ok(cfg)
     }
 
