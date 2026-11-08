@@ -173,8 +173,9 @@ New crate `crates/zrush-gui`, binary `zrush-gui`, depending on
 - **Right panel**: the selected session's conversation as the transcript
   reader returns it (no turn cap for the GUI's read, which never reaches
   the user's config; the 400-line tail stays), re-read when the tab
-  refreshes. The reader joins a turn's text parts with a space, which can
-  break Markdown; joining with a newline is the builder's call. User and
+  refreshes. The reader squashes all whitespace, which flattens Markdown;
+  Phase 1 makes it keep line breaks and the TUI flows the text itself
+  (builder's call). User and
   agent turns are distinguished, Markdown rendered, scrolled to the
   bottom on open. A selected worktree shows its git status/log preview.
   Header buttons: "Open in IDE" (binds the session, as the TUI's enter)
