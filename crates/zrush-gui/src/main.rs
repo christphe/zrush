@@ -1,5 +1,6 @@
 //! The `zrush-gui` binary: the window, over every repository it had open.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use zrush_core::config::{Config, Dirs};
@@ -23,7 +24,8 @@ fn main() -> eframe::Result<()> {
             let wake = Arc::new(move || ctx.request_repaint());
             Ok(match load() {
                 Ok((dirs, cfg)) => {
-                    let repos = zrush_gui::repos::initial(&cfg, std::env::current_dir);
+                    let named = std::env::args_os().skip(1).map(PathBuf::from).collect();
+                    let repos = zrush_gui::repos::initial(&cfg, named, std::env::current_dir);
                     Box::new(GuiApp::new(
                         dirs,
                         cfg,

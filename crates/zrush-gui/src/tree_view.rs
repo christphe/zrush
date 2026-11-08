@@ -99,9 +99,10 @@ fn group(
         .iter()
         .any(|c| kind_of(tab, c) == Some(SessionKind::Live));
     let id = ui.make_persistent_id(("node", &head.node));
-    let root = head.label.contains("[root]");
+    let root = head.facts.root;
+    let count = children.len();
     egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, root || live)
-        .show_header(ui, |ui| header(ui, head, root, selected, acts))
+        .show_header(ui, |ui| header(ui, head, count, selected, acts))
         .body(|ui| {
             if children.is_empty() {
                 ui.weak("No sessions yet");
@@ -114,12 +115,18 @@ fn group(
 
 /// A worktree's line: its branch, what it holds, and the button that
 /// opens it.
-fn header(ui: &mut egui::Ui, head: &Row, root: bool, selected: Option<&str>, acts: &mut Vec<Act>) {
+fn header(
+    ui: &mut egui::Ui,
+    head: &Row,
+    children: usize,
+    selected: Option<&str>,
+    acts: &mut Vec<Act>,
+) {
+    let root = head.facts.root;
     let muted = ui.visuals().weak_text_color();
     let picked = selected.is_some() && preview_key(head).as_deref() == selected;
-    let name = head.label.replace(" [root]", "");
     let label = ui
-        .selectable_label(picked, RichText::new(name.trim()).strong())
+        .selectable_label(picked, RichText::new(head.search.as_str()).strong())
         .on_hover_text(&head.location);
     if label.clicked() {
         acts.push(Act::Select(head.clone()));
@@ -156,7 +163,7 @@ fn header(ui: &mut egui::Ui, head: &Row, root: bool, selected: Option<&str>, act
             )
             .on_hover_text("git status: ~ changed, + staged, ? untracked, ↑↓ ahead/behind");
         }
-        let badge = head.badge.trim_start_matches(['●', '◌', ' ']);
+        let badge = badge(head, children);
         if !badge.is_empty() {
             ui.label(RichText::new(badge).small().color(muted));
         }
@@ -187,7 +194,7 @@ fn child(ui: &mut egui::Ui, tab: &Tab, row: &Row, selected: Option<&str>, acts: 
         );
     }
     let kind = kind_of(tab, row);
-    let (when, when_colour) = when(row, kind, ui);
+    let (when, when_colour) = when(tab, row, ui);
     let misfiled = row.misfiled;
     let warn = v.warn_fg_color;
     ui.scope_builder(
@@ -228,19 +235,45 @@ fn child(ui: &mut egui::Ui, tab: &Tab, row: &Row, selected: Option<&str>, acts: 
 }
 
 /// The end of a session's row: how long ago for one that can resume,
-/// what it is doing for one that runs.
-fn when(row: &Row, kind: Option<SessionKind>, ui: &egui::Ui) -> (String, egui::Color32) {
-    let status = row.badge.trim();
-    match kind {
-        Some(SessionKind::Live) => {
+/// what it is doing for one that runs. Read from the session itself, not
+/// from the terminal's text for it.
+fn when(tab: &Tab, row: &Row, ui: &egui::Ui) -> (String, egui::Color32) {
+    let muted = ui.visuals().weak_text_color();
+    let Some(s) = row
+        .session_id
+        .as_deref()
+        .and_then(|id| tab.snap.session(id))
+    else {
+        return (String::new(), muted);
+    };
+    match s.kind {
+        SessionKind::Live => {
             let colour =
                 crate::theme::palette(ui.ctx()).map_or(ui.visuals().hyperlink_color, |p| p.live);
-            (status.to_string(), colour)
+            (s.status.clone(), colour)
         }
-        _ => (
-            status.trim_start_matches("resumable").trim().to_string(),
-            ui.visuals().weak_text_color(),
-        ),
+        SessionKind::Resumable => (zrush_core::model::age(now(), s.last_activity), muted),
+    }
+}
+
+/// Seconds since the epoch, as session times are kept.
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// What a worktree's badge counts, from its facts.
+fn badge(head: &Row, children: usize) -> String {
+    let f = head.facts;
+    if f.live > 0 {
+        format!("{} live", f.live)
+    } else if f.history > 0 {
+        format!("{} resumable", f.history)
+    } else if head.kind == RowKind::Orphans && children > 0 {
+        format!("{children} orphaned")
+    } else {
+        String::new()
     }
 }
 

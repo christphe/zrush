@@ -11,7 +11,6 @@ use zrush_core::actions;
 use zrush_core::app::BranchKind;
 use zrush_core::app::Zrush;
 use zrush_core::config::{Config, Dirs};
-use zrush_core::error::ZrushError;
 use zrush_core::host::Host;
 use zrush_core::intent::{self, Answer, Intent, Outcome, Question};
 use zrush_core::loader::{Event, Loader, Preview, Sink};
@@ -169,6 +168,7 @@ impl Tab {
                 Applied::Acted(done) => {
                     self.busy = None;
                     match done.result {
+                        Ok(msg) if msg.is_empty() => {}
                         Ok(msg) => self.flash = Some(msg),
                         Err(e) => self.error = Some(format!("{}: {e}", done.label)),
                     }
@@ -180,6 +180,11 @@ impl Tab {
         }
         if rows_stale {
             self.rows = self.snap.rows(&l.z, &self.view);
+            // A new round forgot every preview: what is on the right is
+            // fetched again (once — the snapshot knows what is on its way).
+            if let Some(row) = self.selected_row().cloned() {
+                self.select(&row);
+            }
         }
         if again {
             self.refresh();
@@ -207,10 +212,10 @@ impl Tab {
             Intent::Nothing => None,
             Intent::Ask(q) => Some(q),
             Intent::Open { worktree, bind } => {
-                let bind = bind.as_ref().map(|(a, i)| (a.as_str(), i.as_str()));
-                if let Err(e) = l.z.open(&worktree, bind) {
-                    self.error = Some(format!("Open: {e}"));
-                }
+                self.launch("Open", move |z| {
+                    let bind = bind.as_ref().map(|(a, i)| (a.as_str(), i.as_str()));
+                    z.open(&worktree, bind)
+                });
                 None
             }
             Intent::ShowMore(node) => {
@@ -235,18 +240,35 @@ impl Tab {
         let Some(l) = &self.live else {
             return;
         };
-        let NodeId::Worktree(worktree) = &row.node else {
+        let NodeId::Worktree(worktree) = row.node.clone() else {
             return;
         };
         let session = row
             .session_id
             .as_deref()
             .and_then(|id| self.snap.session(id))
-            .map(|s| (s.agent, s.id.as_str()));
-        match actions::run_agent(&l.z, worktree, session) {
-            Ok(()) => {}
-            Err(ZrushError::NoAgent) => self.flash = Some("no agent installed".into()),
-            Err(e) => self.error = Some(format!("New session: {e}")),
+            .map(|s| (s.agent.to_string(), s.id.clone()));
+        if session.is_none() && l.z.active_agent().is_none() {
+            self.flash = Some("no agent installed".into());
+            return;
+        }
+        self.launch("New session", move |z| {
+            let session = session.as_ref().map(|(a, i)| (a.as_str(), i.as_str()));
+            actions::run_agent(z, &worktree, session)
+        });
+    }
+
+    /// Start an editor or a terminal off the window's thread: one that
+    /// stays in the foreground (`zed --wait`) must not hold the window.
+    /// Unlike a long action it takes no turn — nothing else waits on it.
+    fn launch<F>(&self, label: &str, f: F)
+    where
+        F: FnOnce(&Zrush) -> zrush_core::error::Result<()> + Send + 'static,
+    {
+        if let Some(l) = &self.live {
+            let z = Arc::clone(&l.z);
+            l.loader
+                .spawn_action(label, move || f(&z).map(|()| String::new()));
         }
     }
 
@@ -264,12 +286,10 @@ impl Tab {
             Outcome::Nothing => self.pending = None,
             Outcome::Open { worktree, bind } => {
                 self.pending = None;
-                if let Some(l) = &self.live {
+                self.launch("Open", move |z| {
                     let bind = bind.as_ref().map(|(a, i)| (a.as_str(), i.as_str()));
-                    if let Err(e) = l.z.open(&worktree, bind) {
-                        self.error = Some(format!("Open: {e}"));
-                    }
-                }
+                    z.open(&worktree, bind)
+                });
             }
             Outcome::Adopt {
                 agent,
@@ -412,6 +432,61 @@ pub(crate) mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let repo = scratch_repo(&td);
         assert_eq!(open(&td, &repo).title, "repo");
+    }
+
+    /// An editor that stays in the foreground: `zed --wait`, `subl -w`.
+    struct Slow;
+
+    impl zrush_core::host::Host for Slow {
+        fn open_workspace(&self, _: &Path) -> zrush_core::error::Result<()> {
+            std::thread::sleep(Duration::from_secs(2));
+            Ok(())
+        }
+        fn run_agent(&self, _: &Path, _: &[String]) -> zrush_core::error::Result<()> {
+            std::thread::sleep(Duration::from_secs(2));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn opening_the_editor_never_holds_the_window() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let mut t = Tab::open(
+            &repo,
+            &dirs_under(td.path()),
+            &Config::default(),
+            Box::new(Slow),
+            Arc::new(|| {}),
+        );
+        until(&mut t, |t| !t.rows().is_empty());
+        let row = t.rows()[0].clone();
+        let started = Instant::now();
+        let _ = t.enter(&row);
+        t.run_agent(&row);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the window waited {:?} for the editor",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn the_preview_survives_a_refresh() {
+        // Every round starts by forgetting the previews; what is selected
+        // must be fetched again rather than left as "Reading…".
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let mut t = open(&td, &repo);
+        until(&mut t, |t| !t.rows().is_empty());
+        let row = t.rows()[0].clone();
+        t.select(&row);
+        until(&mut t, |t| t.preview() != Preview::Empty);
+        t.refresh();
+        // Let the new round land, then give the preview time to come back.
+        until(&mut t, |t| t.preview() == Preview::Empty);
+        until(&mut t, |t| t.preview() != Preview::Empty);
+        assert_ne!(t.preview(), Preview::Empty, "preview gone after refresh");
     }
 
     #[test]

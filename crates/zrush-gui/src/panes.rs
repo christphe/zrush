@@ -160,6 +160,15 @@ mod tests {
         );
     }
 
+    /// The editor is started off the window's thread: wait for it.
+    fn opened(h: &mut Harness<'static, State>, host: &RecordingHost) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while host.opened.lock().unwrap().is_empty() && Instant::now() < deadline {
+            h.step();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[test]
     fn the_tree_lists_worktrees_and_their_sessions() {
         let td = tempfile::TempDir::new().unwrap();
@@ -189,7 +198,7 @@ mod tests {
         let (mut h, host) = harness(&td, &repo);
         until(&mut h, "main");
         h.get_by_label("Open").click();
-        h.run_steps(2);
+        opened(&mut h, &host);
         assert_eq!(*host.opened.lock().unwrap(), vec![repo.clone()]);
         assert!(h.state().tab.zrush().unwrap().binding(&repo).is_none());
     }
@@ -204,7 +213,7 @@ mod tests {
         h.get_by_label_contains(SESSION_TITLE).click();
         until(&mut h, "Open in IDE");
         h.get_by_label("Open in IDE").click();
-        h.run_steps(2);
+        opened(&mut h, &host);
         assert_eq!(*host.opened.lock().unwrap(), vec![repo.clone()]);
         let bound = h.state().tab.zrush().unwrap().binding(&repo).unwrap();
         assert_eq!(bound.id, SESSION_ID);

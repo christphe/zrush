@@ -23,6 +23,9 @@ allow = [
   # webpki-roots, the root certificates the update check trusts: a
   # permissive licence for data.
   "CDLA-Permissive-2.0",
+  # epaint_default_fonts, the fonts egui draws the desktop app with.
+  "OFL-1.1",
+  "Ubuntu-font-1.0",
   # zrush's own crates.
   "GPL-3.0-only",
 ]

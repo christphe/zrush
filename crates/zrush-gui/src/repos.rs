@@ -4,11 +4,18 @@ use std::path::PathBuf;
 
 use zrush_core::config::Config;
 
-/// The tabs saved last time; with none saved, the repository the window
-/// was started in (or the configured default); otherwise none.
-pub fn initial(cfg: &Config, cwd: impl FnOnce() -> std::io::Result<PathBuf>) -> Vec<PathBuf> {
-    if !cfg.gui_repos.is_empty() {
-        return cfg.gui_repos.clone();
+/// The tabs saved last time, then the repositories named on the command
+/// line. With neither, the repository the window was started in (or the
+/// configured default); otherwise none.
+pub fn initial(
+    cfg: &Config,
+    named: Vec<PathBuf>,
+    cwd: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut repos = cfg.gui_repos.clone();
+    repos.extend(named);
+    if !repos.is_empty() {
+        return repos;
     }
     zrush_core::app::locate(None, cwd, cfg)
         .map(|r| vec![r])
@@ -32,14 +39,43 @@ mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let a = td.path().join("a");
         let b = scratch_repo(&td);
-        assert_eq!(initial(&saved(vec![a.clone()]), || Ok(b.clone())), vec![a]);
+        assert_eq!(
+            initial(&saved(vec![a.clone()]), Vec::new(), || Ok(b.clone())),
+            vec![a]
+        );
+    }
+
+    #[test]
+    fn named_repos_open_beside_the_saved_ones() {
+        let td = tempfile::TempDir::new().unwrap();
+        let a = td.path().join("a");
+        let b = td.path().join("b");
+        let cwd = scratch_repo(&td);
+        assert_eq!(
+            initial(&saved(vec![a.clone()]), vec![b.clone()], || Ok(cwd.clone())),
+            vec![a, b]
+        );
+    }
+
+    #[test]
+    fn named_repos_replace_the_current_directory() {
+        let td = tempfile::TempDir::new().unwrap();
+        let b = td.path().join("b");
+        let cwd = scratch_repo(&td);
+        assert_eq!(
+            initial(&Config::default(), vec![b.clone()], || Ok(cwd.clone())),
+            vec![b]
+        );
     }
 
     #[test]
     fn with_nothing_saved_the_current_repo_opens() {
         let td = tempfile::TempDir::new().unwrap();
         let repo = scratch_repo(&td);
-        assert_eq!(initial(&Config::default(), || Ok(repo.clone())), vec![repo]);
+        assert_eq!(
+            initial(&Config::default(), Vec::new(), || Ok(repo.clone())),
+            vec![repo]
+        );
     }
 
     #[test]
@@ -47,7 +83,7 @@ mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let outside = td.path().to_path_buf();
         assert_eq!(
-            initial(&Config::default(), || Ok(outside.clone())),
+            initial(&Config::default(), Vec::new(), || Ok(outside.clone())),
             Vec::<PathBuf>::new()
         );
     }
@@ -55,6 +91,9 @@ mod tests {
     #[test]
     fn a_current_directory_that_is_gone_opens_nothing() {
         let gone = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
-        assert_eq!(initial(&Config::default(), gone), Vec::<PathBuf>::new());
+        assert_eq!(
+            initial(&Config::default(), Vec::new(), gone),
+            Vec::<PathBuf>::new()
+        );
     }
 }

@@ -311,6 +311,7 @@ mod tests {
 
     fn row(kind: RowKind, node: NodeId, id: Option<&str>, misfiled: bool) -> Row {
         Row {
+            facts: crate::model::tree::RowFacts::default(),
             kind,
             node,
             session_id: id.map(str::to_string),

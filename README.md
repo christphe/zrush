@@ -421,8 +421,8 @@ its first release.
 cargo run --release -p zrush-gui -- [REPO...]
 ```
 
-With no repository named, it opens the tabs it had last time, or the
-repository it was started in.
+It opens the tabs it had last time, plus any repository named on the
+command line; with neither, the repository it was started in.
 
 It keeps two things in `config.toml`, next to the terminal's settings:
 `gui_repos`, the tabs that were open, and `gui_theme`, the theme's name

@@ -6,7 +6,6 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use zrush_core::agent::Role;
 use zrush_core::intent::Question;
 use zrush_core::loader::Preview;
-use zrush_core::model::tree::RowKind;
 
 use crate::tab::Tab;
 
@@ -23,12 +22,8 @@ pub fn show(ui: &mut egui::Ui, tab: &mut Tab, md: &mut CommonMarkCache) -> Optio
     let muted = ui.visuals().weak_text_color();
     let mut asked = None;
     ui.horizontal(|ui| {
-        let worktree = row.kind == RowKind::Worktree;
-        let title = if worktree {
-            row.label.replace(" [root]", "").trim().to_string()
-        } else {
-            row.search.clone()
-        };
+        // A worktree's branch, or a session's title.
+        let title = row.search.clone();
         ui.vertical(|ui| {
             ui.label(RichText::new(title).heading().strong());
             let home = std::env::var_os("HOME")

@@ -213,6 +213,7 @@ mod tests {
 
     fn node(label: &str, location: &str) -> Row {
         Row {
+            facts: crate::model::tree::RowFacts::default(),
             kind: RowKind::Worktree,
             node: NodeId::Worktree(location.into()),
             session_id: None,
@@ -228,6 +229,7 @@ mod tests {
 
     fn child(title: &str, of: &str) -> Row {
         Row {
+            facts: crate::model::tree::RowFacts::default(),
             kind: RowKind::Session,
             node: NodeId::Worktree(of.into()),
             session_id: Some(title.into()),
@@ -412,6 +414,7 @@ mod tests {
         rows.insert(
             1,
             Row {
+                facts: crate::model::tree::RowFacts::default(),
                 kind: RowKind::More,
                 node: NodeId::Worktree("/w".into()),
                 session_id: None,
@@ -431,6 +434,7 @@ mod tests {
     fn a_more_row_stays_with_a_worktree_that_matched() {
         let mut rows = vec![node("main", "/w")];
         rows.push(Row {
+            facts: crate::model::tree::RowFacts::default(),
             kind: RowKind::More,
             node: NodeId::Worktree("/w".into()),
             session_id: None,

@@ -153,10 +153,22 @@ impl GuiApp {
     /// A setting changed through one tab's service: every other tab reads
     /// the file again, and all of them ask again with the new values.
     fn apply_settings(&mut self, cfg: &Config) {
+        // Another agent listed: every tab switches, and drops what the one
+        // it left had listed.
+        let agent = cfg
+            .agent
+            .clone()
+            .filter(|a| self.cfg.agent.as_ref() != Some(a));
         self.cfg = cfg.clone();
         for t in self.tabs_mut() {
             if let Some(z) = t.zrush() {
                 let _ = z.reload_config();
+                if let Some(a) = &agent {
+                    let _ = z.set_active_agent(a);
+                }
+            }
+            if agent.is_some() {
+                t.snap.forget_sessions();
             }
             t.view.resumable_max = cfg.resumable_max;
             t.refresh();
@@ -469,6 +481,39 @@ mod tests {
         a.close_tab_for(&first);
         let saved = Config::load_file(&dirs_under(td.path())).unwrap();
         assert_eq!(saved.gui_repos, vec![second]);
+    }
+
+    #[test]
+    fn switching_agent_reaches_every_tab() {
+        // What every tab listed belonged to the agent just left.
+        let td = tempfile::TempDir::new().unwrap();
+        let first = scratch_repo(&td);
+        let second = other_repo(&td);
+        let mut a = app(&td, vec![first.clone(), second]);
+        let live = zrush_core::model::Session {
+            agent: "claude",
+            id: "x".into(),
+            title: "t".into(),
+            status: "busy 0m".into(),
+            cwd: first.clone(),
+            launch_cwd: first,
+            kind: zrush_core::model::SessionKind::Live,
+            last_activity: 0,
+        };
+        a.tabs_mut().for_each(|t| t.snap.live = vec![live.clone()]);
+        let cfg = Config {
+            agent: Some("claude".into()),
+            ..Config::default()
+        };
+        a.apply_settings(&cfg);
+        for t in a.tabs() {
+            assert_eq!(
+                t.snap.live.len(),
+                0,
+                "{} kept the old agent's sessions",
+                t.title
+            );
+        }
     }
 
     #[test]

@@ -50,6 +50,21 @@ pub struct Row {
     /// `enter` asks rather than opening a panel that cannot resume it.
     pub misfiled: bool,
     pub location: String,
+    /// The same, as data, for an interface that draws them its own way.
+    pub facts: RowFacts,
+}
+
+/// What a worktree row's text says, as data: whether it is the main
+/// worktree, and what its badge counts. Empty for other rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RowFacts {
+    /// The main worktree, the one holding `.git`.
+    pub root: bool,
+    /// Sessions running in it now.
+    pub live: usize,
+    /// Conversations that can be resumed: the disk count until the scan
+    /// has answered, what was assigned after.
+    pub history: usize,
 }
 
 impl Row {
@@ -165,6 +180,14 @@ pub fn build(input: &TreeInput<'_>) -> Vec<Row> {
         let (shown, hidden) = split_at_cap(children, cap_for(input, &node));
         let collapsed = input.collapsed.contains(&node);
         rows.push(Row {
+            facts: RowFacts {
+                root: w.is_main,
+                live: children
+                    .iter()
+                    .filter(|a| a.session.kind == SessionKind::Live)
+                    .count(),
+                history: input.history.get(&w.path).copied().unwrap_or(0),
+            },
             kind: RowKind::Worktree,
             node: node.clone(),
             session_id: None,
@@ -193,6 +216,7 @@ pub fn build(input: &TreeInput<'_>) -> Vec<Row> {
         let (shown, hidden) = split_at_cap(children, cap_for(input, &node));
         let collapsed = input.collapsed.contains(&node);
         rows.push(Row {
+            facts: RowFacts::default(),
             kind: RowKind::Orphans,
             node: node.clone(),
             session_id: None,
@@ -288,6 +312,7 @@ fn push_children(
             status = format!("{status}  {origin}");
         }
         rows.push(Row {
+            facts: RowFacts::default(),
             kind,
             node: node.clone(),
             session_id: Some(a.session.id.clone()),
@@ -302,6 +327,7 @@ fn push_children(
     }
     if hidden > 0 {
         rows.push(Row {
+            facts: RowFacts::default(),
             kind: RowKind::More,
             node: node.clone(),
             session_id: None,
