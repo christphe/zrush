@@ -233,7 +233,7 @@ mod tests {
         let t = open(&td, &td.path().join("gone"));
         assert!(t.error.is_some());
         assert_eq!(t.title, "gone");
-        assert!(t.rows().is_empty());
+        assert_eq!(t.rows().len(), 0);
         assert!(t.main_root().is_none());
     }
 

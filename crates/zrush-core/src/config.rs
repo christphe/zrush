@@ -100,6 +100,9 @@ pub struct Config {
     pub update_check: bool,
     /// One row per pair that has something better than a terminal.
     pub surface: Vec<SurfaceRow>,
+    /// The repositories the desktop app had open, in tab order. Not a
+    /// setting: the window keeps it.
+    pub gui_repos: Vec<PathBuf>,
 }
 
 impl Default for Config {
@@ -119,6 +122,7 @@ impl Default for Config {
             preview_turns: 14,
             update_check: true,
             surface: default_surfaces(),
+            gui_repos: Vec::new(),
         }
     }
 }

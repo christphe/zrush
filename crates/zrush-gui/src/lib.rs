@@ -7,6 +7,8 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod app;
+pub mod repos;
 pub mod tab;
 
 #[cfg(test)]
