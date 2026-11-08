@@ -27,6 +27,11 @@ pub const RESUME_ROOT: &str = "Move it to the main worktree";
 
 pub const CANCEL: &str = "Cancel";
 
+/// Which branch a new worktree gets, asked before its name: a name to cut
+/// a branch at, or a branch that already exists.
+pub const NEW_BRANCH: &str = "New branch";
+pub const EXISTING_BRANCH: &str = "Existing branch";
+
 /// What enter on a row comes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Intent {

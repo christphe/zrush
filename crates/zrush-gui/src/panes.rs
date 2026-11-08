@@ -1,6 +1,8 @@
 //! A tab's body: the worktree tree on the left, what is selected on the
 //! right.
 
+use std::time::{Duration, Instant};
+
 use egui_commonmark::CommonMarkCache;
 use zrush_core::intent::Question;
 
@@ -18,8 +20,8 @@ pub fn show(ui: &mut egui::Ui, tab: &mut Tab, md: &mut CommonMarkCache) -> Optio
             }
         });
     }
-    if let Some(f) = &tab.flash {
-        ui.weak(f.as_str());
+    if let Some(f) = tab.flash.clone() {
+        flash(ui, &tab.repo, &f);
     }
     // A tab whose repository could not be opened has only its error.
     tab.zrush()?;
@@ -34,6 +36,31 @@ pub fn show(ui: &mut egui::Ui, tab: &mut Tab, md: &mut CommonMarkCache) -> Optio
         }
     });
     asked
+}
+
+/// How long a flash line stays up.
+const FLASH_FOR: Duration = Duration::from_secs(5);
+
+/// Show `text` for `FLASH_FOR` from the first frame it appeared in.
+fn flash(ui: &mut egui::Ui, repo: &std::path::Path, text: &str) {
+    let id = egui::Id::new(("flash", repo));
+    let now = Instant::now();
+    let since = ui.ctx().data_mut(|d| {
+        let seen: Option<(String, Instant)> = d.get_temp(id);
+        match seen {
+            Some((t, at)) if t == text => at,
+            _ => {
+                d.insert_temp(id, (text.to_string(), now));
+                now
+            }
+        }
+    });
+    let shown = now.duration_since(since);
+    if shown < FLASH_FOR {
+        ui.weak(text);
+        ui.ctx()
+            .request_repaint_after(FLASH_FOR.saturating_sub(shown));
+    }
 }
 
 #[cfg(test)]

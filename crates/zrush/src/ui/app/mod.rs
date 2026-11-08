@@ -32,8 +32,7 @@ pub const UPDATE: &str = "Update zrush";
 pub const UPDATE_NOW: &str = "Update now";
 pub const UPDATE_SKIP: &str = "Skip this version";
 
-pub const NEW_BRANCH: &str = "New branch";
-pub const EXISTING_BRANCH: &str = "Existing branch";
+pub use zrush_core::intent::{EXISTING_BRANCH, NEW_BRANCH};
 
 /// What a question is about, read once when it is asked rather than again
 /// when it is answered.

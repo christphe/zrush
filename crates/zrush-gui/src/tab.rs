@@ -8,11 +8,12 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
 use zrush_core::actions;
+use zrush_core::app::BranchKind;
 use zrush_core::app::Zrush;
 use zrush_core::config::{Config, Dirs};
 use zrush_core::error::ZrushError;
 use zrush_core::host::Host;
-use zrush_core::intent::{self, Intent, Question};
+use zrush_core::intent::{self, Answer, Intent, Outcome, Question};
 use zrush_core::loader::{Event, Loader, Preview, Sink};
 use zrush_core::model::tree::{NodeId, Row};
 use zrush_core::snapshot::{Applied, RepoSnapshot, TreeView, preview_key};
@@ -24,6 +25,20 @@ pub type Wake = Arc<dyn Fn() + Send + Sync>;
 /// How often an idle tab asks again, so sessions starting or ending
 /// elsewhere show up without a click.
 pub const REFRESH_EVERY: Duration = Duration::from_secs(10);
+
+/// A question the tab has put up, waiting for an answer.
+#[derive(Debug, Clone)]
+pub enum Pending {
+    Ask(Question),
+    /// A worktree to recreate needs a branch: which kind first, then its
+    /// name. `at` is where it lands, `hand_over` the session it gets.
+    Branch {
+        at: Option<PathBuf>,
+        hand_over: (String, String),
+        kind: Option<BranchKind>,
+        name: String,
+    },
+}
 
 pub struct Tab {
     /// The path the tab was opened with, as saved in `gui_repos`.
@@ -40,6 +55,8 @@ pub struct Tab {
     pub flash: Option<String>,
     /// What a long action is doing, while it runs.
     pub busy: Option<String>,
+    /// The question that is up, if any.
+    pub pending: Option<Pending>,
     live: Option<Live>,
     rows: Vec<Row>,
     last_refresh: Instant,
@@ -72,6 +89,7 @@ impl Tab {
             error: None,
             flash: None,
             busy: None,
+            pending: None,
             live: None,
             rows: Vec::new(),
             last_refresh: Instant::now(),
@@ -232,6 +250,93 @@ impl Tab {
         }
     }
 
+    pub fn ask(&mut self, q: Question) {
+        self.pending = Some(Pending::Ask(q));
+    }
+
+    /// Carry out the answer to the question that is up.
+    pub fn answer(&mut self, a: Answer) {
+        let Some(Pending::Ask(q)) = self.pending.clone() else {
+            self.pending = None;
+            return;
+        };
+        match intent::answer(&q, a, &self.snap) {
+            Outcome::Nothing => self.pending = None,
+            Outcome::Open { worktree, bind } => {
+                self.pending = None;
+                if let Some(l) = &self.live {
+                    let bind = bind.as_ref().map(|(a, i)| (a.as_str(), i.as_str()));
+                    if let Err(e) = l.z.open(&worktree, bind) {
+                        self.error = Some(format!("Open: {e}"));
+                    }
+                }
+            }
+            Outcome::Adopt {
+                agent,
+                id,
+                worktree,
+            } => {
+                if self.start("Resume this session", move |z| {
+                    actions::adopt(z, &agent, &id, &worktree)
+                }) {
+                    self.pending = None;
+                }
+            }
+            Outcome::NeedBranch { at, hand_over } => {
+                self.pending = Some(Pending::Branch {
+                    at,
+                    hand_over,
+                    kind: None,
+                    name: String::new(),
+                });
+            }
+        }
+    }
+
+    /// Create the worktree the branch question was for, and hand it the
+    /// session. An empty name does nothing.
+    pub fn create_branch(&mut self) {
+        let Some(Pending::Branch {
+            at,
+            hand_over,
+            kind: Some(kind),
+            name,
+        }) = self.pending.clone()
+        else {
+            return;
+        };
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        if self.start("New worktree", move |z| {
+            let bind = Some((hand_over.0.as_str(), hand_over.1.as_str()));
+            actions::create(z, &name, kind, at.as_deref(), bind)
+        }) {
+            self.pending = None;
+        }
+    }
+
+    /// Run a long action off the window's thread. A second one is refused
+    /// while one runs: two `git worktree` commands at once on the same
+    /// repository is not something to find out about afterwards.
+    fn start<F>(&mut self, label: &str, f: F) -> bool
+    where
+        F: FnOnce(&Zrush) -> zrush_core::error::Result<String> + Send + 'static,
+    {
+        if let Some(busy) = &self.busy {
+            self.flash = Some(format!("still {busy}"));
+            return false;
+        }
+        let Some(l) = &self.live else {
+            return false;
+        };
+        let z = Arc::clone(&l.z);
+        self.busy = Some(label.to_lowercase());
+        l.loader.spawn_action(label, move || f(&z));
+        true
+    }
+
     /// The row currently shown on the right, if it is still listed.
     pub fn selected_row(&self) -> Option<&Row> {
         let key = self.selected.as_ref()?;
@@ -248,7 +353,7 @@ impl Tab {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::Path;
     use std::time::{Duration, Instant};
 
@@ -256,6 +361,9 @@ mod tests {
     use zrush_core::host::RecordingHost;
     use zrush_core::loader::Preview;
     use zrush_core::model::tree::RowKind;
+
+    use zrush_core::app::BranchKind;
+    use zrush_core::intent::Answer;
 
     use super::*;
     use crate::testing::scratch_repo;
@@ -348,5 +456,113 @@ mod tests {
         assert_eq!(t.last_refresh(), started);
         t.refresh_if_due(started + REFRESH_EVERY);
         assert!(t.last_refresh() > started);
+    }
+
+    /// A repo whose session was held in a worktree that has since been
+    /// removed: it lists as an orphan.
+    pub(crate) fn loaded_with_orphan(td: &tempfile::TempDir) -> (Tab, PathBuf) {
+        let repo = scratch_repo(td);
+        let gone = repo.join(".claude").join("worktrees").join("gone");
+        crate::testing::with_session(td, &gone, &["hi", "hello"]);
+        let mut t = open(td, &repo);
+        until(&mut t, |t| {
+            t.rows().iter().any(|r| r.kind == RowKind::Orphan)
+        });
+        (t, gone)
+    }
+
+    /// Enter on the orphan row, as a click would.
+    pub(crate) fn orphan_question(t: &mut Tab) -> zrush_core::intent::Question {
+        let row = t
+            .rows()
+            .iter()
+            .find(|r| r.kind == RowKind::Orphan)
+            .cloned()
+            .unwrap();
+        t.enter(&row).expect("an orphan asks where")
+    }
+
+    fn until_idle(t: &mut Tab) {
+        until(t, |t| t.busy.is_none());
+    }
+
+    #[test]
+    fn moving_an_orphan_to_main_adopts_it() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (mut t, _) = loaded_with_orphan(&td);
+        let q = orphan_question(&mut t);
+        t.ask(q);
+        t.answer(Answer::MoveToMain);
+        assert!(t.busy.is_some());
+        until_idle(&mut t);
+        let main = t.main_root().unwrap().to_path_buf();
+        let bound = t.zrush().unwrap().binding(&main).unwrap();
+        assert_eq!(bound.id, crate::testing::SESSION_ID);
+        assert!(t.pending.is_none());
+    }
+
+    #[test]
+    fn recreating_asks_for_a_branch_at_the_old_path() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (mut t, gone) = loaded_with_orphan(&td);
+        let q = orphan_question(&mut t);
+        t.ask(q);
+        t.answer(Answer::Recreate);
+        assert!(
+            matches!(&t.pending, Some(Pending::Branch { at: Some(p), .. }) if *p == gone),
+            "{:?}",
+            t.pending
+        );
+    }
+
+    #[test]
+    fn an_invalid_branch_name_shows_gits_refusal() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (mut t, gone) = loaded_with_orphan(&td);
+        t.pending = Some(Pending::Branch {
+            at: Some(gone),
+            hand_over: ("claude".into(), crate::testing::SESSION_ID.into()),
+            kind: Some(BranchKind::New),
+            name: "has space".into(),
+        });
+        t.create_branch();
+        until_idle(&mut t);
+        let e = t.error.clone().unwrap_or_default();
+        assert!(e.contains("invalid branch name"), "{e}");
+    }
+
+    #[test]
+    fn an_empty_branch_name_creates_nothing() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (mut t, gone) = loaded_with_orphan(&td);
+        t.pending = Some(Pending::Branch {
+            at: Some(gone),
+            hand_over: ("claude".into(), crate::testing::SESSION_ID.into()),
+            kind: Some(BranchKind::New),
+            name: "  ".into(),
+        });
+        t.create_branch();
+        assert!(t.busy.is_none());
+    }
+
+    #[test]
+    fn a_second_action_while_one_runs_is_refused() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (mut t, _) = loaded_with_orphan(&td);
+        let q = orphan_question(&mut t);
+        t.ask(q);
+        t.busy = Some("purge".into());
+        t.answer(Answer::MoveToMain);
+        assert_eq!(t.flash.as_deref(), Some("still purge"));
+    }
+
+    #[test]
+    fn cancel_closes_the_question() {
+        let td = tempfile::TempDir::new().unwrap();
+        let (mut t, _) = loaded_with_orphan(&td);
+        let q = orphan_question(&mut t);
+        t.ask(q);
+        t.answer(Answer::Cancel);
+        assert!(t.pending.is_none());
     }
 }

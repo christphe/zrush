@@ -9,6 +9,7 @@
 
 pub mod app;
 pub mod conversation;
+pub mod dialog;
 pub mod panes;
 pub mod repos;
 pub mod status;

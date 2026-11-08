@@ -205,8 +205,10 @@ impl TabViewer for Viewer<'_> {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Tab) {
-        // Task 6 puts the question up; until then it is dropped.
-        let _ = crate::panes::show(ui, tab, self.md);
+        if let Some(q) = crate::panes::show(ui, tab, self.md) {
+            tab.ask(q);
+        }
+        crate::dialog::show(ui.ctx(), tab);
     }
 
     fn on_close(&mut self, tab: &mut Tab) -> OnCloseResponse {
