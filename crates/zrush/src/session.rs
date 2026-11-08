@@ -88,7 +88,7 @@ fn clean_env(cmd: &mut Command) {
     if std::env::var_os("ZRUSH_KEEP_CLAUDE_ENV").is_some() {
         return;
     }
-    for var in INHERITED {
+    for var in zrush_core::host::process::INHERITED {
         cmd.env_remove(var);
     }
 }
@@ -118,19 +118,6 @@ fn choose(dirs: &Dirs, cfg: &Config, agent: &dyn Agent, worktree: &Path) -> Opti
     let at: usize = line.trim().parse().ok()?;
     all.get(at.checked_sub(1)?).map(|s| s.id.clone())
 }
-
-const INHERITED: &[&str] = &[
-    "CLAUDE_CODE_CHILD_SESSION",
-    "CLAUDE_CODE_SESSION_ID",
-    "CLAUDE_CODE_SESSION_ATTENDED",
-    "CLAUDE_CODE_MESSAGING_SOCKET",
-    "CLAUDE_CODE_MESSAGING_TOKEN",
-    "CLAUDE_CODE_ENTRYPOINT",
-    "CLAUDE_PID",
-    "CLAUDECODE",
-    "CLAUDE_EFFORT",
-    "AI_AGENT",
-];
 
 /// Always end in a usable shell. There is no failure worth reporting: if
 /// the shell will not start, the terminal is already lost.

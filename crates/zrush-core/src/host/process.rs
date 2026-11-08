@@ -1,4 +1,4 @@
-//! The terminal's answer to `zrush_core::host::Host`: real processes.
+//! Real processes: the host a desktop zrush uses, terminal or window.
 //!
 //! An editor is a command line with a path appended. An agent gets a
 //! terminal window of its own, which on macOS means writing a script and
@@ -8,9 +8,9 @@
 use std::path::Path;
 use std::process::Command;
 
-use zrush_core::config::Config;
-use zrush_core::error::{Result, ZrushError};
-use zrush_core::host::Host;
+use crate::config::Config;
+use crate::error::{Result, ZrushError};
+use crate::host::Host;
 
 pub struct ProcessHost {
     /// The settings screen changes these while the interface is running, so
@@ -211,7 +211,7 @@ fn raise(_editor_bin: &str) {}
 /// Markers an editor may have inherited from the session that launched it.
 /// Without clearing them, Claude Code writes no transcript — and a session
 /// with no transcript can never be resumed, which is the whole point.
-const INHERITED: &[&str] = &[
+pub const INHERITED: &[&str] = &[
     "CLAUDE_CODE_CHILD_SESSION",
     "CLAUDE_CODE_SESSION_ID",
     "CLAUDE_CODE_SESSION_ATTENDED",

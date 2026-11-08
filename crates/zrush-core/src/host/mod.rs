@@ -13,6 +13,8 @@ use std::path::Path;
 
 use crate::error::Result;
 
+pub mod process;
+
 pub trait Host: Send + Sync {
     /// Show this worktree to the user, in whatever this host calls an
     /// editor. It is not required to be a new window, and not required to

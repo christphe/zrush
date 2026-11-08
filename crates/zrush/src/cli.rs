@@ -10,8 +10,8 @@ use zrush_core::config::{Config, Dirs};
 use zrush_core::error::{Result, ZrushError};
 use zrush_core::host::{Host, NullHost};
 
-use crate::host::ProcessHost;
 use crate::ui::app::App;
+use zrush_core::host::process::ProcessHost;
 
 #[derive(Parser, Debug)]
 #[command(

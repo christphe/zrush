@@ -10,7 +10,6 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod cli;
-pub mod host;
 pub mod probe;
 pub mod session;
 pub mod ui;
