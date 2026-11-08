@@ -106,7 +106,7 @@ pub fn main() -> Result<()> {
         None => {}
     }
 
-    let repo = zrush_core::app::locate(cli.repo.as_deref(), &std::env::current_dir()?, &cfg)?;
+    let repo = zrush_core::app::locate(cli.repo.as_deref(), std::env::current_dir, &cfg)?;
     let host: Box<dyn Host> = if cli.list {
         Box::new(NullHost)
     } else {
@@ -120,6 +120,10 @@ pub fn main() -> Result<()> {
         cli.no_sessions,
         cli.agent.as_deref(),
     )?);
+    // For the whole run, not only until the first setting is saved.
+    if cli.no_status {
+        z.keep_override(|c| c.status = false);
+    }
 
     // Derived data only, safe to drop: keep a month.
     zrush_core::agent::claude::cache::sweep(&dirs, 30);

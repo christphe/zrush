@@ -154,7 +154,15 @@ impl Config {
     pub fn save(&self, dirs: &Dirs) -> Result<()> {
         std::fs::create_dir_all(&dirs.config)?;
         let text = toml::to_string_pretty(self).map_err(|e| ZrushError::Config(e.to_string()))?;
-        std::fs::write(dirs.config_file(), text)?;
+        // Beside it, then renamed over it: another zrush reading the file
+        // sees the old one or the new one, never a half-written one.
+        let tmp = dirs
+            .config
+            .join(format!("config.toml.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, dirs.config_file()).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })?;
         Ok(())
     }
 
@@ -429,6 +437,29 @@ pub fn dirs_under(base: &Path) -> Dirs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saving_replaces_the_file_rather_than_rewriting_it_in_place() {
+        // Written in place, the file is empty for a moment, and a second
+        // zrush reading it then (it parses as all-defaults) would save
+        // those defaults over every setting. A rename never shows that.
+        // A hard link to the old file tells the two apart: an in-place
+        // write changes what it points to, a rename does not.
+        let td = tempfile::TempDir::new().unwrap();
+        let dirs = dirs_under(td.path());
+        Config::default().save(&dirs).unwrap();
+        let before = std::fs::read_to_string(dirs.config_file()).unwrap();
+        let old = td.path().join("old.toml");
+        std::fs::hard_link(dirs.config_file(), &old).unwrap();
+        Config {
+            more_step: 33,
+            ..Config::default()
+        }
+        .save(&dirs)
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), before);
+        assert_eq!(Config::load_file(&dirs).unwrap().more_step, 33);
+    }
 
     #[test]
     fn defaults_match_the_shell_version() {

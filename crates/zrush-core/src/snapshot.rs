@@ -196,7 +196,9 @@ impl RepoSnapshot {
     }
 
     /// Everything, now, on this thread — for a one-shot listing rather
-    /// than an interface that wants the first answer early.
+    /// than an interface that wants the first answer early. Not marked
+    /// scanned: the badge keeps the count of transcripts on disk, which is
+    /// what `--list` has always printed.
     pub fn load(z: &Zrush) -> Result<Self> {
         let worktrees = z.worktrees()?;
         let live = z.live_sessions();
@@ -215,7 +217,6 @@ impl RepoSnapshot {
             history,
             live,
             resumable,
-            scanned: true,
             ..Self::default()
         })
     }
@@ -412,12 +413,77 @@ mod tests {
     }
 
     #[test]
-    fn loading_at_once_gets_everything_and_counts_as_scanned() {
+    fn a_live_session_filed_elsewhere_is_never_marked() {
+        // A running session is already attached to its panel: where its
+        // transcript sits only matters to resuming one.
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let z = zrush(&td, repo.clone());
+        let elsewhere = z
+            .dirs()
+            .claude_projects
+            .join(crate::agent::claude::projects::slugify(Path::new(
+                "/somewhere/else",
+            )));
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let live_id = "aaaaaaaa-1111-2222-3333-444455556666";
+        let dead_id = "bbbbbbbb-1111-2222-3333-444455556666";
+        for id in [live_id, dead_id] {
+            std::fs::write(elsewhere.join(format!("{id}.jsonl")), "").unwrap();
+        }
+        let here = repo.to_str().unwrap();
+        let mut s = RepoSnapshot::default();
+        s.apply(Event::Worktrees(1, z.worktrees().unwrap()), 1);
+        s.apply(
+            Event::Live(1, vec![session(live_id, here, SessionKind::Live)]),
+            1,
+        );
+        s.apply(
+            Event::Resumable(1, vec![session(dead_id, here, SessionKind::Resumable)]),
+            1,
+        );
+        let rows = s.rows(&z, &view());
+        let row = |id: &str| {
+            rows.iter()
+                .find(|r| r.session_id.as_deref() == Some(id))
+                .unwrap()
+                .clone()
+        };
+        assert!(row(dead_id).misfiled, "the setup must file them elsewhere");
+        let live = row(live_id);
+        assert!(!live.misfiled);
+        assert!(matches!(
+            crate::intent::enter(&live, &s),
+            crate::intent::Intent::Open { bind: Some(_), .. }
+        ));
+    }
+
+    #[test]
+    fn loading_at_once_gets_everything() {
         let td = tempfile::TempDir::new().unwrap();
         let z = zrush(&td, scratch_repo(&td));
         let s = RepoSnapshot::load(&z).unwrap();
         assert_eq!(s.worktrees.len(), 1);
-        assert!(s.scanned);
         assert_eq!(s.rows(&z, &view()).len(), 1);
+    }
+
+    #[test]
+    fn loading_at_once_keeps_the_disk_count_in_the_badge() {
+        // `--list` has always shown how many transcripts sit on disk, not
+        // how many the capped scan assigned; scripts read that column.
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let z = zrush(&td, repo.clone());
+        let dir = z
+            .dirs()
+            .claude_projects
+            .join(crate::agent::claude::projects::slugify(&repo));
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..3 {
+            std::fs::write(dir.join(format!("{i}.jsonl")), "").unwrap();
+        }
+        let s = RepoSnapshot::load(&z).unwrap();
+        let badge = s.rows(&z, &view())[0].badge.clone();
+        assert!(badge.contains('3'), "badge: {badge}");
     }
 }

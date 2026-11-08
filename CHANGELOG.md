@@ -15,6 +15,8 @@ desktop app's own `gui-vX.Y.Z`.
 - Dependencies updated, among them `dirs` 7 and `toml` 1.2.
 - The update check understands the `cli-vX.Y.Z` tags the next releases will
   carry, so this release keeps offering updates after the switch.
+- `zrush --list` adds `· filed elsewhere` to the status of a session the agent
+  would not find from the worktree it is listed under, as the interface does.
 
 ### Fixed
 
@@ -22,6 +24,10 @@ desktop app's own `gui-vX.Y.Z`.
   changes in `config.toml`.
 - A setting coming from the environment (`ZRUSH_EDITOR`, `ZRUSH_AGENT`, …) is
   no longer written into `config.toml` when another setting is saved.
+- `-S` / `--no-status` holds for the whole run instead of being saved into
+  `config.toml` by the first settings change.
+- `config.toml` is replaced in one step when saved, so a zrush reading it at
+  that moment never sees it empty.
 
 ## [0.0.3] - 2026-11-07
 

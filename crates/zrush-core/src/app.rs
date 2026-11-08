@@ -65,19 +65,33 @@ pub struct Zrush {
     /// changes which agent is listed.
     editor: std::sync::Mutex<String>,
     host: Box<dyn Host>,
+    /// What the command line forced for this run (`-S`), applied again on
+    /// every reload: the file is the base, these sit on top, and none of
+    /// them is ever written back.
+    overrides: std::sync::Mutex<Vec<Override>>,
 }
 
-/// Which repository to open: the one named explicitly, then the one `cwd`
-/// is inside, then the configured default.
-pub fn locate(explicit: Option<&Path>, cwd: &Path, cfg: &Config) -> Result<PathBuf> {
+type Override = Box<dyn Fn(&mut Config) + Send + Sync>;
+
+/// Which repository to open: the one named explicitly, then the one the
+/// current directory is inside, then the configured default.
+///
+/// `cwd` is only asked when nothing was named: the shell may be standing
+/// in a directory that no longer exists, a worktree zrush just removed.
+pub fn locate(
+    explicit: Option<&Path>,
+    cwd: impl FnOnce() -> std::io::Result<PathBuf>,
+    cfg: &Config,
+) -> Result<PathBuf> {
     if let Some(p) = explicit {
         if !p.is_dir() {
             return Err(ZrushError::msg(format!("not a directory: {}", p.display())));
         }
         return Ok(p.to_path_buf());
     }
-    if git::absolute_git_dir(cwd).is_ok() {
-        return Ok(cwd.to_path_buf());
+    let cwd = cwd()?;
+    if git::absolute_git_dir(&cwd).is_ok() {
+        return Ok(cwd);
     }
     match &cfg.default_repo {
         Some(p) if p.is_dir() => Ok(p.clone()),
@@ -132,6 +146,7 @@ impl Zrush {
                 must_choose: AtomicBool::new(false),
                 missing_configured: None,
                 host,
+                overrides: std::sync::Mutex::new(Vec::new()),
             });
         }
 
@@ -156,6 +171,7 @@ impl Zrush {
             must_choose: AtomicBool::new(must_choose),
             missing_configured,
             host,
+            overrides: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -200,9 +216,25 @@ impl Zrush {
     /// the terminal it now has; everything else is read per use, so it
     /// takes effect on the next probe.
     pub fn reload_config(&self) -> Result<Config> {
-        let fresh = Config::load(&self.dirs)?;
+        let mut fresh = Config::load(&self.dirs)?;
+        if let Ok(overrides) = self.overrides.lock() {
+            for o in overrides.iter() {
+                o(&mut fresh);
+            }
+        }
         self.apply(fresh.clone());
         Ok(fresh)
+    }
+
+    /// Force part of the config for the rest of this run, now and after
+    /// every reload, without ever saving it.
+    pub fn keep_override(&self, f: impl Fn(&mut Config) + Send + Sync + 'static) {
+        let mut cfg = self.config();
+        f(&mut cfg);
+        self.apply(cfg);
+        if let Ok(mut overrides) = self.overrides.lock() {
+            overrides.push(Box::new(f));
+        }
     }
 
     /// Replace the live config and push what the host caches out of it.
@@ -1148,16 +1180,31 @@ mod tests {
         let other = td.path().join("other");
         std::fs::create_dir(&other).unwrap();
         assert_eq!(
-            locate(Some(&other), &repo, &Config::default()).unwrap(),
+            locate(Some(&other), || Ok(repo.clone()), &Config::default()).unwrap(),
             other
         );
+    }
+
+    #[test]
+    fn a_named_repo_does_not_need_a_current_directory() {
+        // The shell may stand in a worktree zrush just removed: asking for
+        // the current directory then fails, and must not when it is unused.
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch(&td);
+        let gone = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(locate(Some(&repo), gone, &Config::default()).unwrap(), repo);
     }
 
     #[test]
     fn a_flag_that_is_not_a_directory_is_refused() {
         let td = tempfile::TempDir::new().unwrap();
         let missing = td.path().join("missing");
-        let e = locate(Some(&missing), td.path(), &Config::default()).unwrap_err();
+        let e = locate(
+            Some(&missing),
+            || Ok(td.path().to_path_buf()),
+            &Config::default(),
+        )
+        .unwrap_err();
         assert!(e.to_string().starts_with("not a directory: "));
     }
 
@@ -1165,7 +1212,10 @@ mod tests {
     fn inside_a_repo_the_current_directory_is_used() {
         let td = tempfile::TempDir::new().unwrap();
         let repo = scratch(&td);
-        assert_eq!(locate(None, &repo, &Config::default()).unwrap(), repo);
+        assert_eq!(
+            locate(None, || Ok(repo.clone()), &Config::default()).unwrap(),
+            repo
+        );
     }
 
     #[test]
@@ -1178,13 +1228,13 @@ mod tests {
             default_repo: Some(repo.clone()),
             ..Config::default()
         };
-        assert_eq!(locate(None, &outside, &cfg).unwrap(), repo);
+        assert_eq!(locate(None, || Ok(outside.clone()), &cfg).unwrap(), repo);
     }
 
     #[test]
     fn nowhere_to_go_says_how_to_fix_it() {
         let td = tempfile::TempDir::new().unwrap();
-        let e = locate(None, td.path(), &Config::default()).unwrap_err();
+        let e = locate(None, || Ok(td.path().to_path_buf()), &Config::default()).unwrap_err();
         assert!(
             e.to_string()
                 .contains("Use --repo <path>, or set default_repo in the config")
@@ -1238,6 +1288,19 @@ mod tests {
         let saved = on_disk(&td);
         assert_eq!(saved.more_step, 33);
         assert_eq!(saved.resumable_max, 9);
+    }
+
+    #[test]
+    fn a_command_line_override_outlives_a_settings_change() {
+        // `zrush -S`: no status column for this run, whatever the file says,
+        // even after a setting is saved and the config reloaded.
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch(&td));
+        z.keep_override(|c| c.status = false);
+        assert!(!z.config().status);
+        z.edit_config(|c| c.more_step = 3).unwrap();
+        assert!(!z.config().status, "the flag must survive the reload");
+        assert!(on_disk(&td).status, "and never be written to the file");
     }
 
     #[test]
