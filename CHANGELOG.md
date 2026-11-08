@@ -1,0 +1,31 @@
+# Changelog
+
+All notable changes to the `zrush` command line. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
+[Semantic Versioning](https://semver.org/).
+
+Releases up to 0.0.4 are tagged `vX.Y.Z`; later ones `cli-vX.Y.Z`, beside the
+desktop app's own `gui-vX.Y.Z`.
+
+## [0.0.4] - 2026-11-08
+
+### Changed
+
+- Building from source needs Rust 1.99 or later (was 1.88).
+- Dependencies updated, among them `dirs` 7 and `toml` 1.2.
+- The update check understands the `cli-vX.Y.Z` tags the next releases will
+  carry, so this release keeps offering updates after the switch.
+
+### Fixed
+
+- Two zrush windows changing settings no longer overwrite each other's
+  changes in `config.toml`.
+- A setting coming from the environment (`ZRUSH_EDITOR`, `ZRUSH_AGENT`, …) is
+  no longer written into `config.toml` when another setting is saved.
+
+## [0.0.3] - 2026-11-07
+
+- Offers the newer release at startup, and installs it from there.
+
+[0.0.4]: https://github.com/christphe/zrush/compare/v0.0.3...v0.0.4
+[0.0.3]: https://github.com/christphe/zrush/releases/tag/v0.0.3
