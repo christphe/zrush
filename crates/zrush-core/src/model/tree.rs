@@ -60,6 +60,9 @@ pub struct Row {
 pub struct RowFacts {
     /// The main worktree, the one holding `.git`.
     pub root: bool,
+    /// On a commit rather than a branch: its name says nothing that tells
+    /// it from another one.
+    pub detached: bool,
     /// Sessions running in it now.
     pub live: usize,
     /// Conversations that can be resumed: the disk count until the scan
@@ -182,6 +185,7 @@ pub fn build(input: &TreeInput<'_>) -> Vec<Row> {
         rows.push(Row {
             facts: RowFacts {
                 root: w.is_main,
+                detached: w.branch == crate::git::DETACHED,
                 live: children
                     .iter()
                     .filter(|a| a.session.kind == SessionKind::Live)

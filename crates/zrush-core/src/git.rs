@@ -7,6 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The branch name a worktree with a detached HEAD is listed under.
+pub const DETACHED: &str = "(detached)";
+
 use crate::error::{Result, ZrushError};
 use crate::model::{GitStatus, Worktree};
 
@@ -72,7 +75,7 @@ pub fn parse_worktree_list(porcelain: &str) -> Vec<Worktree> {
         if let Some(b) = line.strip_prefix("branch refs/heads/") {
             w.branch = b.to_string();
         } else if line == "detached" {
-            w.branch = "(detached)".into();
+            w.branch = DETACHED.into();
         } else if line == "bare" {
             w.branch = "(bare)".into();
         } else if line.starts_with("locked") {

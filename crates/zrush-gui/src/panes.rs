@@ -173,6 +173,37 @@ mod tests {
     }
 
     #[test]
+    fn a_detached_worktree_is_named_by_its_folder() {
+        // Two detached worktrees would both read "(detached)".
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        crate::testing::git(&repo, &["worktree", "add", "-q", "--detach", "../loose"]);
+        let (mut h, _) = harness(&td, &repo);
+        until(&mut h, "loose");
+        assert!(h.query_by_label("detached").is_some());
+        assert!(h.query_by_label("(detached)").is_none());
+    }
+
+    #[test]
+    fn a_long_branch_name_stops_before_the_status() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let long = "feature/2216_emanager_circuit_breaker_on_http_client_with_a_very_long_name";
+        crate::testing::git(&repo, &["checkout", "-q", "-b", long]);
+        let (mut h, _) = harness(&td, &repo);
+        until(&mut h, "feature/2216");
+        // A branch with no upstream: its status says so, once git answers.
+        until(&mut h, "⚠");
+        h.run_steps(3);
+        let name = h.get_by_label_contains("feature/2216").rect();
+        let status = h.get_by_label_contains("⚠").rect();
+        assert!(
+            name.max.x <= status.min.x,
+            "the name runs under the status: {name:?} vs {status:?}"
+        );
+    }
+
+    #[test]
     fn clicking_a_session_shows_its_conversation() {
         let td = tempfile::TempDir::new().unwrap();
         let repo = scratch_repo(&td);

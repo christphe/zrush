@@ -113,8 +113,9 @@ fn group(
         });
 }
 
-/// A worktree's line: its branch, what it holds, and the button that
-/// opens it.
+/// A worktree's line: its name, what it holds, and the button that opens
+/// it. The right-hand side is laid out first and the name takes what is
+/// left, cut short with "…": a long branch never runs under the counts.
 fn header(
     ui: &mut egui::Ui,
     head: &Row,
@@ -122,29 +123,8 @@ fn header(
     selected: Option<&str>,
     acts: &mut Vec<Act>,
 ) {
-    let root = head.facts.root;
     let muted = ui.visuals().weak_text_color();
     let picked = selected.is_some() && preview_key(head).as_deref() == selected;
-    let label = ui
-        .selectable_label(picked, RichText::new(head.search.as_str()).strong())
-        .on_hover_text(&head.location);
-    if label.clicked() {
-        acts.push(Act::Select(head.clone()));
-    }
-    if label.double_clicked() {
-        acts.push(Act::Enter(head.clone()));
-    }
-    if root {
-        egui::Frame::new()
-            .stroke(egui::Stroke::new(1.0, muted.gamma_multiply(0.6)))
-            .corner_radius(4)
-            .inner_margin(egui::Margin::symmetric(5, 0))
-            .show(ui, |ui| {
-                ui.label(RichText::new("root").small().color(muted));
-            })
-            .response
-            .on_hover_text("The main worktree, the one holding .git");
-    }
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         if head.kind == RowKind::Worktree
             && ui
@@ -167,7 +147,49 @@ fn header(
         if !badge.is_empty() {
             ui.label(RichText::new(badge).small().color(muted));
         }
+        if head.facts.detached {
+            pill(ui, "detached", "On a commit, not on a branch");
+        }
+        if head.facts.root {
+            pill(ui, "root", "The main worktree, the one holding .git");
+        }
+        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+            let name =
+                egui::Button::selectable(picked, RichText::new(name(head)).strong()).truncate();
+            let label = ui.add(name).on_hover_text(&head.location);
+            if label.clicked() {
+                acts.push(Act::Select(head.clone()));
+            }
+            if label.double_clicked() {
+                acts.push(Act::Enter(head.clone()));
+            }
+        });
     });
+}
+
+/// What a worktree is called: its branch, or its folder when it is on a
+/// commit and the branch says nothing.
+fn name(head: &Row) -> String {
+    if head.facts.detached
+        && let Some(leaf) = std::path::Path::new(&head.location).file_name()
+    {
+        return leaf.to_string_lossy().into_owned();
+    }
+    head.search.clone()
+}
+
+/// A small outlined word beside a name.
+fn pill(ui: &mut egui::Ui, word: &str, hover: &str) {
+    let muted = ui.visuals().weak_text_color();
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, muted.gamma_multiply(0.6)))
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(5, 0))
+        .show(ui, |ui| {
+            ui.label(RichText::new(word).small().color(muted));
+        })
+        .response
+        .on_hover_text(hover);
 }
 
 /// One session: a row as wide as the pane, its dot, its title, and how

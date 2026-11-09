@@ -372,6 +372,26 @@ mod tests {
     }
 
     #[test]
+    fn a_detached_worktree_says_so_as_a_fact() {
+        // Two detached worktrees share a branch name, "(detached)": an
+        // interface naming them by branch needs to know to name them
+        // otherwise.
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        crate::testing::git(&repo, &["worktree", "add", "-q", "--detach", "../loose"]);
+        let z = zrush(&td, repo);
+        let mut s = RepoSnapshot::default();
+        s.apply(Event::Worktrees(1, z.worktrees().unwrap()), 1);
+        let rows = s.rows(&z, &view());
+        let facts: Vec<bool> = rows
+            .iter()
+            .filter(|r| r.kind == RowKind::Worktree)
+            .map(|r| r.facts.detached)
+            .collect();
+        assert_eq!(facts, vec![false, true]);
+    }
+
+    #[test]
     fn a_worktree_row_carries_its_facts_not_only_its_text() {
         // An interface that is not a terminal draws these its own way, so
         // they come as data rather than inside the label.
