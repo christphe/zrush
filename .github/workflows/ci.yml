@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     # v* until 0.0.4; CLI releases are cli-v* after it (gui-v* is the GUI).
-    tags: ["v*", "cli-v*"]
+    tags: ["v*", "cli-v*", "gui-v*"]
   pull_request:
   workflow_dispatch:
 
@@ -75,6 +75,8 @@ jobs:
 
   release:
     name: ${{ matrix.target }}
+    # The desktop app's tags build the desktop app, below, not the CLI.
+    if: ${{ !startsWith(github.ref, 'refs/tags/gui-v') }}
     needs: [test, lint]
     runs-on: ${{ matrix.os }}
     permissions:
@@ -178,4 +180,74 @@ jobs:
             || gh release create "$tag" --title "$tag" --generate-notes \
             || gh release view "$tag" > /dev/null
           f="${{ steps.archive.outputs.file }}"
+          gh release upload "$tag" "dist/$f" "dist/$f.sha256" --clobber
+
+  # The desktop app, in preview: a gui-vX.Y.Z tag publishes its binaries as
+  # a pre-release. A pre-release is never GitHub's "latest", which the
+  # CLI's update check reads, so the CLI keeps finding its own releases.
+  # Installers (.msi, .dmg, AppImage) and self-update come later.
+  gui-release:
+    name: gui ${{ matrix.target }}
+    if: startsWith(github.ref, 'refs/tags/gui-v')
+    needs: [test, lint]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,   target: aarch64-apple-darwin }
+          - { os: macos-latest,   target: x86_64-apple-darwin }
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p zrush-gui
+
+      - name: Pack
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="zrush-gui-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/zrush-gui.exe" "dist/$name/"
+          else
+            cp "target/${{ matrix.target }}/release/zrush-gui" "dist/$name/"
+          fi
+          cp README.md LICENSE "dist/$name/"
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            file="$name.zip"
+            7z a -tzip "$file" "$name" > /dev/null
+          else
+            file="$name.tar.gz"
+            tar -czf "$file" "$name"
+          fi
+          if command -v sha256sum > /dev/null; then
+            sha256sum "$file" > "$file.sha256"
+          else
+            shasum -a 256 "$file" > "$file.sha256"
+          fi
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" > /dev/null 2>&1 \
+            || gh release create "$tag" --title "zrush desktop ${tag#gui-v} (preview)" \
+                 --generate-notes --prerelease --latest=false \
+            || gh release view "$tag" > /dev/null
+          f="${{ steps.pack.outputs.file }}"
           gh release upload "$tag" "dist/$f" "dist/$f.sha256" --clobber

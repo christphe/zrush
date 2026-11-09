@@ -10,3 +10,6 @@ __pycache__/
 
 # The screenshot tool resolves its own dependencies.
 tools/gui-shots/Cargo.lock
+
+# The screenshot tool builds on its own.
+tools/gui-shots/target/
