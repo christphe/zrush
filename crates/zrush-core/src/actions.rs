@@ -8,6 +8,7 @@ use crate::app::{BranchKind, Zrush};
 use crate::config::Config;
 use crate::error::{Result, ZrushError};
 use crate::model::Session;
+use crate::purge::Plan;
 
 /// File a conversation under `worktree` and open it there, bound to it.
 pub fn adopt(z: &Zrush, agent: &str, id: &str, worktree: &Path) -> Result<String> {
@@ -49,25 +50,33 @@ pub fn remove(z: &Zrush, path: &Path, sessions: &[Session], with_sessions: bool)
 }
 
 /// Each item is independent: a dirty worktree refuses without stopping the
-/// rest, and only the closing summary is reported.
-pub fn purge(z: &Zrush, worktrees: &[PathBuf], sessions: &[(String, String)]) -> Result<String> {
+/// rest, and only the closing summary is reported. The sessions of a
+/// worktree git refused stay, with it.
+pub fn purge(z: &Zrush, plan: &Plan) -> Result<String> {
     let mut removed = 0;
-    let mut refused = 0;
-    for p in worktrees {
+    let mut refused: Vec<&PathBuf> = Vec::new();
+    for p in &plan.worktrees {
         if z.remove_worktree(p, &[], false).is_ok() {
             removed += 1;
         } else {
-            refused += 1;
+            refused.push(p);
         }
     }
-    let gone: usize = sessions
+    let gone: usize = plan
+        .sessions
         .iter()
-        .map(|(a, i)| z.delete_session(a, i, false, None).unwrap_or(0))
+        .filter(|d| !d.owner.as_ref().is_some_and(|o| refused.contains(&o)))
+        .map(|d| {
+            // A worktree removed a moment ago has no association left to
+            // clear.
+            let owner = d.owner.as_deref().filter(|p| p.exists());
+            z.delete_session(&d.agent, &d.id, false, owner).unwrap_or(0)
+        })
         .sum();
-    let kept = if refused > 0 {
-        format!(", {refused} kept: git refused")
-    } else {
+    let kept = if refused.is_empty() {
         String::new()
+    } else {
+        format!(", {} kept: git refused", refused.len())
     };
     Ok(format!(
         "purged {removed} worktree(s), {gone} transcript(s){kept}"
@@ -130,7 +139,7 @@ mod tests {
         std::fs::write(dirty.join("untracked.txt"), "x").unwrap();
         let z = zrush(&td, repo);
         assert_eq!(
-            purge(&z, &[clean, dirty], &[]).unwrap(),
+            purge(&z, &worktrees(&[clean, dirty])).unwrap(),
             "purged 1 worktree(s), 0 transcript(s), 1 kept: git refused"
         );
     }
@@ -145,9 +154,80 @@ mod tests {
         );
         let z = zrush(&td, repo.clone());
         assert_eq!(
-            purge(&z, &[repo.join(".claude/worktrees/a")], &[]).unwrap(),
+            purge(&z, &worktrees(&[repo.join(".claude/worktrees/a")])).unwrap(),
             "purged 1 worktree(s), 0 transcript(s)"
         );
+    }
+
+    fn worktrees(w: &[PathBuf]) -> Plan {
+        Plan {
+            worktrees: w.to_vec(),
+            ..Plan::default()
+        }
+    }
+
+    /// A transcript for `id`, where the agent keeps them.
+    fn transcript(td: &tempfile::TempDir, id: &str) -> PathBuf {
+        let dir = dirs_under(td.path()).claude_projects.join("somewhere");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join(format!("{id}.jsonl"));
+        std::fs::write(&f, "{}").unwrap();
+        f
+    }
+
+    fn doomed(id: &str, owner: &Path) -> crate::purge::Doomed {
+        crate::purge::Doomed {
+            agent: "claude".into(),
+            id: id.into(),
+            owner: Some(owner.to_path_buf()),
+        }
+    }
+
+    #[test]
+    fn a_session_purged_with_its_worktree_loses_its_transcript() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        git(
+            &repo,
+            &["worktree", "add", "-q", ".claude/worktrees/a", "-b", "a"],
+        );
+        let a = repo.join(".claude/worktrees/a");
+        let f = transcript(&td, "s1");
+        let z = zrush(&td, repo);
+        let plan = Plan {
+            worktrees: vec![a.clone()],
+            sessions: vec![doomed("s1", &a)],
+            ..Plan::default()
+        };
+        assert_eq!(
+            purge(&z, &plan).unwrap(),
+            "purged 1 worktree(s), 1 transcript(s)"
+        );
+        assert!(!f.exists());
+    }
+
+    #[test]
+    fn the_sessions_of_a_worktree_git_refused_stay_with_it() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        git(
+            &repo,
+            &["worktree", "add", "-q", ".claude/worktrees/d", "-b", "d"],
+        );
+        let d = repo.join(".claude/worktrees/d");
+        std::fs::write(d.join("untracked.txt"), "x").unwrap();
+        let f = transcript(&td, "s2");
+        let z = zrush(&td, repo);
+        let plan = Plan {
+            worktrees: vec![d.clone()],
+            sessions: vec![doomed("s2", &d)],
+            ..Plan::default()
+        };
+        assert_eq!(
+            purge(&z, &plan).unwrap(),
+            "purged 0 worktree(s), 0 transcript(s), 1 kept: git refused"
+        );
+        assert!(f.exists());
     }
 
     #[test]

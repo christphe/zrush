@@ -118,10 +118,7 @@ pub(super) fn handle(
             path,
             with_sessions,
         } => remove(app, z, probes, path, with_sessions),
-        Action::Purge {
-            worktrees,
-            sessions,
-        } => purge(app, z, probes, worktrees, sessions),
+        Action::Purge(plan) => purge(app, z, probes, plan),
         Action::SwitchAgent(id) => switch_agent(app, z, probes, id),
         Action::SetEditor(name) => set_editor(app, z, &z.set_editor(&name), &name),
         Action::SetEditorCommand(cmd) => {
@@ -226,13 +223,10 @@ pub(super) fn purge(
     app: &mut App,
     z: &Arc<Zrush>,
     probes: &zrush_core::loader::Loader,
-    worktrees: Vec<std::path::PathBuf>,
-    sessions: Vec<(String, String)>,
+    plan: zrush_core::purge::Plan,
 ) {
     let z = Arc::clone(z);
-    start(app, probes, "Purge", move || {
-        actions::purge(&z, &worktrees, &sessions)
-    });
+    start(app, probes, "Purge", move || actions::purge(&z, &plan));
 }
 
 /// A setting was written, or was not. Either way the interface goes back

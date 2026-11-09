@@ -91,10 +91,7 @@ pub enum Action {
         path: PathBuf,
         with_sessions: bool,
     },
-    Purge {
-        worktrees: Vec<PathBuf>,
-        sessions: Vec<(String, String)>,
-    },
+    Purge(zrush_core::purge::Plan),
     SwitchAgent(String),
     /// An editor by name, or a whole command line typed by hand.
     SetEditor(String),

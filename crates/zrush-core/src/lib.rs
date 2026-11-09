@@ -33,6 +33,7 @@ pub mod intent;
 pub mod loader;
 pub mod model;
 pub mod paths;
+pub mod purge;
 pub mod snapshot;
 pub mod state;
 pub mod surface;
