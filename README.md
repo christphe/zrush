@@ -414,8 +414,19 @@ From there, **Open in IDE** opens it the way enter does in the terminal, and
 questions about misfiled and orphaned sessions, and has a settings window for
 everything the terminal's settings screen has.
 
-It is a preview: it builds from a checkout for now, and installers come with
-its first release.
+What the terminal does with a key, the window does with a right click:
+
+- **on a worktree**: open in the IDE, agent in a terminal, new worktree, copy
+  its path, remove it (never the main one);
+- **on a session**: open in the IDE, resume in a terminal, move it to a new
+  worktree, copy its path, delete it (never a running one).
+
+Above the tree, a filter in the terminal's syntax (`Ctrl+F`, `⌘F` on a Mac),
+**+ New worktree**, and **Purge…**, which ticks rows and asks before removing
+them. A worktree on a detached HEAD is named by its folder.
+
+It is a preview, released as `gui-vX.Y.Z` pre-releases with a bare binary per
+platform; installers and self-update come later. From a checkout:
 
 ```sh
 cargo run --release -p zrush-gui -- [REPO...]

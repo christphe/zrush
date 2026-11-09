@@ -7,6 +7,16 @@ All notable changes to the `zrush` command line. The format follows
 Releases up to 0.0.4 are tagged `vX.Y.Z`; later ones `cli-vX.Y.Z`, beside the
 desktop app's own `gui-vX.Y.Z`.
 
+## [Unreleased]
+
+### Fixed
+
+- A purge deletes the transcript of a session marked along with its
+  worktree; it used to remove the worktree and leave the transcript.
+- "Purge, and their other sessions too" deletes the marked worktrees' other
+  sessions; it did the same as "Purge only what is marked".
+- A worktree git refuses to remove keeps its sessions through a purge.
+
 ## [0.0.4] - 2026-11-08
 
 ### Changed
