@@ -204,6 +204,51 @@ mod tests {
     }
 
     #[test]
+    fn the_filter_keeps_what_matches() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        with_session(&td, &repo, &["port it to rust", "On y va."]);
+        let (mut h, _) = harness(&td, &repo);
+        until(&mut h, SESSION_TITLE);
+        h.state_mut().tab.filter = "zzz".into();
+        h.run_steps(3);
+        assert!(h.query_by_label_contains(SESSION_TITLE).is_none());
+        assert!(h.query_by_label("No match").is_some());
+        h.state_mut().tab.filter = "rust".into();
+        h.run_steps(3);
+        assert!(h.query_by_label_contains(SESSION_TITLE).is_some());
+    }
+
+    #[test]
+    fn a_filter_opens_a_folded_worktree() {
+        // A worktree that is neither the main one nor running anything
+        // starts folded; a match under it must show all the same.
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        crate::testing::git(&repo, &["worktree", "add", "-q", "-b", "side", "../side"]);
+        let side = zrush_core::paths::real(&repo.join("../side"));
+        with_session(&td, &side, &["port it to rust", "On y va."]);
+        let (mut h, _) = harness(&td, &repo);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !h
+            .state()
+            .tab
+            .rows()
+            .iter()
+            .any(|r| r.search == SESSION_TITLE)
+            && Instant::now() < deadline
+        {
+            h.step();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        h.run_steps(3);
+        assert!(h.query_by_label_contains(SESSION_TITLE).is_none(), "folded");
+        h.state_mut().tab.filter = "rust".into();
+        h.run_steps(3);
+        assert!(h.query_by_label_contains(SESSION_TITLE).is_some());
+    }
+
+    #[test]
     fn clicking_a_session_shows_its_conversation() {
         let td = tempfile::TempDir::new().unwrap();
         let repo = scratch_repo(&td);

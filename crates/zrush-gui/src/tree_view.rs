@@ -1,6 +1,7 @@
 //! The left pane: worktrees as foldable headers, their sessions under them.
 
 use egui::{Align, Layout, RichText, Sense, UiBuilder, vec2};
+use zrush_core::filter;
 use zrush_core::intent::Question;
 use zrush_core::model::SessionKind;
 use zrush_core::model::tree::{Row, RowKind};
@@ -44,14 +45,32 @@ pub fn show(ui: &mut egui::Ui, tab: &mut Tab) -> Option<Question> {
         });
     });
     ui.add_space(4.0);
+    filter_field(ui, tab);
+    ui.add_space(6.0);
 
     let mut acts: Vec<Act> = Vec::new();
     let selected = tab.selected.clone();
+    let filtering = !tab.filter.trim().is_empty();
+    let shown: Vec<&Row> = filter::apply(tab.rows(), &tab.filter)
+        .into_iter()
+        .filter_map(|i| tab.rows().get(i))
+        .collect();
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| {
-            for (head, children) in groups(tab.rows()) {
-                group(ui, tab, head, &children, selected.as_deref(), &mut acts);
+            if shown.is_empty() && filtering {
+                ui.weak("No match");
+            }
+            for (head, children) in groups(shown.iter().copied()) {
+                group(
+                    ui,
+                    tab,
+                    head,
+                    &children,
+                    selected.as_deref(),
+                    filtering,
+                    &mut acts,
+                );
                 ui.add_space(6.0);
             }
         });
@@ -71,9 +90,25 @@ pub fn show(ui: &mut egui::Ui, tab: &mut Tab) -> Option<Question> {
     asked
 }
 
+/// The field that narrows the tree. Ctrl+F (⌘F) reaches it from anywhere
+/// in the tab; Escape empties it.
+fn filter_field(ui: &mut egui::Ui, tab: &mut Tab) {
+    let field = ui.add(
+        egui::TextEdit::singleline(&mut tab.filter)
+            .hint_text("Filter   'exact  ^start  end$  !not")
+            .desired_width(f32::INFINITY),
+    );
+    if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
+        field.request_focus();
+    }
+    if field.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        tab.filter.clear();
+    }
+}
+
 /// The flat rows as headers (a worktree, or the orphans) and what is under
 /// each.
-fn groups(rows: &[Row]) -> Vec<(&Row, Vec<&Row>)> {
+fn groups<'a>(rows: impl IntoIterator<Item = &'a Row>) -> Vec<(&'a Row, Vec<&'a Row>)> {
     let mut out: Vec<(&Row, Vec<&Row>)> = Vec::new();
     for r in rows {
         if r.is_child() {
@@ -93,15 +128,19 @@ fn group(
     head: &Row,
     children: &[&Row],
     selected: Option<&str>,
+    filtering: bool,
     acts: &mut Vec<Act>,
 ) {
     let live = children
         .iter()
         .any(|c| kind_of(tab, c) == Some(SessionKind::Live));
-    let id = ui.make_persistent_id(("node", &head.node));
+    // While filtering every match shows, under a state of its own: the
+    // folds you made come back when the filter is cleared.
+    let id = ui.make_persistent_id(("node", filtering, &head.node));
     let root = head.facts.root;
     let count = children.len();
-    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, root || live)
+    let open = filtering || root || live;
+    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, open)
         .show_header(ui, |ui| header(ui, head, count, selected, acts))
         .body(|ui| {
             if children.is_empty() {

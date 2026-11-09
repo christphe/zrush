@@ -56,6 +56,8 @@ pub struct Tab {
     pub busy: Option<String>,
     /// The question that is up, if any.
     pub pending: Option<Pending>,
+    /// What the tree is narrowed to, in core's filter syntax.
+    pub filter: String,
     live: Option<Live>,
     rows: Vec<Row>,
     last_refresh: Instant,
@@ -101,6 +103,7 @@ impl Tab {
             flash: None,
             busy: None,
             pending: None,
+            filter: String::new(),
             live: None,
             rows: Vec::new(),
             last_refresh: Instant::now(),
