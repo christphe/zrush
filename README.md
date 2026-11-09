@@ -403,6 +403,63 @@ editor implements it on its side of the pipe and zrush never learns what
 kind of editor it is talking to. Vendoring ties the two build graphs
 together; a pipe does not.
 
+## Desktop app (preview)
+
+`zrush-gui` is zrush in a window of its own, with its own place in the
+taskbar. It shows several repositories at once, one tab each: the worktrees
+and their sessions on the left, and on the right the conversation of the
+session you pick (Markdown, scrollable) or the git state of the worktree.
+From there, **Open in IDE** opens it the way enter does in the terminal, and
+**Agent in a terminal** resumes it in a new terminal window. It asks the same
+questions about misfiled and orphaned sessions, and has a settings window for
+everything the terminal's settings screen has.
+
+It is a preview: it builds from a checkout for now, and installers come with
+its first release.
+
+```sh
+cargo run --release -p zrush-gui -- [REPO...]
+```
+
+It opens the tabs it had last time, plus any repository named on the
+command line; with neither, the repository it was started in.
+
+It keeps two things in `config.toml`, next to the terminal's settings:
+`gui_repos`, the tabs that were open, and `gui_theme`, the theme's name
+(`auto` follows the system's light or dark mode).
+
+### Themes
+
+Eight ship with it: `vscode-dark`, `vscode-light`, `zed-dark`, `zed-light`,
+`solarized-dark`, `solarized-light`, `nord` and `dracula`. A file in
+`~/.config/zrush/themes/` adds one, named after the file; a file named like
+a built-in replaces it. Any colour it leaves out comes from `vscode-dark`
+or `vscode-light`:
+
+```toml
+# ~/.config/zrush/themes/mine.toml
+label = "Mine"
+dark = true
+
+[colors]
+window_bg = "#1b1d23"
+panel_bg = "#22252c"
+text = "#d7dae0"
+muted = "#7f848e"
+border = "#33373f"
+selection = "#2c3f5c"
+accent = "#61afef"
+live = "#98c379"
+resumable = "#7f848e"
+warning = "#e5c07b"
+error = "#e06c75"
+code_bg = "#22252c"
+user_turn = "#61afef"
+agent_turn = "#c678dd"
+```
+
+A file that does not parse is skipped, and the window says which and why.
+
 ## Development
 
 ```sh

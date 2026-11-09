@@ -1,0 +1,568 @@
+//! The window: one tab per repository, and the bar to open more.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
+
+use egui_dock::tab_viewer::OnCloseResponse;
+use egui_dock::{DockArea, DockState, Style, TabViewer};
+use zrush_core::config::{Config, Dirs};
+use zrush_core::host::Host;
+
+use crate::tab::{REFRESH_EVERY, Tab, Wake};
+
+/// Builds the host a tab's service drives: real processes in the app, a
+/// recording one in tests.
+pub type HostFactory = Box<dyn Fn(&Config) -> Box<dyn Host>>;
+
+pub struct GuiApp {
+    dirs: Dirs,
+    cfg: Config,
+    dock: DockState<Tab>,
+    host: HostFactory,
+    wake: Wake,
+    /// What is typed in the "open a repository" field.
+    new_repo: String,
+    /// A problem worth showing above the tabs until dismissed.
+    banner: Option<String>,
+    /// The title last sent to the window, so it is only sent on change.
+    shown_title: String,
+    md: egui_commonmark::CommonMarkCache,
+    settings: crate::settings::SettingsState,
+    themes: Vec<crate::theme::Theme>,
+    /// The theme name and system mode last applied, to apply on change only.
+    applied: Option<(String, bool)>,
+}
+
+impl GuiApp {
+    pub fn new(
+        dirs: Dirs,
+        cfg: Config,
+        repos: Vec<PathBuf>,
+        host: HostFactory,
+        wake: Wake,
+    ) -> Self {
+        let mut app = Self {
+            dirs,
+            cfg,
+            dock: DockState::new(Vec::new()),
+            host,
+            wake,
+            new_repo: String::new(),
+            banner: None,
+            shown_title: String::new(),
+            md: egui_commonmark::CommonMarkCache::default(),
+            settings: crate::settings::SettingsState::default(),
+            themes: Vec::new(),
+            applied: None,
+        };
+        let (themes, errors) = crate::theme::load_all(&app.dirs.themes_dir());
+        app.themes = themes;
+        if !errors.is_empty() {
+            app.banner = Some(format!("Some themes were skipped: {}", errors.join("; ")));
+        }
+        for repo in repos {
+            let tab = app.open_tab(&repo);
+            // A saved repository that is gone still gets its tab, saying
+            // why, so it can be closed; a duplicate does not.
+            if !app.already_open(&tab) {
+                app.dock.push_to_focused_leaf(tab);
+            }
+        }
+        app
+    }
+
+    fn open_tab(&self, repo: &Path) -> Tab {
+        Tab::open(
+            repo,
+            &self.dirs,
+            &self.cfg,
+            (self.host)(&self.cfg),
+            Arc::clone(&self.wake),
+        )
+    }
+
+    fn already_open(&self, tab: &Tab) -> bool {
+        self.find(tab).is_some()
+    }
+
+    /// The tab already showing the same repository as `tab`: the same main
+    /// worktree, whichever of its worktrees each was opened from.
+    fn find(&self, tab: &Tab) -> Option<egui_dock::TabPath> {
+        let root = tab.main_root()?;
+        self.dock.find_tab_from(|t| t.main_root() == Some(root))
+    }
+
+    /// Open a repository in a new tab, or show the tab it already has.
+    pub fn add_repo(&mut self, path: &Path) -> Result<(), String> {
+        let tab = self.open_tab(path);
+        if let Some(e) = tab.error {
+            return Err(e);
+        }
+        if let Some(at) = self.find(&tab) {
+            let _ = self.dock.set_active_tab(at);
+            return Ok(());
+        }
+        self.dock.push_to_focused_leaf(tab);
+        self.save_repos();
+        Ok(())
+    }
+
+    /// Bring the tab opened for `repo` to the front.
+    pub fn focus(&mut self, repo: &Path) {
+        if let Some(at) = self.dock.find_tab_from(|t| t.repo == repo) {
+            let _ = self.dock.set_active_tab(at);
+        }
+    }
+
+    pub fn close_tab_for(&mut self, repo: &Path) {
+        if let Some(at) = self.dock.find_tab_from(|t| t.repo == repo) {
+            self.dock.remove_tab(at);
+        }
+        self.save_repos();
+    }
+
+    pub fn tabs(&self) -> impl Iterator<Item = &Tab> {
+        self.dock.iter_all_tabs().map(|(_, t)| t)
+    }
+
+    pub fn tabs_mut(&mut self) -> impl Iterator<Item = &mut Tab> {
+        self.dock.iter_all_tabs_mut().map(|(_, t)| t)
+    }
+
+    pub fn tab_count(&self) -> usize {
+        self.tabs().count()
+    }
+
+    /// Put the configured theme on, when it or the system's mode changed.
+    fn apply_theme(&mut self, ctx: &egui::Context) {
+        let os_dark = ctx.system_theme() != Some(egui::Theme::Light);
+        let want = (self.cfg.gui_theme.clone(), os_dark);
+        if self.applied.as_ref() == Some(&want) || self.themes.is_empty() {
+            return;
+        }
+        let t = crate::theme::pick(&self.themes, &want.0, os_dark);
+        crate::theme::apply(ctx, t);
+        self.applied = Some(want);
+    }
+
+    pub fn open_settings(&mut self) {
+        self.settings.open = true;
+    }
+
+    /// A setting changed through one tab's service: every other tab reads
+    /// the file again, and all of them ask again with the new values.
+    fn apply_settings(&mut self, cfg: &Config) {
+        // Another agent listed: every tab switches, and drops what the one
+        // it left had listed.
+        let agent = cfg
+            .agent
+            .clone()
+            .filter(|a| self.cfg.agent.as_ref() != Some(a));
+        self.cfg = cfg.clone();
+        for t in self.tabs_mut() {
+            if let Some(z) = t.zrush() {
+                let _ = z.reload_config();
+                if let Some(a) = &agent {
+                    let _ = z.set_active_agent(a);
+                }
+            }
+            if agent.is_some() {
+                t.snap.forget_sessions();
+            }
+            t.view.resumable_max = cfg.resumable_max;
+            t.refresh();
+        }
+    }
+
+    /// The service settings go through: the first tab whose repository
+    /// opened. Any would do, they share one config file.
+    fn settings_service(&self) -> Option<Arc<zrush_core::app::Zrush>> {
+        self.tabs().find_map(|t| t.zrush().cloned())
+    }
+
+    pub fn window_title(&self) -> String {
+        let live: usize = self.tabs().map(Tab::live_count).sum();
+        if live > 0 {
+            format!("zrush — ● {live} live")
+        } else {
+            "zrush".into()
+        }
+    }
+
+    /// The open tabs, in order, into `gui_repos`. Written on top of the
+    /// file as it is now, so nothing else in it is touched.
+    fn save_repos(&mut self) {
+        let repos: Vec<PathBuf> = self.tabs().map(|t| t.repo.clone()).collect();
+        let saved = Config::load_file(&self.dirs).and_then(|mut c| {
+            c.gui_repos = repos;
+            c.save(&self.dirs)
+        });
+        if let Err(e) = saved {
+            self.banner = Some(format!("could not remember the open tabs: {e}"));
+        }
+    }
+
+    fn top_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("zrush").strong().size(16.0));
+            ui.add_space(12.0);
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut self.new_repo)
+                    .hint_text("Add a repository: paste its path")
+                    .desired_width(380.0)
+                    .margin(egui::Margin::symmetric(8, 4)),
+            );
+            let typed = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let mut pick: Option<PathBuf> = None;
+            if ui.button("Add").clicked() || typed {
+                let p = self.new_repo.trim();
+                if !p.is_empty() {
+                    pick = Some(PathBuf::from(p));
+                }
+            }
+            if ui
+                .button("Browse…")
+                .on_hover_text("Pick a repository's folder")
+                .clicked()
+            {
+                pick = rfd::FileDialog::new().pick_folder();
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("⚙ Settings").clicked() {
+                    self.settings.open = !self.settings.open;
+                }
+            });
+            if let Some(p) = pick {
+                match self.add_repo(&p) {
+                    Ok(()) => {
+                        self.new_repo.clear();
+                        self.banner = None;
+                    }
+                    Err(e) => self.banner = Some(format!("{}: {e}", p.display())),
+                }
+            }
+        });
+        if let Some(b) = self.banner.clone() {
+            ui.add_space(6.0);
+            let error = ui.visuals().error_fg_color;
+            egui::Frame::new()
+                .fill(error.gamma_multiply(0.12))
+                .stroke(egui::Stroke::new(1.0, error.gamma_multiply(0.5)))
+                .corner_radius(6)
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(b).color(error));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("Dismiss").clicked() {
+                                self.banner = None;
+                            }
+                        });
+                    });
+                });
+        }
+    }
+
+    /// `egui_dock`'s tabs, in the theme's colours, without the buttons a
+    /// window of repositories has no use for.
+    fn dock_style(ui: &egui::Ui) -> Style {
+        let v = ui.visuals();
+        let palette = crate::theme::palette(ui.ctx());
+        let bar = palette.map_or(v.faint_bg_color, |p| p.panel_bg);
+        let body = palette.map_or(v.panel_fill, |p| p.window_bg);
+        let border = palette.map_or(v.widgets.noninteractive.bg_stroke.color, |p| p.border);
+        let text = palette.map_or(v.text_color(), |p| p.text);
+        let muted = v.weak_text_color();
+        let mut s = Style::from_egui(ui.style().as_ref());
+        s.dock_area_padding = None;
+        s.main_surface_border_stroke = egui::Stroke::NONE;
+        s.main_surface_border_rounding = egui::CornerRadius::ZERO;
+        s.tab_bar.bg_fill = bar;
+        s.tab_bar.height = 34.0;
+        s.tab_bar.hline_color = border;
+        s.tab.active.bg_fill = body;
+        s.tab.active.text_color = text;
+        s.tab.active.outline_color = border;
+        s.tab.focused = s.tab.active.clone();
+        s.tab.inactive.bg_fill = bar;
+        s.tab.inactive.text_color = muted;
+        s.tab.inactive.outline_color = egui::Color32::TRANSPARENT;
+        s.tab.hovered.bg_fill = body;
+        s.tab.hovered.text_color = text;
+        s.tab.tab_body.bg_fill = body;
+        s.tab.tab_body.stroke = egui::Stroke::NONE;
+        s.tab.tab_body.inner_margin = egui::Margin::ZERO;
+        s.tab.minimum_width = Some(120.0);
+        s
+    }
+}
+
+/// No repository open yet: say how to add one.
+fn welcome(ui: &mut egui::Ui) {
+    let muted = ui.visuals().weak_text_color();
+    ui.vertical_centered(|ui| {
+        ui.add_space(ui.available_height() * 0.35);
+        ui.label(
+            egui::RichText::new("No repository open")
+                .heading()
+                .color(muted),
+        );
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(
+                "Paste a repository's path above, or Browse… to pick its folder. \
+                 It comes back as a tab every time zrush opens.",
+            )
+            .color(muted),
+        );
+    });
+}
+
+/// Draws one tab; collects what was closed, to be saved after the frame.
+struct Viewer<'a> {
+    closed: Vec<PathBuf>,
+    md: &'a mut egui_commonmark::CommonMarkCache,
+}
+
+impl TabViewer for Viewer<'_> {
+    type Tab = Tab;
+
+    fn id(&mut self, tab: &mut Tab) -> egui::Id {
+        egui::Id::new(("tab", &tab.repo))
+    }
+
+    fn title(&mut self, tab: &mut Tab) -> egui::WidgetText {
+        match tab.live_count() {
+            0 => tab.title.clone().into(),
+            n => format!("{}  ● {n}", tab.title).into(),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Tab) {
+        if let Some(q) = crate::panes::show(ui, tab, self.md) {
+            tab.ask(q);
+        }
+        crate::dialog::show(ui.ctx(), tab);
+    }
+
+    fn on_close(&mut self, tab: &mut Tab) -> OnCloseResponse {
+        self.closed.push(tab.repo.clone());
+        OnCloseResponse::Close
+    }
+}
+
+impl eframe::App for GuiApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.apply_theme(ui.ctx());
+        let now = Instant::now();
+        for t in self.tabs_mut() {
+            t.poll();
+            t.refresh_if_due(now);
+        }
+        let title = self.window_title();
+        if title != self.shown_title {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.shown_title = title;
+        }
+
+        let bar_fill =
+            crate::theme::palette(ui.ctx()).map_or(ui.visuals().faint_bg_color, |p| p.panel_bg);
+        egui::Panel::top("bar")
+            .frame(
+                egui::Frame::new()
+                    .fill(bar_fill)
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
+            )
+            .show(ui, |ui| self.top_bar(ui));
+        let mut viewer = Viewer {
+            closed: Vec::new(),
+            md: &mut self.md,
+        };
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new())
+            .show(ui, |ui| {
+                if self.dock.iter_all_tabs().next().is_none() {
+                    welcome(ui);
+                    return;
+                }
+                DockArea::new(&mut self.dock)
+                    .style(Self::dock_style(ui))
+                    .show_leaf_collapse_buttons(false)
+                    .show_leaf_close_all_buttons(false)
+                    .show_inside(ui, &mut viewer);
+            });
+        if !viewer.closed.is_empty() {
+            self.save_repos();
+        }
+        if self.settings.open {
+            if let Some(z) = self.settings_service() {
+                if let Some(crate::settings::Changed::Config(cfg)) =
+                    crate::settings::show(ui.ctx(), &mut self.settings, &z, &self.themes)
+                {
+                    self.apply_settings(&cfg);
+                }
+            } else {
+                self.settings.open = false;
+                self.banner = Some("Open a repository to change the settings".into());
+            }
+        }
+        // Idle tabs still ask again now and then.
+        ui.ctx().request_repaint_after(REFRESH_EVERY);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use zrush_core::config::{Config, dirs_under};
+    use zrush_core::host::RecordingHost;
+
+    use super::*;
+    use crate::testing::{git, scratch_repo};
+
+    fn app(td: &tempfile::TempDir, repos: Vec<PathBuf>) -> GuiApp {
+        GuiApp::new(
+            dirs_under(td.path()),
+            Config::default(),
+            repos,
+            Box::new(|_| Box::new(RecordingHost::default())),
+            Arc::new(|| {}),
+        )
+    }
+
+    /// A second repository beside the first scratch one.
+    fn other_repo(td: &tempfile::TempDir) -> PathBuf {
+        let base = zrush_core::paths::real(td.path()).join("second");
+        std::fs::create_dir_all(&base).unwrap();
+        git(&base, &["init", "-q"]);
+        git(&base, &["config", "user.email", "t@example.invalid"]);
+        git(&base, &["config", "user.name", "zrush tests"]);
+        std::fs::write(base.join("g.txt"), "x").unwrap();
+        git(&base, &["add", "g.txt"]);
+        git(&base, &["commit", "-qm", "init"]);
+        base
+    }
+
+    #[test]
+    fn a_repo_added_twice_opens_once() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        git(
+            &repo,
+            &["worktree", "add", "-q", ".claude/worktrees/x", "-b", "x"],
+        );
+        let mut a = app(&td, Vec::new());
+        a.add_repo(&repo).unwrap();
+        a.add_repo(&repo.join(".claude/worktrees/x")).unwrap();
+        assert_eq!(a.tab_count(), 1);
+    }
+
+    #[test]
+    fn a_path_that_is_not_a_repo_is_refused_without_a_tab() {
+        let td = tempfile::TempDir::new().unwrap();
+        let mut a = app(&td, Vec::new());
+        assert!(a.add_repo(td.path()).is_err());
+        assert_eq!(a.tab_count(), 0);
+    }
+
+    #[test]
+    fn opening_and_closing_tabs_is_remembered() {
+        let td = tempfile::TempDir::new().unwrap();
+        let first = scratch_repo(&td);
+        let second = other_repo(&td);
+        let mut a = app(&td, Vec::new());
+        a.add_repo(&first).unwrap();
+        a.add_repo(&second).unwrap();
+        a.close_tab_for(&first);
+        let saved = Config::load_file(&dirs_under(td.path())).unwrap();
+        assert_eq!(saved.gui_repos, vec![second]);
+    }
+
+    #[test]
+    fn switching_agent_reaches_every_tab() {
+        // What every tab listed belonged to the agent just left.
+        let td = tempfile::TempDir::new().unwrap();
+        let first = scratch_repo(&td);
+        let second = other_repo(&td);
+        let mut a = app(&td, vec![first.clone(), second]);
+        let live = zrush_core::model::Session {
+            agent: "claude",
+            id: "x".into(),
+            title: "t".into(),
+            status: "busy 0m".into(),
+            cwd: first.clone(),
+            launch_cwd: first,
+            kind: zrush_core::model::SessionKind::Live,
+            last_activity: 0,
+        };
+        a.tabs_mut().for_each(|t| t.snap.live = vec![live.clone()]);
+        let cfg = Config {
+            agent: Some("claude".into()),
+            ..Config::default()
+        };
+        a.apply_settings(&cfg);
+        for t in a.tabs() {
+            assert_eq!(
+                t.snap.live.len(),
+                0,
+                "{} kept the old agent's sessions",
+                t.title
+            );
+        }
+    }
+
+    #[test]
+    fn the_title_counts_live_sessions() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let mut a = app(&td, vec![repo.clone()]);
+        assert_eq!(a.window_title(), "zrush");
+        let live = zrush_core::model::Session {
+            agent: "claude",
+            id: "x".into(),
+            title: "t".into(),
+            status: "busy 0m".into(),
+            cwd: repo.clone(),
+            launch_cwd: repo,
+            kind: zrush_core::model::SessionKind::Live,
+            last_activity: 0,
+        };
+        a.tabs_mut()
+            .for_each(|t| t.snap.live = vec![live.clone(); 3]);
+        assert_eq!(a.window_title(), "zrush — ● 3 live");
+    }
+
+    #[test]
+    fn a_saved_repo_that_is_gone_shows_its_error_and_the_others_load() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let gone = td.path().join("gone");
+        let a = app(&td, vec![gone.clone(), repo]);
+        let error = a
+            .tabs()
+            .find(|t| t.repo == gone)
+            .and_then(|t| t.error.clone())
+            .unwrap();
+        let mut h = Harness::builder()
+            .with_size([1000.0, 700.0])
+            .build_eframe(|_cc| a);
+        // Both tabs are in the bar; the gone one's body says why.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while h.query_all_by_label_contains("main").next().is_none() && Instant::now() < deadline {
+            h.step();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // The good tab loaded (its main worktree is listed) and the gone one
+        // is there too; showing it shows why it is empty.
+        assert!(h.query_all_by_label_contains("main").next().is_some());
+        assert_eq!(h.state().tab_count(), 2);
+        h.state_mut().focus(&gone);
+        h.run_steps(3);
+        assert!(h.query_by_label_contains(&error).is_some(), "{error}");
+    }
+}

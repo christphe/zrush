@@ -231,6 +231,7 @@ mod tests {
 
     fn row(kind: RowKind, glyph: &str, label: &str, badge: &str, status: &str) -> Row {
         Row {
+            facts: zrush_core::model::tree::RowFacts::default(),
             kind,
             node: NodeId::Orphans,
             session_id: None,
@@ -359,6 +360,7 @@ mod highlight_tests {
 
     fn session(title: &str) -> Row {
         Row {
+            facts: zrush_core::model::tree::RowFacts::default(),
             kind: RowKind::Session,
             node: NodeId::Orphans,
             session_id: None,

@@ -1,0 +1,18 @@
+label = "VS Code Light"
+dark = false
+
+[colors]
+window_bg = "#ffffff"
+panel_bg = "#f3f3f3"
+text = "#3b3b3b"
+muted = "#717171"
+border = "#e5e5e5"
+selection = "#add6ff"
+accent = "#005fb8"
+live = "#388a34"
+resumable = "#8b8b8b"
+warning = "#bf8803"
+error = "#e51400"
+code_bg = "#f3f3f3"
+user_turn = "#005fb8"
+agent_turn = "#af00db"

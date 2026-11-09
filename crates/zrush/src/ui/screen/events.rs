@@ -314,9 +314,7 @@ pub(super) fn switch_agent(
             adopt(app, &cfg);
             app.active_agent = id;
             // Everything listed belonged to the agent we just left.
-            app.snap.live.clear();
-            app.snap.resumable.clear();
-            app.snap.scanned = false;
+            app.snap.forget_sessions();
             rebuild(app, z);
             probes.refresh(z, app.show_all);
             if app.settings_open {

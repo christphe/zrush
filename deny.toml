@@ -3,6 +3,18 @@
 
 [advisories]
 yanked = "deny"
+# Unmaintained, not vulnerable, and reached only through egui, already at
+# its latest release: they go when egui drops them.
+ignore = [
+  # paste, egui_dock's macros.
+  { id = "RUSTSEC-2024-0436", reason = "egui_dock's dependency; no newer egui_dock" },
+  # ttf-parser, winit's window decorations on Wayland.
+  { id = "RUSTSEC-2026-0192", reason = "winit's dependency, through eframe" },
+  # zbus_names, zvariant, zvariant_derive: accessibility on Linux.
+  { id = "RUSTSEC-2026-0371", reason = "accesskit's dependency, through eframe" },
+  { id = "RUSTSEC-2026-0370", reason = "accesskit's dependency, through eframe" },
+  { id = "RUSTSEC-2026-0372", reason = "accesskit's dependency, through eframe" },
+]
 
 [licenses]
 # Permissive, plus MPL-2.0 (file-level copyleft, fine for a linked crate).
@@ -23,6 +35,9 @@ allow = [
   # webpki-roots, the root certificates the update check trusts: a
   # permissive licence for data.
   "CDLA-Permissive-2.0",
+  # epaint_default_fonts, the fonts egui draws the desktop app with.
+  "OFL-1.1",
+  "Ubuntu-font-1.0",
   # zrush's own crates.
   "GPL-3.0-only",
 ]

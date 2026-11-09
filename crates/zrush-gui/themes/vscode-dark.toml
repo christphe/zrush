@@ -1,0 +1,18 @@
+label = "VS Code Dark"
+dark = true
+
+[colors]
+window_bg = "#1e1e1e"
+panel_bg = "#252526"
+text = "#cccccc"
+muted = "#8b8b8b"
+border = "#3c3c3c"
+selection = "#04395e"
+accent = "#3794ff"
+live = "#89d185"
+resumable = "#8b8b8b"
+warning = "#cca700"
+error = "#f14c4c"
+code_bg = "#2d2d2d"
+user_turn = "#3794ff"
+agent_turn = "#c586c0"

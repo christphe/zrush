@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/zrush-core", "crates/zrush"]
+members = ["crates/zrush-core", "crates/zrush", "crates/zrush-gui"]
 
 # Shared by every crate in the workspace, so a version is decided once.
 [workspace.package]
@@ -31,6 +31,16 @@ toml = "1.2.0"
 ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 unicode-width = "0.2.2"
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
+
+# The desktop app. egui's crates move together: egui_dock and
+# egui_commonmark follow eframe a release behind, so all of them are pinned
+# to the line egui_dock supports.
+eframe = { version = "0.36.2", features = ["persistence"] }
+egui = "0.36.2"
+egui_dock = "0.21.1"
+egui_commonmark = "0.25.0"
+rfd = "0.18.0"
+egui_kittest = { version = "0.36.2", features = ["eframe"] }
 
 assert_cmd = "2.2.2"
 insta = "1.48.0"

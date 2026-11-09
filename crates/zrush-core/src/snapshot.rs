@@ -145,6 +145,14 @@ impl RepoSnapshot {
         rows
     }
 
+    /// Drop every session, keeping the worktrees: what was listed belonged
+    /// to an agent that is no longer the one being looked at.
+    pub fn forget_sessions(&mut self) {
+        self.live.clear();
+        self.resumable.clear();
+        self.scanned = false;
+    }
+
     /// A session by id: running ones first, then the ones that can resume.
     pub fn session(&self, id: &str) -> Option<&Session> {
         self.live
@@ -364,9 +372,31 @@ mod tests {
     }
 
     #[test]
+    fn a_worktree_row_carries_its_facts_not_only_its_text() {
+        // An interface that is not a terminal draws these its own way, so
+        // they come as data rather than inside the label.
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let z = zrush(&td, repo.clone());
+        let main = repo.to_str().unwrap().to_string();
+        let mut s = RepoSnapshot::default();
+        s.apply(Event::Worktrees(1, z.worktrees().unwrap()), 1);
+        s.apply(Event::History(1, repo.clone(), 4), 1);
+        s.apply(
+            Event::Live(1, vec![session("l", &main, SessionKind::Live)]),
+            1,
+        );
+        let row = &s.rows(&z, &view())[0];
+        assert!(row.facts.root);
+        assert_eq!(row.facts.live, 1);
+        assert_eq!(row.facts.history, 4);
+    }
+
+    #[test]
     fn a_preview_is_asked_for_once() {
         let mut s = RepoSnapshot::default();
         let row = Row {
+            facts: crate::model::tree::RowFacts::default(),
             kind: RowKind::Worktree,
             node: NodeId::Worktree("/a".into()),
             session_id: None,
@@ -381,6 +411,23 @@ mod tests {
         let first = s.want_preview(&row, "claude");
         assert!(matches!(first, Some((_, PreviewJob::Worktree(_)))));
         assert!(s.want_preview(&row, "claude").is_none());
+    }
+
+    #[test]
+    fn forgetting_sessions_keeps_the_worktrees() {
+        let mut s = RepoSnapshot::default();
+        s.apply(Event::Worktrees(1, vec![wt("/a", true)]), 1);
+        s.apply(
+            Event::Live(1, vec![session("l", "/a", SessionKind::Live)]),
+            1,
+        );
+        s.apply(
+            Event::Resumable(1, vec![session("r", "/a", SessionKind::Resumable)]),
+            1,
+        );
+        s.forget_sessions();
+        assert!(s.live.is_empty() && s.resumable.is_empty() && !s.scanned);
+        assert_eq!(s.worktrees.len(), 1);
     }
 
     #[test]

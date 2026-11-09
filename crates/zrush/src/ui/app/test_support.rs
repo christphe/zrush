@@ -17,6 +17,7 @@ pub(super) fn code(c: KeyCode) -> KeyEvent {
 
 pub(super) fn row(kind: RowKind, node: NodeId, id: Option<&str>, label: &str) -> Row {
     Row {
+        facts: zrush_core::model::tree::RowFacts::default(),
         kind,
         node,
         session_id: id.map(str::to_string),

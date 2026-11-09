@@ -1,0 +1,18 @@
+label = "Nord"
+dark = true
+
+[colors]
+window_bg = "#2e3440"
+panel_bg = "#3b4252"
+text = "#d8dee9"
+muted = "#7b88a1"
+border = "#434c5e"
+selection = "#4c566a"
+accent = "#88c0d0"
+live = "#a3be8c"
+resumable = "#7b88a1"
+warning = "#ebcb8b"
+error = "#bf616a"
+code_bg = "#3b4252"
+user_turn = "#81a1c1"
+agent_turn = "#b48ead"

@@ -1,0 +1,18 @@
+label = "Dracula"
+dark = true
+
+[colors]
+window_bg = "#282a36"
+panel_bg = "#21222c"
+text = "#f8f8f2"
+muted = "#6272a4"
+border = "#44475a"
+selection = "#44475a"
+accent = "#bd93f9"
+live = "#50fa7b"
+resumable = "#6272a4"
+warning = "#f1fa8c"
+error = "#ff5555"
+code_bg = "#343746"
+user_turn = "#8be9fd"
+agent_turn = "#ff79c6"

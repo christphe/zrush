@@ -1,0 +1,18 @@
+label = "Solarized Dark"
+dark = true
+
+[colors]
+window_bg = "#002b36"
+panel_bg = "#073642"
+text = "#839496"
+muted = "#586e75"
+border = "#0d4a58"
+selection = "#274642"
+accent = "#268bd2"
+live = "#859900"
+resumable = "#586e75"
+warning = "#b58900"
+error = "#dc322f"
+code_bg = "#073642"
+user_turn = "#268bd2"
+agent_turn = "#6c71c4"

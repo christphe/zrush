@@ -1,0 +1,18 @@
+label = "Zed One Light"
+dark = false
+
+[colors]
+window_bg = "#fafafa"
+panel_bg = "#ebebec"
+text = "#242529"
+muted = "#58585a"
+border = "#c9c9ca"
+selection = "#dbe3fb"
+accent = "#5c78e2"
+live = "#669f59"
+resumable = "#7e7e81"
+warning = "#a48819"
+error = "#d36151"
+code_bg = "#ebebec"
+user_turn = "#5c78e2"
+agent_turn = "#a449ab"
