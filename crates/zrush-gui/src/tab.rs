@@ -72,6 +72,18 @@ impl Tab {
     /// Never fails: a repository that cannot be opened is a tab showing
     /// why, so the other tabs still open and this one can be closed.
     pub fn open(repo: &Path, dirs: &Dirs, cfg: &Config, host: Box<dyn Host>, wake: Wake) -> Self {
+        let made = Zrush::for_repo(dirs, cfg, repo.to_path_buf(), host, false, None);
+        Self::over(repo, cfg, made, wake)
+    }
+
+    /// The same, over a zrush already made, or the reason it could not be:
+    /// tests make theirs with every agent, installed on the machine or not.
+    pub(crate) fn over(
+        repo: &Path,
+        cfg: &Config,
+        made: zrush_core::error::Result<Zrush>,
+        wake: Wake,
+    ) -> Self {
         let fallback = repo.file_name().map_or_else(
             || repo.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
@@ -93,7 +105,7 @@ impl Tab {
             rows: Vec::new(),
             last_refresh: Instant::now(),
         };
-        match Zrush::for_repo(dirs, cfg, repo.to_path_buf(), host, false, None) {
+        match made {
             Ok(z) => {
                 // The whole conversation, for this window only.
                 z.keep_override(|c| c.preview_turns = usize::MAX);
@@ -377,7 +389,7 @@ pub(crate) mod tests {
     use std::path::Path;
     use std::time::{Duration, Instant};
 
-    use zrush_core::config::{Config, dirs_under};
+    use zrush_core::config::dirs_under;
     use zrush_core::host::RecordingHost;
     use zrush_core::loader::Preview;
     use zrush_core::model::tree::RowKind;
@@ -389,13 +401,7 @@ pub(crate) mod tests {
     use crate::testing::scratch_repo;
 
     fn open(td: &tempfile::TempDir, repo: &Path) -> Tab {
-        Tab::open(
-            repo,
-            &dirs_under(td.path()),
-            &Config::default(),
-            Box::new(RecordingHost::default()),
-            Arc::new(|| {}),
-        )
+        crate::testing::open_tab(td, repo, Box::new(RecordingHost::default()))
     }
 
     /// Poll until `done` says so, or give up after 10 s.
@@ -452,13 +458,7 @@ pub(crate) mod tests {
     fn opening_the_editor_never_holds_the_window() {
         let td = tempfile::TempDir::new().unwrap();
         let repo = scratch_repo(&td);
-        let mut t = Tab::open(
-            &repo,
-            &dirs_under(td.path()),
-            &Config::default(),
-            Box::new(Slow),
-            Arc::new(|| {}),
-        );
+        let mut t = crate::testing::open_tab(&td, &repo, Box::new(Slow));
         until(&mut t, |t| !t.rows().is_empty());
         let row = t.rows()[0].clone();
         let started = Instant::now();

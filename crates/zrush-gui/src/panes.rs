@@ -85,7 +85,6 @@ mod tests {
 
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
-    use zrush_core::config::{Config, dirs_under};
     use zrush_core::host::{Host, RecordingHost};
 
     use super::*;
@@ -122,13 +121,7 @@ mod tests {
         repo: &std::path::Path,
     ) -> (Harness<'static, State>, Arc<RecordingHost>) {
         let host = Arc::new(RecordingHost::default());
-        let tab = Tab::open(
-            repo,
-            &dirs_under(td.path()),
-            &Config::default(),
-            Box::new(Shared(Arc::clone(&host))),
-            Arc::new(|| {}),
-        );
+        let tab = crate::testing::open_tab(td, repo, Box::new(Shared(Arc::clone(&host))));
         let state = State {
             tab,
             md: egui_commonmark::CommonMarkCache::default(),

@@ -58,6 +58,26 @@ pub fn zrush(td: &tempfile::TempDir, repo: PathBuf) -> Arc<Zrush> {
     )
 }
 
+/// A tab over `repo` that knows every agent, whether or not the machine
+/// running the tests has it installed: a CI runner has none.
+pub fn open_tab(
+    td: &tempfile::TempDir,
+    repo: &Path,
+    host: Box<dyn zrush_core::host::Host>,
+) -> crate::tab::Tab {
+    let dirs = dirs_under(td.path());
+    let cfg = Config::default();
+    let made = Zrush::new(
+        dirs,
+        cfg.clone(),
+        repo.to_path_buf(),
+        zrush_core::agent::all(),
+        host,
+        None,
+    );
+    crate::tab::Tab::over(repo, &cfg, made, Arc::new(|| {}))
+}
+
 pub const SESSION_ID: &str = "aaaaaaaa-1111-2222-3333-444455556666";
 pub const SESSION_TITLE: &str = "port zrush to rust";
 
