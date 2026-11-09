@@ -2,6 +2,7 @@
 //! and what the tab is showing. No egui here, so all of it is testable
 //! without a window.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
@@ -14,7 +15,9 @@ use zrush_core::config::{Config, Dirs};
 use zrush_core::host::Host;
 use zrush_core::intent::{self, Answer, Intent, Outcome, Question};
 use zrush_core::loader::{Event, Loader, Preview, Sink};
-use zrush_core::model::tree::{NodeId, Row};
+use zrush_core::model::SessionKind;
+use zrush_core::model::tree::{NodeId, Row, RowKind};
+use zrush_core::purge::{self, Plan};
 use zrush_core::snapshot::{Applied, RepoSnapshot, TreeView, preview_key};
 
 /// Called after every loader result, from the loader's threads: the window
@@ -29,15 +32,79 @@ pub const REFRESH_EVERY: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone)]
 pub enum Pending {
     Ask(Question),
-    /// A worktree to recreate needs a branch: which kind first, then its
-    /// name. `at` is where it lands, `hand_over` the session it gets.
+    /// A new worktree needs a branch: which kind first, then its name.
+    /// `at` is where it lands, `hand_over` the session it gets, if any.
     Branch {
         at: Option<PathBuf>,
-        hand_over: (String, String),
+        hand_over: Option<(String, String)>,
         kind: Option<BranchKind>,
         name: String,
     },
+    /// Something is about to go for good.
+    Confirm(Confirm),
 }
+
+/// What a confirmation is about. Its answers come safe one last, and
+/// every one before it destroys something.
+#[derive(Debug, Clone)]
+pub enum Confirm {
+    DeleteSession {
+        agent: String,
+        id: String,
+        /// The worktree it is listed under, whose association goes too.
+        worktree: Option<PathBuf>,
+        title: String,
+    },
+    RemoveWorktree {
+        path: PathBuf,
+        name: String,
+        /// Conversations held in it, which the second answer deletes.
+        sessions: usize,
+    },
+    Purge(Plan),
+}
+
+impl Confirm {
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::DeleteSession { .. } => "Delete session",
+            Self::RemoveWorktree { .. } => "Remove worktree",
+            Self::Purge(_) => "Purge",
+        }
+    }
+
+    pub fn body(&self) -> String {
+        match self {
+            Self::DeleteSession { title, .. } => {
+                format!("{title}\n\nIts transcript goes for good.")
+            }
+            Self::RemoveWorktree { name, sessions, .. } => match sessions {
+                0 => format!("{name} has no sessions."),
+                n => format!("{name} has {n} session(s)."),
+            },
+            Self::Purge(plan) => plan.summary(),
+        }
+    }
+
+    pub fn choices(&self) -> Vec<&'static str> {
+        match self {
+            Self::DeleteSession { .. } => vec!["Delete it", CANCEL],
+            Self::RemoveWorktree { sessions: 0, .. } => vec!["Remove it", CANCEL],
+            Self::RemoveWorktree { .. } => vec![
+                "Remove the worktree, keep the sessions",
+                "Remove it and delete the sessions too",
+                CANCEL,
+            ],
+            Self::Purge(_) => vec![
+                "Purge, and their other sessions too",
+                "Purge only what is marked",
+                CANCEL,
+            ],
+        }
+    }
+}
+
+const CANCEL: &str = "Cancel";
 
 pub struct Tab {
     /// The path the tab was opened with, as saved in `gui_repos`.
@@ -58,6 +125,9 @@ pub struct Tab {
     pub pending: Option<Pending>,
     /// What the tree is narrowed to, in core's filter syntax.
     pub filter: String,
+    /// Purge mode: the rows ticked so far, by preview key, so a refresh
+    /// that reorders the rows keeps them.
+    pub purging: Option<HashSet<String>>,
     live: Option<Live>,
     rows: Vec<Row>,
     last_refresh: Instant,
@@ -104,6 +174,7 @@ impl Tab {
             busy: None,
             pending: None,
             filter: String::new(),
+            purging: None,
             live: None,
             rows: Vec::new(),
             last_refresh: Instant::now(),
@@ -320,7 +391,7 @@ impl Tab {
             Outcome::NeedBranch { at, hand_over } => {
                 self.pending = Some(Pending::Branch {
                     at,
-                    hand_over,
+                    hand_over: Some(hand_over),
                     kind: None,
                     name: String::new(),
                 });
@@ -345,11 +416,161 @@ impl Tab {
             return;
         }
         if self.start("New worktree", move |z| {
-            let bind = Some((hand_over.0.as_str(), hand_over.1.as_str()));
+            let bind = hand_over.as_ref().map(|(a, i)| (a.as_str(), i.as_str()));
             actions::create(z, &name, kind, at.as_deref(), bind)
         }) {
             self.pending = None;
         }
+    }
+
+    /// Ask for a new worktree. From a session's row, the session moves to
+    /// it; from anywhere else it starts fresh.
+    pub fn new_worktree(&mut self, from: Option<&Row>) {
+        let hand_over = from
+            .and_then(|r| r.session_id.as_deref())
+            .and_then(|id| self.snap.session(id))
+            .map(|s| (s.agent.to_string(), s.id.clone()));
+        self.pending = Some(Pending::Branch {
+            at: None,
+            hand_over,
+            kind: None,
+            name: String::new(),
+        });
+    }
+
+    /// Ask before deleting this row's session or removing its worktree. A
+    /// running session and the main worktree are refused up front.
+    pub fn ask_delete(&mut self, row: &Row) {
+        match (row.kind, &row.node) {
+            (RowKind::Session | RowKind::Orphan, node) => {
+                let Some(s) = row
+                    .session_id
+                    .as_deref()
+                    .and_then(|id| self.snap.session(id))
+                else {
+                    return;
+                };
+                if s.kind == SessionKind::Live {
+                    self.flash = Some("that session is running; stop it first".into());
+                    return;
+                }
+                self.pending = Some(Pending::Confirm(Confirm::DeleteSession {
+                    agent: s.agent.to_string(),
+                    id: s.id.clone(),
+                    worktree: match node {
+                        NodeId::Worktree(p) => Some(p.clone()),
+                        NodeId::Orphans => None,
+                    },
+                    title: row.search.clone(),
+                }));
+            }
+            (RowKind::Worktree, NodeId::Worktree(path)) => {
+                if row.facts.root {
+                    self.flash = Some("the main worktree stays: git will not remove it".into());
+                    return;
+                }
+                self.pending = Some(Pending::Confirm(Confirm::RemoveWorktree {
+                    path: path.clone(),
+                    name: path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |n| n.to_string_lossy().into_owned(),
+                    ),
+                    sessions: self.snap.sessions_in(path).len(),
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    /// Carry out answer `choice` to the confirmation that is up. The last
+    /// answer is always Cancel.
+    pub fn confirm(&mut self, choice: usize) {
+        let Some(Pending::Confirm(c)) = self.pending.clone() else {
+            return;
+        };
+        if choice + 1 >= c.choices().len() {
+            self.pending = None;
+            return;
+        }
+        let started = match c {
+            Confirm::DeleteSession {
+                agent,
+                id,
+                worktree,
+                ..
+            } => self.start("Delete session", move |z| {
+                actions::delete_session(z, &agent, &id, worktree.as_deref())
+            }),
+            Confirm::RemoveWorktree { path, sessions, .. } => {
+                let with_sessions = sessions > 0 && choice == 1;
+                let held = self.snap.sessions_in(&path);
+                self.start("Remove worktree", move |z| {
+                    actions::remove(z, &path, &held, with_sessions)
+                })
+            }
+            Confirm::Purge(plan) => {
+                let plan = if choice == 0 {
+                    plan.with_others(&self.snap)
+                } else {
+                    plan
+                };
+                let started = self.start("Purge", move |z| actions::purge(z, &plan));
+                if started {
+                    self.leave_purge();
+                }
+                started
+            }
+        };
+        if started {
+            self.pending = None;
+        }
+    }
+
+    /// Purge mode: every session listed, nothing ticked yet.
+    pub fn start_purge(&mut self) {
+        self.purging = Some(HashSet::new());
+        self.view.show_all = true;
+        self.refresh();
+    }
+
+    pub fn leave_purge(&mut self) {
+        self.purging = None;
+        self.view.show_all = false;
+        self.refresh();
+    }
+
+    pub fn toggle_mark(&mut self, row: &Row) {
+        if let (Some(marked), Some(key)) = (&mut self.purging, preview_key(row))
+            && !marked.remove(&key)
+        {
+            marked.insert(key);
+        }
+    }
+
+    pub fn is_marked(&self, row: &Row) -> bool {
+        self.purging
+            .as_ref()
+            .zip(preview_key(row))
+            .is_some_and(|(m, k)| m.contains(&k))
+    }
+
+    /// Ask before purging what is ticked, by core's rules.
+    pub fn ask_purge(&mut self) {
+        let Some(marked) = &self.purging else {
+            return;
+        };
+        let at = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| preview_key(r).is_some_and(|k| marked.contains(&k)))
+            .map(|(i, _)| i);
+        let plan = purge::plan(&self.rows, at, &self.snap);
+        if plan.is_empty() {
+            self.flash = Some("nothing to purge: tick rows first".into());
+            return;
+        }
+        self.pending = Some(Pending::Confirm(Confirm::Purge(plan)));
     }
 
     /// Run a long action off the window's thread. A second one is refused
@@ -599,7 +820,7 @@ pub(crate) mod tests {
         let (mut t, gone) = loaded_with_orphan(&td);
         t.pending = Some(Pending::Branch {
             at: Some(gone),
-            hand_over: ("claude".into(), crate::testing::SESSION_ID.into()),
+            hand_over: Some(("claude".into(), crate::testing::SESSION_ID.into())),
             kind: Some(BranchKind::New),
             name: "has space".into(),
         });
@@ -615,7 +836,7 @@ pub(crate) mod tests {
         let (mut t, gone) = loaded_with_orphan(&td);
         t.pending = Some(Pending::Branch {
             at: Some(gone),
-            hand_over: ("claude".into(), crate::testing::SESSION_ID.into()),
+            hand_over: Some(("claude".into(), crate::testing::SESSION_ID.into())),
             kind: Some(BranchKind::New),
             name: "  ".into(),
         });
@@ -642,5 +863,171 @@ pub(crate) mod tests {
         t.ask(q);
         t.answer(Answer::Cancel);
         assert!(t.pending.is_none());
+    }
+
+    fn row_named(t: &Tab, name: &str) -> Option<Row> {
+        t.rows().iter().find(|r| r.search == name).cloned()
+    }
+
+    fn wait_for_row(t: &mut Tab, name: &str) -> Row {
+        until(t, |t| row_named(t, name).is_some());
+        row_named(t, name).unwrap_or_else(|| panic!("no row {name}"))
+    }
+
+    /// The transcript `with_session` wrote, wherever it was filed.
+    fn transcript_exists(td: &tempfile::TempDir) -> bool {
+        let root = dirs_under(td.path()).claude_projects;
+        std::fs::read_dir(root).unwrap().flatten().any(|d| {
+            d.path()
+                .join(format!("{}.jsonl", crate::testing::SESSION_ID))
+                .exists()
+        })
+    }
+
+    /// A second worktree, on its own branch, beside the repo.
+    fn side(repo: &Path) -> PathBuf {
+        crate::testing::git(repo, &["worktree", "add", "-q", "-b", "side", "../side"]);
+        zrush_core::paths::real(&repo.join("../side"))
+    }
+
+    #[test]
+    fn a_new_worktree_needs_no_session() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let mut t = open(&td, &repo);
+        let main = wait_for_row(&mut t, "main");
+        t.new_worktree(Some(&main));
+        assert!(
+            matches!(
+                &t.pending,
+                Some(Pending::Branch {
+                    at: None,
+                    hand_over: None,
+                    kind: None,
+                    ..
+                })
+            ),
+            "{:?}",
+            t.pending
+        );
+        if let Some(Pending::Branch { kind, name, .. }) = &mut t.pending {
+            *kind = Some(BranchKind::New);
+            *name = "fresh".into();
+        }
+        t.create_branch();
+        until_idle(&mut t);
+        assert_eq!(t.error, None);
+        t.refresh();
+        wait_for_row(&mut t, "fresh");
+    }
+
+    #[test]
+    fn a_new_worktree_from_a_session_takes_the_session() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        crate::testing::with_session(&td, &repo, &["hi", "hello"]);
+        let mut t = open(&td, &repo);
+        let row = wait_for_row(&mut t, crate::testing::SESSION_TITLE);
+        t.new_worktree(Some(&row));
+        let Some(Pending::Branch { hand_over, .. }) = &t.pending else {
+            panic!("no branch question: {:?}", t.pending);
+        };
+        assert_eq!(
+            hand_over.as_ref().map(|(a, i)| (a.as_str(), i.as_str())),
+            Some(("claude", crate::testing::SESSION_ID))
+        );
+    }
+
+    #[test]
+    fn deleting_a_session_asks_first_then_deletes_its_transcript() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        crate::testing::with_session(&td, &repo, &["hi", "hello"]);
+        let mut t = open(&td, &repo);
+        let row = wait_for_row(&mut t, crate::testing::SESSION_TITLE);
+        t.ask_delete(&row);
+        assert!(matches!(t.pending, Some(Pending::Confirm(_))));
+        assert!(transcript_exists(&td), "nothing goes before the answer");
+        t.confirm(0);
+        until_idle(&mut t);
+        assert_eq!(t.error, None);
+        assert!(!transcript_exists(&td));
+    }
+
+    #[test]
+    fn cancelling_a_confirmation_does_nothing() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        crate::testing::with_session(&td, &repo, &["hi", "hello"]);
+        let mut t = open(&td, &repo);
+        let row = wait_for_row(&mut t, crate::testing::SESSION_TITLE);
+        t.ask_delete(&row);
+        let Some(Pending::Confirm(c)) = &t.pending else {
+            panic!("no confirmation");
+        };
+        let cancel = c.choices().len() - 1;
+        t.confirm(cancel);
+        assert!(t.pending.is_none());
+        assert!(t.busy.is_none());
+        assert!(transcript_exists(&td));
+    }
+
+    #[test]
+    fn removing_a_worktree_asks_then_removes_it() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let side = side(&repo);
+        let mut t = open(&td, &repo);
+        let row = wait_for_row(&mut t, "side");
+        t.ask_delete(&row);
+        assert!(matches!(t.pending, Some(Pending::Confirm(_))));
+        t.confirm(0);
+        until_idle(&mut t);
+        assert_eq!(t.error, None);
+        assert!(!side.exists());
+    }
+
+    #[test]
+    fn the_main_worktree_is_never_offered_for_removal() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let mut t = open(&td, &repo);
+        let main = wait_for_row(&mut t, "main");
+        t.ask_delete(&main);
+        assert!(t.pending.is_none());
+        assert!(t.flash.as_deref().unwrap_or("").contains("main worktree"));
+    }
+
+    #[test]
+    fn purging_removes_what_is_ticked() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let side = side(&repo);
+        let mut t = open(&td, &repo);
+        let row = wait_for_row(&mut t, "side");
+        t.start_purge();
+        t.toggle_mark(&row);
+        assert!(t.is_marked(&row));
+        t.ask_purge();
+        let Some(Pending::Confirm(c)) = &t.pending else {
+            panic!("no confirmation: {:?}", t.pending);
+        };
+        assert!(c.body().contains("1 worktree(s)"), "{}", c.body());
+        t.confirm(1);
+        until_idle(&mut t);
+        assert!(!side.exists());
+        assert!(t.purging.is_none(), "purge mode ends once it has run");
+    }
+
+    #[test]
+    fn purging_nothing_says_so_instead_of_asking() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let mut t = open(&td, &repo);
+        wait_for_row(&mut t, "main");
+        t.start_purge();
+        t.ask_purge();
+        assert!(t.pending.is_none());
+        assert!(t.flash.as_deref().unwrap_or("").contains("tick"));
     }
 }

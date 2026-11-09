@@ -248,6 +248,112 @@ mod tests {
         assert!(h.query_by_label_contains(SESSION_TITLE).is_some());
     }
 
+    fn pending_confirm(h: &Harness<'static, State>) -> bool {
+        matches!(h.state().tab.pending, Some(crate::tab::Pending::Confirm(_)))
+    }
+
+    #[test]
+    fn right_click_on_a_session_offers_its_actions() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        with_session(&td, &repo, &["port it to rust", "On y va."]);
+        let (mut h, _) = harness(&td, &repo);
+        until(&mut h, SESSION_TITLE);
+        h.get_by_label_contains(SESSION_TITLE).click_secondary();
+        h.run_steps(3);
+        for item in [
+            "Open in IDE",
+            "Resume in a terminal",
+            "Move to a new worktree",
+            "Copy path",
+            "Delete conversation",
+        ] {
+            assert!(
+                h.query_all_by_label(item).next().is_some(),
+                "no {item} in the menu"
+            );
+        }
+        h.get_by_label("Delete conversation").click_accesskit();
+        h.run_steps(3);
+        assert!(pending_confirm(&h));
+    }
+
+    #[test]
+    fn right_click_on_a_worktree_offers_its_actions() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        crate::testing::git(&repo, &["worktree", "add", "-q", "-b", "side", "../side"]);
+        let (mut h, _) = harness(&td, &repo);
+        until(&mut h, "side");
+        h.get_by_label("side").click_secondary();
+        h.run_steps(3);
+        for item in [
+            "Open in IDE",
+            "Agent in a terminal",
+            "New worktree",
+            "Copy path",
+            "Remove worktree",
+        ] {
+            assert!(
+                h.query_all_by_label(item).next().is_some(),
+                "no {item} in the menu"
+            );
+        }
+        h.get_by_label("Remove worktree").click_accesskit();
+        h.run_steps(3);
+        assert!(pending_confirm(&h));
+    }
+
+    #[test]
+    fn the_tree_has_a_new_worktree_button() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let (mut h, _) = harness(&td, &repo);
+        until(&mut h, "main");
+        h.get_by_label("+ New worktree").click_accesskit();
+        h.run_steps(3);
+        assert!(matches!(
+            h.state().tab.pending,
+            Some(crate::tab::Pending::Branch {
+                hand_over: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn purge_mode_ticks_rows_and_asks_before_removing() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        crate::testing::git(&repo, &["worktree", "add", "-q", "-b", "side", "../side"]);
+        let (mut h, _) = harness(&td, &repo);
+        until(&mut h, "side");
+        h.get_by_label("Purge…").click_accesskit();
+        h.run_steps(3);
+        assert!(h.state().tab.purging.is_some());
+        until(&mut h, "Tick what goes");
+        h.get_by_label("side").click_accesskit();
+        h.run_steps(3);
+        until(&mut h, "Purge 1");
+        h.get_by_label_contains("Purge 1").click_accesskit();
+        h.run_steps(3);
+        assert!(pending_confirm(&h));
+    }
+
+    #[test]
+    fn leaving_purge_mode_drops_the_ticks() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let (mut h, _) = harness(&td, &repo);
+        until(&mut h, "main");
+        h.get_by_label("Purge…").click_accesskit();
+        h.run_steps(3);
+        until(&mut h, "Tick what goes");
+        h.get_by_label("Done").click_accesskit();
+        h.run_steps(3);
+        assert!(h.state().tab.purging.is_none());
+    }
+
     #[test]
     fn clicking_a_session_shows_its_conversation() {
         let td = tempfile::TempDir::new().unwrap();
