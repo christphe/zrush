@@ -23,10 +23,33 @@ pub fn get() -> Option<OsString> {
     ADOPTED.get().cloned().or_else(|| std::env::var_os("PATH"))
 }
 
-/// A command looked up in, and started with, the adopted `PATH`.
+/// A command looked up in, and started with, the adopted `PATH`, that
+/// works out of sight: git, the agent's listing, an editor's launcher.
+///
+/// On Windows a console program started by a window that has no console
+/// gets one of its own, an empty black window for as long as it runs:
+/// every git call of a refresh would flash one up.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
+    let mut c = command_in(program, ADOPTED.get().map(OsString::as_os_str));
+    hide_console(&mut c);
+    c
+}
+
+/// The same, for a program meant to be seen: the terminal an agent runs
+/// in keeps its window.
+pub fn visible(program: impl AsRef<OsStr>) -> Command {
     command_in(program, ADOPTED.get().map(OsString::as_os_str))
 }
+
+#[cfg(windows)]
+fn hide_console(c: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    c.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn hide_console(_: &mut Command) {}
 
 /// Setting `PATH` on the command is enough: on Unix, a `PATH` given to the
 /// child is also where the program is looked for.

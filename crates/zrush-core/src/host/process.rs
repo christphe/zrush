@@ -61,11 +61,14 @@ impl Host for ProcessHost {
     /// The desktop's own opener, which routes a scheme to whatever
     /// registered it. Not the configured terminal: a URL is not a script.
     fn open_url(&self, url: &str) -> Result<()> {
-        let opener = default_opener();
-        crate::search_path::command(opener)
+        let Some((bin, args)) = default_opener().split_first() else {
+            return Err(ZrushError::msg("no opener on this platform"));
+        };
+        crate::search_path::command(bin)
+            .args(args)
             .arg(url)
             .status()
-            .map_err(|_| ZrushError::msg(format!("{opener} could not open {url}")))?;
+            .map_err(|_| ZrushError::msg(format!("{bin} could not open {url}")))?;
         Ok(())
     }
 
@@ -84,7 +87,7 @@ impl Host for ProcessHost {
         let (bin, args) = terminal
             .split_first()
             .ok_or_else(|| ZrushError::msg("no terminal configured"))?;
-        crate::search_path::command(bin)
+        crate::search_path::visible(bin)
             .args(args)
             .arg(&script)
             .status()
@@ -96,11 +99,11 @@ impl Host for ProcessHost {
     }
 }
 
-/// Empty means `open`, which hands the script to whatever app owns that
-/// file type.
+/// Empty means the platform's opener, which hands the script to whatever
+/// app owns that file type: `open` on macOS, `start` on Windows.
 fn terminal_command(configured: &[String]) -> Vec<String> {
     if configured.is_empty() {
-        vec![default_opener().to_string()]
+        default_opener().iter().map(|s| (*s).to_string()).collect()
     } else {
         configured.to_vec()
     }
@@ -225,14 +228,17 @@ pub const INHERITED: &[&str] = &[
     "AI_AGENT",
 ];
 
+/// What hands a file or a URL to whichever app owns it. On Windows that is
+/// `start`, a command of cmd's; its first quoted argument is the window's
+/// title, so an empty one comes first.
 #[cfg(windows)]
-fn default_opener() -> &'static str {
-    "cmd"
+fn default_opener() -> &'static [&'static str] {
+    &["cmd", "/c", "start", ""]
 }
 
 #[cfg(not(windows))]
-fn default_opener() -> &'static str {
-    "open"
+fn default_opener() -> &'static [&'static str] {
+    &["open"]
 }
 
 #[cfg(windows)]
@@ -320,7 +326,17 @@ mod tests {
     #[test]
     fn an_unset_terminal_falls_back_to_the_platform_opener() {
         let h = ProcessHost::new(&Config::default());
-        assert_eq!(*h.terminal.lock().unwrap(), vec![default_opener()]);
+        assert_eq!(*h.terminal.lock().unwrap(), default_opener());
+    }
+
+    /// `cmd script.cmd` opens a prompt and never runs the script, and
+    /// `cmd https://…` opens nothing: `start` is what hands either to
+    /// Windows, in a window of its own. Its first quoted argument is a
+    /// title, hence the empty one.
+    #[cfg(windows)]
+    #[test]
+    fn windows_hands_a_script_or_a_url_to_start() {
+        assert_eq!(default_opener(), vec!["cmd", "/c", "start", ""]);
     }
 
     #[cfg(not(windows))]
