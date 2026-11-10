@@ -210,4 +210,17 @@ fn shoot(dirs: &Dirs, repo: &Path, theme: &str, out: &Path) {
     h.state_mut().open_settings();
     h.run_steps(4);
     save(&mut h, out, &format!("{theme}-3-settings"));
+    // Further down: the switches and the fields.
+    h.hover_at(egui::pos2(780.0, 500.0));
+    for _ in 0..6 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -120.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+    }
+    h.run_steps(4);
+    save(&mut h, out, &format!("{theme}-3b-settings-rows"));
 }
