@@ -5,7 +5,6 @@
 //! would complicate the build on three platforms for no gain.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// The branch name a worktree with a detached HEAD is listed under.
 pub const DETACHED: &str = "(detached)";
@@ -30,7 +29,7 @@ pub enum AddFrom {
 }
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
+    let out = crate::search_path::command("git")
         .arg("-C")
         .arg(repo)
         .args(args)
@@ -242,7 +241,7 @@ pub fn check_ref_format(name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
-    Command::new("git")
+    crate::search_path::command("git")
         .args(["check-ref-format", "--branch", name])
         .output()
         .is_ok_and(|o| o.status.success())

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::agent::Turn;
+use crate::agent::{Stamp, Turn};
 use crate::app::Zrush;
 use crate::model::{GitStatus, Session, Worktree};
 
@@ -52,8 +52,11 @@ pub enum Event {
     /// Branches a new worktree could be opened on, for the ctrl-w list.
     Branches(u64, Vec<String>),
     /// What the preview pane should draw for one row, keyed the way the
-    /// interface asked for it.
-    Preview(u64, String, Preview),
+    /// interface asked for it, with the stamp of what it was read from.
+    Preview(u64, String, Preview, Option<Stamp>),
+    /// The conversation behind this key has not moved since it was last
+    /// read: what is held is still right, and nothing was read again.
+    PreviewUnchanged(u64, String),
     /// A long action finished. Never stale: a refresh started while it ran
     /// must not throw its answer away.
     Acted(Done),
@@ -84,6 +87,7 @@ impl Event {
             | Self::Live(g, _)
             | Self::Resumable(g, _)
             | Self::Preview(g, ..)
+            | Self::PreviewUnchanged(g, _)
             | Self::Branches(g, _)
             | Self::Failed(g, _) => Some(*g),
         }
@@ -187,7 +191,13 @@ impl Loader {
 /// the very thing this rewrite set out to remove.
 pub enum PreviewJob {
     Worktree(PathBuf),
-    Conversation { agent: String, id: String },
+    /// `known` is the stamp of the copy already held, if any: when the
+    /// transcript still matches it, it is not read again.
+    Conversation {
+        agent: String,
+        id: String,
+        known: Option<Stamp>,
+    },
 }
 
 /// Recent commits, with who wrote each one: on a shared branch the author
@@ -201,7 +211,7 @@ impl Loader {
         let sink = Arc::clone(&self.sink);
         let z = Arc::clone(z);
         std::thread::spawn(move || {
-            let preview = match job {
+            let (preview, stamp) = match job {
                 PreviewJob::Worktree(path) => {
                     let mut lines: Vec<String> = Vec::new();
                     if let Ok(out) = crate::git::run(&path, &["status", "--short", "--branch"]) {
@@ -211,13 +221,21 @@ impl Loader {
                     if let Ok(out) = crate::git::run(&path, LOG) {
                         lines.extend(out.lines().map(str::to_string));
                     }
-                    Preview::Worktree(lines)
+                    (Preview::Worktree(lines), None)
                 }
-                PreviewJob::Conversation { agent, id } => {
-                    Preview::Conversation(z.preview(&agent, &id))
+                PreviewJob::Conversation { agent, id, known } => {
+                    // Stamped before reading: a write landing during the
+                    // read leaves an older stamp, so the next round reads
+                    // again rather than missing it.
+                    let stamp = z.preview_stamp(&agent, &id);
+                    if stamp.is_some() && stamp == known {
+                        let _ = sink(Event::PreviewUnchanged(round, key));
+                        return;
+                    }
+                    (Preview::Conversation(z.preview(&agent, &id)), stamp)
                 }
             };
-            let _ = sink(Event::Preview(round, key, preview));
+            let _ = sink(Event::Preview(round, key, preview, stamp));
         });
     }
 }
@@ -378,12 +396,80 @@ mod tests {
         p.request_preview(&z, "w".into(), PreviewJob::Worktree(repo));
 
         let events = drain(p, &rx);
-        let Some(Event::Preview(_, _, Preview::Worktree(lines))) = events.into_iter().next() else {
+        let Some(Event::Preview(_, _, Preview::Worktree(lines), _)) = events.into_iter().next()
+        else {
             panic!("no worktree preview");
         };
         let log = lines.join("\n");
         assert!(log.contains("zrush tests"), "no author in:\n{log}");
         assert!(log.contains("init"), "no subject in:\n{log}");
+    }
+
+    /// A transcript Claude Code would have filed for `id`, and its path.
+    fn transcript(z: &Zrush, id: &str) -> PathBuf {
+        let dir = z.dirs().claude_projects.join("-somewhere");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{id}.jsonl"));
+        std::fs::write(&path, "").unwrap();
+        path
+    }
+
+    fn conversation(z: &Arc<Zrush>, id: &str, known: Option<Stamp>) -> Event {
+        let (p, rx) = loader();
+        p.request_preview(
+            z,
+            "k".into(),
+            PreviewJob::Conversation {
+                agent: "claude".into(),
+                id: id.into(),
+                known,
+            },
+        );
+        drain(p, &rx).into_iter().next().expect("no answer")
+    }
+
+    #[test]
+    fn a_conversation_that_has_not_moved_is_not_read_again() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch_repo(&td));
+        let id = "aaaaaaaa-1111-2222-3333-444455556666";
+        transcript(&z, id);
+
+        let Event::Preview(_, _, Preview::Conversation(_), Some(stamp)) =
+            conversation(&z, id, None)
+        else {
+            panic!("the first read must come back stamped");
+        };
+        assert!(matches!(
+            conversation(&z, id, Some(stamp)),
+            Event::PreviewUnchanged(_, ref k) if k == "k"
+        ));
+    }
+
+    #[test]
+    fn a_conversation_that_grew_is_read_again() {
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch_repo(&td));
+        let id = "aaaaaaaa-1111-2222-3333-444455556666";
+        let path = transcript(&z, id);
+        let before = Stamp::of(&path);
+        std::fs::write(&path, "{}\n").unwrap();
+
+        assert!(matches!(
+            conversation(&z, id, before),
+            Event::Preview(_, _, Preview::Conversation(_), stamp) if stamp != before
+        ));
+    }
+
+    #[test]
+    fn a_conversation_with_no_transcript_is_always_read() {
+        // No stamp is no evidence that nothing changed.
+        let td = tempfile::TempDir::new().unwrap();
+        let z = zrush(&td, scratch_repo(&td));
+        assert!(matches!(
+            conversation(&z, "aaaaaaaa-1111-2222-3333-444455556666", None),
+            Event::Preview(_, _, Preview::Conversation(_), None)
+        ));
     }
 
     #[test]

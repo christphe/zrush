@@ -128,7 +128,8 @@ pub fn turns(path: &Path, tail_lines: usize, keep: usize) -> Vec<Turn> {
         if text.is_empty() {
             continue;
         }
-        out.push(Turn { role, text });
+        let at = l.timestamp.as_deref().and_then(parse_ts);
+        out.push(Turn { role, text, at });
     }
     let drop = out.len().saturating_sub(keep);
     out.drain(..drop);
@@ -430,5 +431,24 @@ let bc = 2;
         let p = td.path().join("t.jsonl");
         std::fs::write(&p, T).unwrap();
         assert_eq!(turns(&p, 400, 2).len(), 2);
+    }
+
+    #[test]
+    fn a_turn_carries_when_it_was_said() {
+        let td = tempfile::TempDir::new().unwrap();
+        let f = td.path().join("t.jsonl");
+        std::fs::write(
+            &f,
+            "{\"type\":\"user\",\"message\":{\"content\":\"hi\"},\"timestamp\":\"2026-09-20T10:00:05.000Z\"}\n\
+             {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\n",
+        )
+        .unwrap();
+        let t = turns(&f, 100, 10);
+        let at: i64 = "2026-09-20T10:00:05Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .as_second();
+        assert_eq!(t[0].at, Some(at));
+        assert_eq!(t[1].at, None, "no timestamp, no time");
     }
 }

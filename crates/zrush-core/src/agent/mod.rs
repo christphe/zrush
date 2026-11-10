@@ -11,6 +11,7 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::time::SystemTime;
 
 use crate::config::{Config, Dirs};
 use crate::error::Result;
@@ -43,6 +44,9 @@ pub enum Role {
 pub struct Turn {
     pub role: Role,
     pub text: String,
+    /// When it was said, in seconds since the epoch, if the transcript
+    /// says.
+    pub at: Option<i64>,
 }
 
 /// Whether an agent would find a conversation when started somewhere.
@@ -83,6 +87,13 @@ pub trait Agent: Send + Sync {
     /// The tail of a conversation, for the preview pane.
     fn preview(&self, dirs: &Dirs, id: &str, turns: usize) -> Vec<Turn>;
 
+    /// What the conversation's storage looks like right now, cheaply: a
+    /// preview read under the same stamp need not be read again. `None`
+    /// means there is no telling, and the preview is always read.
+    fn stamp(&self, _dirs: &Dirs, _id: &str) -> Option<Stamp> {
+        None
+    }
+
     /// Where this conversation is filed, relative to `cwd`.
     ///
     /// `Elsewhere` is the one that matters: the agent will not find it when
@@ -116,6 +127,24 @@ pub trait Agent: Send + Sync {
     fn start_command(&self) -> Vec<String>;
 }
 
+/// A transcript's size and last write: when neither moved, neither did
+/// the conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    pub len: u64,
+    pub modified: Option<SystemTime>,
+}
+
+impl Stamp {
+    pub fn of(path: &Path) -> Option<Self> {
+        let m = std::fs::metadata(path).ok()?;
+        Some(Self {
+            len: m.len(),
+            modified: m.modified().ok(),
+        })
+    }
+}
+
 /// Every agent this build knows about, whether or not it is installed.
 pub fn all() -> Vec<Box<dyn Agent>> {
     vec![Box::new(claude::ClaudeCode)]
@@ -138,7 +167,7 @@ pub fn by_id(agents: &[Box<dyn Agent>], id: Option<&str>) -> Option<usize> {
 
 /// True when the command is on `PATH`.
 pub(crate) fn on_path(cmd: &str) -> bool {
-    let Some(paths) = std::env::var_os("PATH") else {
+    let Some(paths) = crate::search_path::get() else {
         return false;
     };
     std::env::split_paths(&paths).any(|d| {

@@ -2,6 +2,7 @@
 //! asked for it. An interface decides when to run one and how to show the
 //! answer — a spinner and a status line, a toast — never what it does.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::app::{BranchKind, Zrush};
@@ -22,7 +23,20 @@ pub fn adopt(z: &Zrush, agent: &str, id: &str, worktree: &Path) -> Result<String
 
 pub fn delete_session(z: &Zrush, agent: &str, id: &str, worktree: Option<&Path>) -> Result<String> {
     let n = z.delete_session(agent, id, false, worktree)?;
-    Ok(format!("deleted {n} file(s)"))
+    Ok(if n == 0 {
+        "nothing to delete: the conversation was already gone".into()
+    } else {
+        "conversation deleted".into()
+    })
+}
+
+/// `n` things, in words: "1 conversation", "3 conversations".
+fn count(n: usize, one: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {one}s")
+    }
 }
 
 /// A new worktree, opened at once. `hand_over` is a conversation to bind
@@ -43,10 +57,22 @@ pub fn create(
 /// `with_sessions`, running ones always kept.
 pub fn remove(z: &Zrush, path: &Path, sessions: &[Session], with_sessions: bool) -> Result<String> {
     let r = z.remove_worktree(path, sessions, with_sessions)?;
-    Ok(format!(
-        "removed, {} transcript(s) deleted, {} running kept",
-        r.transcripts, r.running_kept
-    ))
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let mut line = format!("removed {name}");
+    if r.transcripts > 0 {
+        let _ = write!(line, ", and its {}", count(r.transcripts, "conversation"));
+    }
+    if r.running_kept > 0 {
+        let _ = write!(
+            line,
+            "; {} still running, kept",
+            count(r.running_kept, "session")
+        );
+    }
+    Ok(line)
 }
 
 /// Each item is independent: a dirty worktree refuses without stopping the
@@ -73,14 +99,24 @@ pub fn purge(z: &Zrush, plan: &Plan) -> Result<String> {
             z.delete_session(&d.agent, &d.id, false, owner).unwrap_or(0)
         })
         .sum();
-    let kept = if refused.is_empty() {
-        String::new()
-    } else {
-        format!(", {} kept: git refused", refused.len())
+    let mut line = match (removed, gone) {
+        (0, 0) => "nothing purged".to_string(),
+        (w, 0) => format!("purged {}", count(w, "worktree")),
+        (0, c) => format!("purged {}", count(c, "conversation")),
+        (w, c) => format!(
+            "purged {} and {}",
+            count(w, "worktree"),
+            count(c, "conversation")
+        ),
     };
-    Ok(format!(
-        "purged {removed} worktree(s), {gone} transcript(s){kept}"
-    ))
+    if !refused.is_empty() {
+        let _ = write!(
+            line,
+            "; git kept {}: it has changes",
+            count(refused.len(), "worktree")
+        );
+    }
+    Ok(line)
 }
 
 /// Start an agent in a terminal of its own. The session's own agent
@@ -140,7 +176,7 @@ mod tests {
         let z = zrush(&td, repo);
         assert_eq!(
             purge(&z, &worktrees(&[clean, dirty])).unwrap(),
-            "purged 1 worktree(s), 0 transcript(s), 1 kept: git refused"
+            "purged 1 worktree; git kept 1 worktree: it has changes"
         );
     }
 
@@ -155,7 +191,7 @@ mod tests {
         let z = zrush(&td, repo.clone());
         assert_eq!(
             purge(&z, &worktrees(&[repo.join(".claude/worktrees/a")])).unwrap(),
-            "purged 1 worktree(s), 0 transcript(s)"
+            "purged 1 worktree"
         );
     }
 
@@ -201,7 +237,7 @@ mod tests {
         };
         assert_eq!(
             purge(&z, &plan).unwrap(),
-            "purged 1 worktree(s), 1 transcript(s)"
+            "purged 1 worktree and 1 conversation"
         );
         assert!(!f.exists());
     }
@@ -225,7 +261,7 @@ mod tests {
         };
         assert_eq!(
             purge(&z, &plan).unwrap(),
-            "purged 0 worktree(s), 0 transcript(s), 1 kept: git refused"
+            "nothing purged; git kept 1 worktree: it has changes"
         );
         assert!(f.exists());
     }
@@ -251,8 +287,15 @@ mod tests {
         let z = zrush(&td, repo.clone());
         assert_eq!(
             remove(&z, &repo.join(".claude/worktrees/a"), &[], false).unwrap(),
-            "removed, 0 transcript(s) deleted, 0 running kept"
+            "removed a"
         );
+    }
+
+    #[test]
+    fn counts_read_as_words() {
+        assert_eq!(count(1, "conversation"), "1 conversation");
+        assert_eq!(count(3, "worktree"), "3 worktrees");
+        assert_eq!(count(0, "worktree"), "0 worktrees");
     }
 
     #[test]

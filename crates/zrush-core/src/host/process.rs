@@ -6,7 +6,6 @@
 //! way to tell a specific terminal to run something.
 
 use std::path::Path;
-use std::process::Command;
 
 use crate::config::Config;
 use crate::error::{Result, ZrushError};
@@ -38,7 +37,7 @@ impl Host for ProcessHost {
         let (bin, args) = editor
             .split_first()
             .ok_or_else(|| ZrushError::msg("no editor configured"))?;
-        Command::new(bin)
+        crate::search_path::command(bin)
             .args(args)
             .arg(path)
             .status()
@@ -63,7 +62,7 @@ impl Host for ProcessHost {
     /// registered it. Not the configured terminal: a URL is not a script.
     fn open_url(&self, url: &str) -> Result<()> {
         let opener = default_opener();
-        Command::new(opener)
+        crate::search_path::command(opener)
             .arg(url)
             .status()
             .map_err(|_| ZrushError::msg(format!("{opener} could not open {url}")))?;
@@ -85,7 +84,7 @@ impl Host for ProcessHost {
         let (bin, args) = terminal
             .split_first()
             .ok_or_else(|| ZrushError::msg("no terminal configured"))?;
-        Command::new(bin)
+        crate::search_path::command(bin)
             .args(args)
             .arg(&script)
             .status()
@@ -121,7 +120,6 @@ fn terminal_command(configured: &[String]) -> Vec<String> {
 #[cfg(target_os = "macos")]
 mod focus {
     use std::path::{Path, PathBuf};
-    use std::process::Command;
 
     /// Failure is ignored: the editor did open, and not being frontmost is
     /// not worth an error.
@@ -132,7 +130,10 @@ mod focus {
         let Some(bundle) = bundle_of(&resolved) else {
             return;
         };
-        let _ = Command::new("open").arg("-a").arg(bundle).status();
+        let _ = crate::search_path::command("open")
+            .arg("-a")
+            .arg(bundle)
+            .status();
     }
 
     /// The `.app` a command lives inside, if any.
@@ -154,7 +155,7 @@ mod focus {
         if direct.components().count() > 1 {
             return direct.canonicalize().ok();
         }
-        let paths = std::env::var_os("PATH")?;
+        let paths = crate::search_path::get()?;
         std::env::split_paths(&paths).find_map(|dir| dir.join(bin).canonicalize().ok())
     }
 

@@ -34,6 +34,7 @@ pub mod loader;
 pub mod model;
 pub mod paths;
 pub mod purge;
+pub mod search_path;
 pub mod snapshot;
 pub mod state;
 pub mod surface;

@@ -270,7 +270,7 @@ pub fn on_path(name: &str) -> bool {
 /// System32 before the PATH, where `bash.exe` is WSL's, not Git's: from
 /// Git Bash that would run the installer in the wrong world entirely.
 pub fn which(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
+    let path = crate::search_path::get()?;
     let file: PathBuf = if cfg!(windows) {
         format!("{name}.exe").into()
     } else {

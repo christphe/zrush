@@ -584,6 +584,7 @@ mod tests {
                 0,
                 key,
                 Preview::Worktree(vec!["## main...origin/main".into()]),
+                None,
             ),
             0,
         );
@@ -613,7 +614,7 @@ mod tests {
         drop(probes);
         let events: Vec<_> = rx.iter().collect();
         let found = events.iter().any(|e| {
-            matches!(e, crate::probe::Msg::Core(zrush_core::loader::Event::Preview(_, _, Preview::Worktree(lines)))
+            matches!(e, crate::probe::Msg::Core(zrush_core::loader::Event::Preview(_, _, Preview::Worktree(lines), _))
                 if lines.iter().any(|l| l.contains("init")))
         });
         assert!(found, "the git log never came back: {events:?}");

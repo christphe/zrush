@@ -101,6 +101,25 @@ pub fn age(now: i64, then: i64) -> String {
     }
 }
 
+/// When something was said, on the wall clock: "15:22" today, "8 Nov
+/// 15:22" before. `None` when the time cannot be placed.
+pub fn clock(now: i64, at: i64, tz: &jiff::tz::TimeZone) -> Option<String> {
+    let at = jiff::Timestamp::from_second(at).ok()?.to_zoned(tz.clone());
+    let now = jiff::Timestamp::from_second(now).ok()?.to_zoned(tz.clone());
+    Some(if at.date() == now.date() {
+        at.strftime("%H:%M").to_string()
+    } else if at.year() == now.year() {
+        at.strftime("%-d %b %H:%M").to_string()
+    } else {
+        at.strftime("%-d %b %Y").to_string()
+    })
+}
+
+/// [`clock`] in the machine's time zone.
+pub fn clock_here(now: i64, at: i64) -> Option<String> {
+    clock(now, at, &jiff::tz::TimeZone::system())
+}
+
 /// Counts characters, not bytes: titles routinely carry accents.
 pub fn truncate_title(s: &str, width: usize) -> String {
     if s.chars().count() <= width {
@@ -174,5 +193,23 @@ mod tests {
             has_upstream: true,
         };
         assert_eq!(s.badge(), "");
+    }
+
+    #[test]
+    fn a_time_today_is_just_the_hour() {
+        let tz = jiff::tz::TimeZone::UTC;
+        let now = "2025-11-10T15:00:00Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .as_second();
+        assert_eq!(clock(now, now - 1_800, &tz).as_deref(), Some("14:30"));
+        assert_eq!(
+            clock(now, now - 2 * 86_400, &tz).as_deref(),
+            Some("8 Nov 15:00")
+        );
+        assert_eq!(
+            clock(now, now - 400 * 86_400, &tz).as_deref(),
+            Some("6 Oct 2024")
+        );
     }
 }

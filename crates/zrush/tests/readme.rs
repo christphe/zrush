@@ -165,13 +165,16 @@ mod screenshot {
                         Turn {
                             role: Role::User,
                             text: "port it to rust".into(),
+                            at: None,
                         },
                         Turn {
                             role: Role::Assistant,
                             text: "On y va. Le port garde tout ce que faisait la version sh."
                                 .into(),
+                            at: None,
                         },
                     ]),
+                    None,
                 ),
                 0,
             );
