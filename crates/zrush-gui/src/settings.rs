@@ -7,11 +7,13 @@
 //! The themes are shown, not named: a small picture of each.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use egui::{Align, Color32, Layout, RichText, Sense, Stroke, Ui, vec2};
 use zrush_core::actions;
 use zrush_core::app::Zrush;
 use zrush_core::config::{Config, KNOWN_EDITORS, Kind, SETTINGS};
+use zrush_core::shortcut::{Shortcut, State};
 
 use crate::theme::{Palette, Theme};
 
@@ -35,6 +37,26 @@ pub struct SettingsState {
     go_to: Option<usize>,
     /// The section at the top of the page, lit on the left.
     current: usize,
+    /// The zrush command line a task can name, looked for once.
+    cli: Option<PathBuf>,
+    cli_looked: bool,
+    /// How far the key is set up, and in which editor: read again when
+    /// the editor changes, and after it is written.
+    shortcut: Option<(String, State)>,
+    /// A folder holding a folder per editor, in place of the editors' own.
+    shortcut_dir: Option<PathBuf>,
+}
+
+impl SettingsState {
+    /// Write the editor's files under `dir`, naming `cli`: a test's own,
+    /// instead of the editor's real ones.
+    #[cfg(test)]
+    pub fn shortcut_into(&mut self, dir: &std::path::Path, cli: &std::path::Path) {
+        self.shortcut_dir = Some(dir.to_path_buf());
+        self.cli = Some(cli.to_path_buf());
+        self.cli_looked = true;
+        self.shortcut = None;
+    }
 }
 
 /// The sections, in order: a title, what they hold, and their settings.
@@ -44,7 +66,7 @@ const SECTIONS: &[(&str, &str, &[&str])] = &[
     (
         "Editor and agent",
         "What opens a worktree, and whose sessions are listed.",
-        &["editor", "editor_cmd", "terminal", "agent"],
+        &["editor", "shortcut", "editor_cmd", "terminal", "agent"],
     ),
     (
         "Sessions",
@@ -75,6 +97,7 @@ fn label_for(key: &str) -> &'static str {
     match key {
         "editor" => "Editor",
         "editor_cmd" => "Editor command",
+        "shortcut" => "Editor shortcut",
         "terminal" => "Terminal",
         "agent" => "Agent",
         "titles" => "Session titles",
@@ -300,7 +323,9 @@ fn page(
                                         if n > 0 {
                                             divider(ui);
                                         }
-                                        if let Some(c) = row(ui, state, z, cfg, key) {
+                                        if *key == "shortcut" {
+                                            shortcut_row(ui, state, cfg);
+                                        } else if let Some(c) = row(ui, state, z, cfg, key) {
                                             changed = Some(c);
                                         }
                                     }
@@ -428,6 +453,87 @@ fn row(
             state.errors.insert(key.to_string(), e.to_string());
             None
         }
+    }
+}
+
+/// The editor's key for the conversation: what it does there, and a
+/// button that writes it into the editor picked above. It names the zrush
+/// shipped with this app, so nothing has to be on the `PATH`; another
+/// editor picked later shows its own state, and one click sets it up too.
+fn shortcut_row(ui: &mut Ui, state: &mut SettingsState, cfg: &Config) {
+    if !state.cli_looked {
+        state.cli = zrush_core::shortcut::cli();
+        state.cli_looked = true;
+    }
+    let cli = state.cli.clone();
+    let place = match &state.shortcut_dir {
+        Some(dir) => Shortcut::in_dir(&cfg.editor, &dir.join(&cfg.editor)),
+        None => Shortcut::for_editor(&cfg.editor),
+    };
+    let current = match (&place, &cli) {
+        (Some(s), Some(cli)) => {
+            let fresh = state.shortcut.as_ref().filter(|(e, _)| *e == cfg.editor);
+            Some(fresh.map_or_else(|| s.state(cli), |(_, st)| *st))
+        }
+        _ => None,
+    };
+    if let Some(st) = current {
+        state.shortcut = Some((cfg.editor.clone(), st));
+    }
+    let says = match (&place, &cli) {
+        (None, _) => format!("No key can be set up in {}.", cfg.editor),
+        (Some(_), None) => "The zrush command line was not found beside the app.".to_string(),
+        (Some(s), Some(_)) => format!("{} in {} {}", Shortcut::keys(), s.editor(), s.does()),
+    };
+    let mut install = false;
+    ui.add_space(10.0);
+    let text_width = (ui.available_width() - 160.0 - 16.0).max(160.0);
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(vec2(text_width, 0.0), Layout::top_down(Align::Min), |ui| {
+            ui.add(egui::Label::new(label_for("shortcut")).selectable(false));
+            ui.add(
+                egui::Label::new(
+                    RichText::new(says)
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                )
+                .wrap(),
+            );
+            if let Some(e) = state.errors.get("shortcut") {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+        });
+        let room = ui.available_width();
+        ui.allocate_ui_with_layout(vec2(room, 0.0), Layout::right_to_left(Align::Min), |ui| {
+            let Some(s) = &place else { return };
+            match current {
+                Some(State::Installed) => {
+                    ui.label(RichText::new("✓ Set up").color(ui.visuals().weak_text_color()));
+                }
+                Some(State::Stale) => {
+                    install = ui
+                        .button("Update")
+                        .on_hover_text("The task runs another zrush than this app's")
+                        .clicked();
+                }
+                Some(State::Missing) => {
+                    install = ui.button(format!("Add to {}", s.editor())).clicked();
+                }
+                None => {}
+            }
+        });
+    });
+    ui.add_space(10.0);
+    if let (true, Some(s), Some(cli)) = (install, &place, &cli) {
+        match s.install(cli) {
+            Ok(()) => {
+                state.errors.remove("shortcut");
+            }
+            Err(e) => {
+                state.errors.insert("shortcut".into(), e.to_string());
+            }
+        }
+        state.shortcut = Some((cfg.editor.clone(), s.state(cli)));
     }
 }
 
@@ -836,6 +942,29 @@ mod tests {
         h.get_by_label("Nord").click();
         h.run_steps(2);
         assert_eq!(saved(&td).unwrap().gui_theme, "nord");
+    }
+
+    #[test]
+    fn the_editor_shortcut_is_written_for_the_editor_picked() {
+        let td = tempfile::TempDir::new().unwrap();
+        let editor = td.path().join("editor");
+        let cli = td.path().join("zrush-cli");
+        let mut h = harness(two_tabs(&td));
+        h.state_mut().settings_mut().shortcut_into(&editor, &cli);
+        h.get_by_label("code").click();
+        h.run_steps(2);
+        h.get_by_label("Add to VS Code").click();
+        h.run_steps(2);
+        let tasks = std::fs::read_to_string(editor.join("code").join("tasks.json")).unwrap();
+        assert!(
+            tasks.contains(&*cli.to_string_lossy().replace('\\', "\\\\")),
+            "{tasks}"
+        );
+        assert!(h.query_by_label("✓ Set up").is_some());
+        // Another editor: its own state, nothing set up there yet.
+        h.get_by_label("cursor").click();
+        h.run_steps(2);
+        assert!(h.query_by_label("Add to Cursor").is_some());
     }
 
     #[test]

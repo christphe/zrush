@@ -270,6 +270,11 @@ impl GuiApp {
         self.applied = Some(want);
     }
 
+    #[cfg(test)]
+    pub fn settings_mut(&mut self) -> &mut crate::settings::SettingsState {
+        &mut self.settings
+    }
+
     pub fn open_settings(&mut self) {
         self.settings.open = true;
     }

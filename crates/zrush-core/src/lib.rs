@@ -35,6 +35,7 @@ pub mod model;
 pub mod paths;
 pub mod purge;
 pub mod search_path;
+pub mod shortcut;
 pub mod snapshot;
 pub mod state;
 pub mod surface;

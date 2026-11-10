@@ -212,7 +212,8 @@ jobs:
           rustup toolchain install
           rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked --target ${{ matrix.target }} -p zrush-gui
+      # The command line ships with the app: the editor's key runs it.
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p zrush-gui -p zrush
 
       - name: Pack
         id: pack
@@ -223,8 +224,10 @@ jobs:
           mkdir -p "dist/$name"
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp "target/${{ matrix.target }}/release/zrush-gui.exe" "dist/$name/"
+            cp "target/${{ matrix.target }}/release/zrush.exe" "dist/$name/zrush-cli.exe"
           else
             cp "target/${{ matrix.target }}/release/zrush-gui" "dist/$name/"
+            cp "target/${{ matrix.target }}/release/zrush" "dist/$name/zrush-cli"
           fi
           cp README.md LICENSE "dist/$name/"
           cd dist
@@ -259,6 +262,7 @@ jobs:
           wix build tools/windows/zrush.wxs -arch x64 -ext WixToolset.UI.wixext \
             -d Version="$version" \
             -d Exe="target/${{ matrix.target }}/release/zrush-gui.exe" \
+            -d Cli="target/${{ matrix.target }}/release/zrush.exe" \
             -d License=target/License.rtf \
             -o "dist/zrush-${{ matrix.target }}.msi"
 

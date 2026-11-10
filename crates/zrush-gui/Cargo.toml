@@ -2,7 +2,7 @@
 name = "zrush-gui"
 description = "zrush in a window: several repos in tabs, their worktrees, sessions and conversations"
 # Its own version: the desktop app ships on its own schedule (gui-vX.Y.Z).
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

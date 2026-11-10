@@ -41,10 +41,10 @@ done
 
 echo "building (release)…"
 if [ -n "$target" ]; then
-  cargo build --release --locked --manifest-path "$here/Cargo.toml" -p zrush-gui --target "$target"
+  cargo build --release --locked --manifest-path "$here/Cargo.toml" -p zrush-gui -p zrush --target "$target"
   out="$here/target/$target/release"
 else
-  cargo build --release --locked --manifest-path "$here/Cargo.toml" -p zrush-gui
+  cargo build --release --locked --manifest-path "$here/Cargo.toml" -p zrush-gui -p zrush
   out="$here/target/release"
 fi
 
@@ -53,6 +53,10 @@ app="$out/zrush.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$out/zrush-gui" "$app/Contents/MacOS/zrush"
+# The command line too, for the editor's key: a task names it by its path
+# in here, so it needs nothing on the PATH. Settings > Editor shortcut
+# writes that task.
+cp "$out/zrush" "$app/Contents/MacOS/zrush-cli"
 
 # Every size the Finder and the Dock ask for, from the one 1024 px master.
 iconset=$(mktemp -d)/zrush.iconset
@@ -87,7 +91,9 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 
 # A bundle is signed as a whole: the binary's own ad hoc signature does
-# not cover the Info.plist or the icon.
+# not cover the Info.plist or the icon. The command line in it first, as
+# code of its own: the bundle's signature covers it only once it is signed.
+codesign --force --sign "${ZRUSH_SIGN:--}" --identifier io.github.christphe.zrush.cli "$app/Contents/MacOS/zrush-cli"
 codesign --force --sign "${ZRUSH_SIGN:--}" --identifier io.github.christphe.zrush "$app"
 echo "built $app (signed: ${ZRUSH_SIGN:-ad hoc})"
 

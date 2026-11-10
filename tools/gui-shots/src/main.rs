@@ -212,7 +212,12 @@ fn shoot(dirs: &Dirs, repo: &Path, theme: &str, out: &Path) {
     save(&mut h, out, &format!("{theme}-3-settings"));
     // Further down: the switches and the fields.
     h.hover_at(egui::pos2(780.0, 500.0));
-    for _ in 0..6 {
+    for i in 0..6 {
+        if i == 3 {
+            // The editor's rows, its shortcut among them.
+            h.run_steps(4);
+            save(&mut h, out, &format!("{theme}-3a-settings-editor"));
+        }
         h.event(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
             delta: egui::vec2(0.0, -120.0),
