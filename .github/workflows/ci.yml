@@ -281,7 +281,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
-          name: zrush-${{ matrix.target }}
+          name: zrush-gui-${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.zip
