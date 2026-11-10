@@ -910,31 +910,42 @@ mod tests {
     }
 
     #[test]
-    fn command_k_finds_a_session_and_shows_it() {
+    fn command_k_finds_a_worktree_and_shows_it() {
+        // A worktree, not a session: sessions are listed only for an agent
+        // installed where the tests run, and CI has none.
         let td = tempfile::TempDir::new().unwrap();
         let repo = scratch_repo(&td);
-        crate::testing::with_session(&td, &repo, &["hello", "hi there"]);
-        let mut h = harness(app(&td, vec![repo]));
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                ".claude/worktrees/needle",
+                "-b",
+                "needle",
+            ],
+        );
+        let mut h = harness(app(&td, vec![repo.clone()]));
         settle(&mut h, |h| {
-            h.state().tabs().any(|t| {
-                t.rows()
-                    .iter()
-                    .any(|r| r.search == crate::testing::SESSION_TITLE)
-            })
+            h.state()
+                .tabs()
+                .any(|t| t.rows().iter().any(|r| r.search == "needle"))
         });
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::K);
         h.run_steps(2);
         assert!(h.state().palette.open, "⌘K did not open the palette");
-        h.event(egui::Event::Text("port rust".into()));
+        h.event(egui::Event::Text("needle".into()));
         h.run_steps(2);
         h.key_press(egui::Key::Enter);
         h.run_steps(2);
         assert!(!h.state().palette.open, "Enter left it open");
         let selected = h.state().tabs().next().and_then(|t| t.selected.clone());
-        assert_eq!(
-            selected,
-            Some(format!("s:{}", crate::testing::SESSION_ID)),
-            "the session was not shown"
+        assert!(
+            selected
+                .as_deref()
+                .is_some_and(|s| s.starts_with("w:") && s.ends_with("needle")),
+            "the worktree was not shown: {selected:?}"
         );
     }
 
