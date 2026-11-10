@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-License-Identifier: GPL-3.0-only
+  Copyright (C) 2026 Christophe Opoix
+
+  The desktop app's Windows installer: zrush.exe in Program Files\zrush, a
+  Start menu entry, and an entry in Apps to remove it. Built by CI with
+  WiX v5:
+
+    wix build tools/windows/zrush.wxs -arch x64 \
+      -d Version=0.2.0 -d Exe=path\to\zrush-gui.exe -o zrush.msi
+
+  The UpgradeCode never changes: it is how a newer zrush.msi recognises an
+  older install and replaces it.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="zrush"
+           Manufacturer="Christophe Opoix"
+           Version="$(var.Version)"
+           UpgradeCode="69BFAF66-3E99-4183-B6FA-BE1D6D32F549"
+           Scope="perMachine"
+           Language="1033">
+    <MajorUpgrade DowngradeErrorMessage="A newer zrush is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="zrush.ico" SourceFile="crates/zrush-gui/assets/icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="zrush.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/christphe/zrush" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="zrush" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main">
+      <Component Directory="INSTALLFOLDER">
+        <File Id="zrushExe" Source="$(var.Exe)" Name="zrush.exe" KeyPath="yes">
+          <Shortcut Id="startMenu"
+                    Name="zrush"
+                    Description="Your repositories, their worktrees and their agents' sessions"
+                    Directory="ProgramMenuFolder"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="zrush.ico"
+                    Advertise="yes" />
+        </File>
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="LICENSE" Name="LICENSE.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates/zrush-gui/assets/fonts/OFL-Inter.txt" />
+      </Component>
+      <Component Directory="INSTALLFOLDER">
+        <File Source="crates/zrush-gui/assets/fonts/OFL-JetBrainsMono.txt" />
+      </Component>
+    </Feature>
+  </Package>
+</Wix>
