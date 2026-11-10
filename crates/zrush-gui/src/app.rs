@@ -11,6 +11,9 @@ use zrush_core::host::Host;
 
 use crate::tab::{REFRESH_EVERY, Tab, Wake};
 
+/// The bar along the top, as tall as macOS draws its title bar's buttons.
+const BAR_HEIGHT: f32 = 28.0;
+
 /// Builds the host a tab's service drives: real processes in the app, a
 /// recording one in tests.
 pub type HostFactory = Box<dyn Fn(&Config) -> Box<dyn Host>>;
@@ -27,11 +30,21 @@ pub struct GuiApp {
     banner: Option<String>,
     /// The title last sent to the window, so it is only sent on change.
     shown_title: String,
+    /// The tabs whose bodies were drawn last frame: the open ones.
+    shown_tabs: Vec<PathBuf>,
     md: egui_commonmark::CommonMarkCache,
     settings: crate::settings::SettingsState,
     themes: Vec<crate::theme::Theme>,
     /// The theme name and system mode last applied, to apply on change only.
     applied: Option<(String, bool)>,
+    /// The bundled fonts are in: they are set once, on the first frame.
+    fonts: bool,
+    palette: crate::palette::State,
+    /// The app's commands live in the macOS menu bar: no bar of our own,
+    /// and the tabs sit in the title bar, beside the window's buttons.
+    titlebar_tabs: bool,
+    #[cfg(target_os = "macos")]
+    menus: Option<crate::menu::Menus>,
 }
 
 impl GuiApp {
@@ -51,10 +64,16 @@ impl GuiApp {
             new_repo: String::new(),
             banner: None,
             shown_title: String::new(),
+            shown_tabs: Vec::new(),
             md: egui_commonmark::CommonMarkCache::default(),
             settings: crate::settings::SettingsState::default(),
             themes: Vec::new(),
             applied: None,
+            fonts: false,
+            palette: crate::palette::State::default(),
+            titlebar_tabs: false,
+            #[cfg(target_os = "macos")]
+            menus: None,
         };
         let (themes, errors) = crate::theme::load_all(&app.dirs.themes_dir());
         app.themes = themes;
@@ -106,6 +125,111 @@ impl GuiApp {
         self.dock.push_to_focused_leaf(tab);
         self.save_repos();
         Ok(())
+    }
+
+    /// The app's commands go in the menu bar and the tabs in the title
+    /// bar, as on macOS. Set by the app, not by tests, which drive the
+    /// window's own bar.
+    #[must_use]
+    pub fn with_titlebar_tabs(mut self) -> Self {
+        self.titlebar_tabs = cfg!(target_os = "macos");
+        self
+    }
+
+    /// The menu bar's items, read every frame.
+    #[cfg(target_os = "macos")]
+    pub fn set_menus(&mut self, menus: crate::menu::Menus) {
+        self.menus = Some(menus);
+    }
+
+    /// Open the command palette, empty.
+    pub fn open_palette(&mut self) {
+        if !self.palette.open {
+            self.palette.toggle();
+        }
+    }
+
+    /// Ask for a folder and open it in a tab.
+    fn open_repository(&mut self) {
+        if let Some(p) = rfd::FileDialog::new().pick_folder()
+            && let Err(e) = self.add_repo(&p)
+        {
+            self.banner = Some(format!("{}: {e}", p.display()));
+        }
+    }
+
+    fn run(&mut self, c: crate::menu::Command) {
+        match c {
+            crate::menu::Command::OpenRepository => self.open_repository(),
+            crate::menu::Command::Settings => self.open_settings(),
+            crate::menu::Command::Palette => self.palette.toggle(),
+        }
+    }
+
+    /// What the palette picked.
+    fn pick(&mut self, target: crate::palette::Target) {
+        use crate::palette::{TabAction, Target};
+        match target {
+            Target::App(c) => self.run(c),
+            Target::Tab(repo) => self.focus(&repo),
+            Target::Row(repo, row) => {
+                let row = *row;
+                self.focus(&repo);
+                if let Some(t) = self.tabs_mut().find(|t| t.repo == repo) {
+                    t.select(&row);
+                }
+            }
+            Target::InTab(repo, action) => {
+                self.focus(&repo);
+                if let Some(t) = self.tabs_mut().find(|t| t.repo == repo) {
+                    match action {
+                        TabAction::NewWorktree => t.new_worktree(None),
+                        TabAction::Purge => t.start_purge(),
+                        TabAction::Refresh => t.refresh(),
+                    }
+                }
+            }
+        }
+    }
+
+    /// What was asked from the menu bar or the keyboard, done.
+    fn commands(&mut self, ctx: &egui::Context) {
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let mut commands = Self::shortcuts(ctx);
+        #[cfg(target_os = "macos")]
+        if let Some(m) = &self.menus {
+            commands.extend(m.commands());
+        }
+        for c in commands {
+            self.run(c);
+        }
+    }
+
+    fn show_palette(&mut self, ctx: &egui::Context) {
+        if !self.palette.open {
+            return;
+        }
+        let entries = crate::palette::entries(self.tabs());
+        if let Some(t) = crate::palette::show(ctx, &mut self.palette, &entries) {
+            self.pick(t);
+        }
+    }
+
+    /// The keys the menu bar answers on macOS, answered here elsewhere and
+    /// in tests; on macOS the menu takes them first.
+    fn shortcuts(ctx: &egui::Context) -> Vec<crate::menu::Command> {
+        use crate::menu::Command;
+        ctx.input_mut(|i| {
+            [
+                (egui::Key::K, Command::Palette),
+                (egui::Key::Comma, Command::Settings),
+                (egui::Key::O, Command::OpenRepository),
+            ]
+            .into_iter()
+            .filter(|(k, _)| i.consume_key(egui::Modifiers::COMMAND, *k))
+            .map(|(_, c)| c)
+            .collect()
+        })
     }
 
     /// Bring the tab opened for `repo` to the front.
@@ -203,70 +327,120 @@ impl GuiApp {
         }
     }
 
+    /// The bar along the top: the two things that belong to no tab. The
+    /// app's name is already in the menu bar, its icon in the Dock. Where nothing is drawn, it moves the window, as a title bar
+    /// does: on macOS it is the title bar, under the window's buttons.
     fn top_bar(&mut self, ui: &mut egui::Ui) {
+        let rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(ui.available_width(), BAR_HEIGHT),
+        );
+        title_bar(ui, rect);
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.add_space(crate::chrome::LEFT_INSET);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if crate::chrome::icon_button(ui, "⚙", "Settings").clicked() {
+                        self.settings.open = !self.settings.open;
+                    }
+                    let add = ui
+                        .button("+  Repository")
+                        .on_hover_text("Open a repository in a new tab");
+                    egui::Popup::menu(&add)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .show(|ui| self.add_repo_form(ui));
+                });
+            },
+        );
+        ui.allocate_rect(rect, egui::Sense::hover());
+    }
+
+    /// A problem worth showing until dismissed, along the bottom.
+    fn banner(&mut self, ui: &mut egui::Ui) {
+        let Some(b) = self.banner.clone() else {
+            return;
+        };
+        let error = ui.visuals().error_fg_color;
+        egui::Panel::bottom("banner")
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .inner_margin(egui::Margin::symmetric(12, 8)),
+            )
+            .show(ui, |ui| {
+                egui::Frame::new()
+                    .fill(error.gamma_multiply(0.12))
+                    .stroke(egui::Stroke::new(1.0, error.gamma_multiply(0.5)))
+                    .corner_radius(6)
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(b).color(error));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.banner = None;
+                                    }
+                                },
+                            );
+                        });
+                    });
+            });
+    }
+
+    /// The panel "+ Repository" opens: a path, typed or picked.
+    fn add_repo_form(&mut self, ui: &mut egui::Ui) {
+        ui.set_width(380.0);
+        ui.label(
+            egui::RichText::new("Open a repository").font(crate::fonts::strong(ui.ctx(), 14.0)),
+        );
+        ui.add_space(6.0);
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut self.new_repo)
+                .hint_text("/path/to/a/repository")
+                .desired_width(f32::INFINITY)
+                .margin(egui::Margin::symmetric(8, 6)),
+        );
+        if self.new_repo.is_empty() && !field.has_focus() {
+            field.request_focus();
+        }
+        let typed = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.add_space(8.0);
+        let mut pick: Option<PathBuf> = None;
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("zrush").strong().size(16.0));
-            ui.add_space(12.0);
-            let field = ui.add(
-                egui::TextEdit::singleline(&mut self.new_repo)
-                    .hint_text("Add a repository: paste its path")
-                    .desired_width(380.0)
-                    .margin(egui::Margin::symmetric(8, 4)),
-            );
-            let typed = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            let mut pick: Option<PathBuf> = None;
-            if ui.button("Add").clicked() || typed {
-                let p = self.new_repo.trim();
-                if !p.is_empty() {
-                    pick = Some(PathBuf::from(p));
-                }
-            }
-            if ui
-                .button("Browse…")
-                .on_hover_text("Pick a repository's folder")
-                .clicked()
-            {
+            if ui.button("Browse…").clicked() {
                 pick = rfd::FileDialog::new().pick_folder();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⚙ Settings").clicked() {
-                    self.settings.open = !self.settings.open;
+                let open = crate::chrome::primary_button(ui, "Open");
+                if open.clicked() || typed {
+                    let p = self.new_repo.trim();
+                    if !p.is_empty() {
+                        pick = Some(PathBuf::from(p));
+                    }
                 }
             });
-            if let Some(p) = pick {
-                match self.add_repo(&p) {
-                    Ok(()) => {
-                        self.new_repo.clear();
-                        self.banner = None;
-                    }
-                    Err(e) => self.banner = Some(format!("{}: {e}", p.display())),
-                }
-            }
         });
-        if let Some(b) = self.banner.clone() {
-            ui.add_space(6.0);
-            let error = ui.visuals().error_fg_color;
-            egui::Frame::new()
-                .fill(error.gamma_multiply(0.12))
-                .stroke(egui::Stroke::new(1.0, error.gamma_multiply(0.5)))
-                .corner_radius(6)
-                .inner_margin(egui::Margin::symmetric(10, 6))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(b).color(error));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("Dismiss").clicked() {
-                                self.banner = None;
-                            }
-                        });
-                    });
-                });
+        if let Some(p) = pick {
+            match self.add_repo(&p) {
+                Ok(()) => {
+                    self.new_repo.clear();
+                    self.banner = None;
+                    ui.close();
+                }
+                Err(e) => self.banner = Some(format!("{}: {e}", p.display())),
+            }
         }
     }
 
     /// `egui_dock`'s tabs, in the theme's colours, without the buttons a
     /// window of repositories has no use for.
-    fn dock_style(ui: &egui::Ui) -> Style {
+    fn dock_style(ui: &egui::Ui, titlebar: bool) -> Style {
         let v = ui.visuals();
         let palette = crate::theme::palette(ui.ctx());
         let bar = palette.map_or(v.faint_bg_color, |p| p.panel_bg);
@@ -278,42 +452,90 @@ impl GuiApp {
         s.dock_area_padding = None;
         s.main_surface_border_stroke = egui::Stroke::NONE;
         s.main_surface_border_rounding = egui::CornerRadius::ZERO;
+        // The tabs are part of the top bar: flat, square, on its colour.
+        // The open one is told by its text and the accent line under it,
+        // drawn in `on_tab_button`.
         s.tab_bar.bg_fill = bar;
-        s.tab_bar.height = 34.0;
+        // In the title bar, the tabs are as tall as it is and start past
+        // the window's buttons.
+        s.tab_bar.height = if titlebar { BAR_HEIGHT + 4.0 } else { 34.0 };
         s.tab_bar.hline_color = border;
-        s.tab.active.bg_fill = body;
-        s.tab.active.text_color = text;
-        s.tab.active.outline_color = border;
+        s.tab_bar.corner_radius = egui::CornerRadius::ZERO;
+        s.tab_bar.inner_margin = egui::Margin {
+            left: if titlebar {
+                crate::chrome::LEFT_INSET as i8
+            } else {
+                6
+            },
+            right: 6,
+            top: 0,
+            bottom: 0,
+        };
+        let flat = |text: egui::Color32, bg: egui::Color32| egui_dock::TabInteractionStyle {
+            bg_fill: bg,
+            text_color: text,
+            outline_color: egui::Color32::TRANSPARENT,
+            corner_radius: egui::CornerRadius::ZERO,
+        };
+        s.tab.active = flat(text, bar);
         s.tab.focused = s.tab.active.clone();
-        s.tab.inactive.bg_fill = bar;
-        s.tab.inactive.text_color = muted;
-        s.tab.inactive.outline_color = egui::Color32::TRANSPARENT;
-        s.tab.hovered.bg_fill = body;
-        s.tab.hovered.text_color = text;
+        s.tab.active_with_kb_focus = s.tab.active.clone();
+        s.tab.focused_with_kb_focus = s.tab.active.clone();
+        s.tab.inactive = flat(muted, bar);
+        s.tab.inactive_with_kb_focus = s.tab.inactive.clone();
+        s.tab.hovered = flat(text, bar);
+        s.tab.hline_below_active_tab_name = true;
+        s.tab.spacing = 2.0;
         s.tab.tab_body.bg_fill = body;
         s.tab.tab_body.stroke = egui::Stroke::NONE;
         s.tab.tab_body.inner_margin = egui::Margin::ZERO;
-        s.tab.minimum_width = Some(120.0);
+        s.tab.tab_body.corner_radius = egui::CornerRadius::ZERO;
+        s.tab.minimum_width = None;
+        s.buttons.close_tab_color = muted.gamma_multiply(0.7);
+        s.buttons.close_tab_active_color = text;
+        s.buttons.close_tab_bg_fill = v.widgets.hovered.weak_bg_fill;
         s
     }
 }
 
+/// A title bar's behaviour over `rect`: dragging it moves the window, a
+/// double click zooms it. Registered before what is drawn on it, which
+/// stays on top.
+fn title_bar(ui: &egui::Ui, rect: egui::Rect) {
+    let drag = ui.interact(
+        rect,
+        ui.id().with("titlebar"),
+        egui::Sense::click_and_drag(),
+    );
+    if drag.drag_started() {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+    if drag.double_clicked() {
+        let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+    }
+}
+
 /// No repository open yet: say how to add one.
-fn welcome(ui: &mut egui::Ui) {
+fn welcome(ui: &mut egui::Ui, menu_bar: bool) {
     let muted = ui.visuals().weak_text_color();
     ui.vertical_centered(|ui| {
-        ui.add_space(ui.available_height() * 0.35);
+        ui.add_space(ui.available_height() * 0.32);
+        crate::chrome::mark(ui, 52.0);
+        ui.add_space(16.0);
         ui.label(
-            egui::RichText::new("No repository open")
-                .heading()
-                .color(muted),
+            egui::RichText::new("No repository open").font(crate::fonts::strong(ui.ctx(), 20.0)),
         );
         ui.add_space(6.0);
         ui.label(
-            egui::RichText::new(
-                "Paste a repository's path above, or Browse… to pick its folder. \
-                 It comes back as a tab every time zrush opens.",
-            )
+            egui::RichText::new(if menu_bar {
+                "Open one with File › Open Repository… (⌘O). It comes back as a tab \
+                 every time zrush opens. ⌘K finds everything else."
+            } else {
+                "Open one with + Repository, top right. It comes back as a tab every \
+                 time zrush opens."
+            })
             .color(muted),
         );
     });
@@ -323,6 +545,12 @@ fn welcome(ui: &mut egui::Ui) {
 struct Viewer<'a> {
     closed: Vec<PathBuf>,
     md: &'a mut egui_commonmark::CommonMarkCache,
+    /// The tabs open last frame: their buttons are drawn before their
+    /// bodies, so this frame's are not known yet.
+    shown: &'a [PathBuf],
+    now_shown: Vec<PathBuf>,
+    accent: egui::Color32,
+    live: egui::Color32,
 }
 
 impl TabViewer for Viewer<'_> {
@@ -332,14 +560,61 @@ impl TabViewer for Viewer<'_> {
         egui::Id::new(("tab", &tab.repo))
     }
 
+    /// The repository's name, then how many of its sessions run, in the
+    /// running colour: no dot, a glyph from another font sits off the line.
     fn title(&mut self, tab: &mut Tab) -> egui::WidgetText {
-        match tab.live_count() {
-            0 => tab.title.clone().into(),
-            n => format!("{}  ● {n}", tab.title).into(),
+        let n = tab.live_count();
+        if n == 0 {
+            return tab.title.clone().into();
         }
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            &tab.title,
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(13.5),
+                color: egui::Color32::PLACEHOLDER,
+                valign: egui::Align::Center,
+                ..Default::default()
+            },
+        );
+        job.append(
+            &n.to_string(),
+            7.0,
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(11.5),
+                color: self.live,
+                valign: egui::Align::Center,
+                ..Default::default()
+            },
+        );
+        job.into()
+    }
+
+    /// The panes scroll themselves. The dock's own scroll bars, on by
+    /// default, would shift the whole tab sideways for one wide line.
+    fn scroll_bars(&self, _tab: &Tab) -> [bool; 2] {
+        [false, false]
+    }
+
+    /// The open tab's accent line, along its bottom edge.
+    fn on_tab_button(&mut self, tab: &mut Tab, response: &egui::Response) {
+        if !self.shown.contains(&tab.repo) {
+            return;
+        }
+        let r = response.rect;
+        let line = egui::Rect::from_min_max(
+            egui::pos2(r.left() + 10.0, r.bottom() - 2.0),
+            egui::pos2(r.right() - 10.0, r.bottom()),
+        );
+        response
+            .ctx
+            .layer_painter(response.layer_id)
+            .rect_filled(line, 1.0, self.accent);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Tab) {
+        self.now_shown.push(tab.repo.clone());
         if let Some(q) = crate::panes::show(ui, tab, self.md) {
             tab.ask(q);
         }
@@ -354,6 +629,10 @@ impl TabViewer for Viewer<'_> {
 
 impl eframe::App for GuiApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if !self.fonts {
+            crate::fonts::install(ui.ctx());
+            self.fonts = true;
+        }
         self.apply_theme(ui.ctx());
         let now = Instant::now();
         for t in self.tabs_mut() {
@@ -367,33 +646,73 @@ impl eframe::App for GuiApp {
             self.shown_title = title;
         }
 
+        self.commands(ui.ctx());
         let bar_fill =
             crate::theme::palette(ui.ctx()).map_or(ui.visuals().faint_bg_color, |p| p.panel_bg);
-        egui::Panel::top("bar")
-            .frame(
-                egui::Frame::new()
-                    .fill(bar_fill)
-                    .inner_margin(egui::Margin::symmetric(12, 8)),
-            )
-            .show(ui, |ui| self.top_bar(ui));
+        self.banner(ui);
+        let titlebar = self.titlebar_tabs;
+        let has_tabs = self.dock.iter_all_tabs().next().is_some();
+        if !titlebar {
+            egui::Panel::top("bar")
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(bar_fill)
+                        // No margin above or below: the bar is as tall as
+                        // macOS's title bar, and its buttons sit on the same
+                        // line as the window's.
+                        .inner_margin(egui::Margin::symmetric(10, 0)),
+                )
+                .show(ui, |ui| self.top_bar(ui));
+        }
+        let (accent, _) = crate::chrome::accent(ui);
+        let live = crate::theme::palette(ui.ctx()).map_or(ui.visuals().hyperlink_color, |p| p.live);
+        let shown = std::mem::take(&mut self.shown_tabs);
         let mut viewer = Viewer {
             closed: Vec::new(),
             md: &mut self.md,
+            shown: &shown,
+            now_shown: Vec::new(),
+            accent,
+            live,
         };
         egui::CentralPanel::default()
             .frame(egui::Frame::new())
             .show(ui, |ui| {
-                if self.dock.iter_all_tabs().next().is_none() {
-                    welcome(ui);
+                if titlebar {
+                    // The strip the window's buttons sit in moves the
+                    // window: under the tabs, which stay on top of it.
+                    let strip = egui::Rect::from_min_size(
+                        ui.max_rect().min,
+                        egui::vec2(ui.max_rect().width(), BAR_HEIGHT + 4.0),
+                    );
+                    title_bar(ui, strip);
+                }
+                if !has_tabs {
+                    if titlebar {
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(
+                                ui.max_rect().min,
+                                egui::vec2(ui.max_rect().width(), BAR_HEIGHT + 4.0),
+                            ),
+                            0.0,
+                            bar_fill,
+                        );
+                    }
+                    welcome(ui, titlebar);
                     return;
                 }
                 DockArea::new(&mut self.dock)
-                    .style(Self::dock_style(ui))
+                    .style(Self::dock_style(ui, titlebar))
                     .show_leaf_collapse_buttons(false)
                     .show_leaf_close_all_buttons(false)
                     .show_inside(ui, &mut viewer);
             });
-        if !viewer.closed.is_empty() {
+        let closed = !viewer.closed.is_empty();
+        let now_shown = std::mem::take(&mut viewer.now_shown);
+        drop(viewer);
+        self.shown_tabs = now_shown;
+        if closed {
             self.save_repos();
         }
         if self.settings.open {
@@ -408,6 +727,7 @@ impl eframe::App for GuiApp {
                 self.banner = Some("Open a repository to change the settings".into());
             }
         }
+        self.show_palette(ui.ctx());
         // Idle tabs still ask again now and then.
         ui.ctx().request_repaint_after(REFRESH_EVERY);
     }
@@ -532,8 +852,16 @@ mod tests {
             kind: zrush_core::model::SessionKind::Live,
             last_activity: 0,
         };
-        a.tabs_mut()
-            .for_each(|t| t.snap.live = vec![live.clone(); 3]);
+        let elsewhere = zrush_core::model::Session {
+            cwd: "/somewhere/else".into(),
+            launch_cwd: "/somewhere/else".into(),
+            ..live.clone()
+        };
+        a.tabs_mut().for_each(|t| {
+            t.snap.live = vec![live.clone(); 3];
+            t.snap.live.push(elsewhere.clone());
+        });
+        // The one running in another repository is not this window's.
         assert_eq!(a.window_title(), "zrush — ● 3 live");
     }
 
@@ -564,5 +892,80 @@ mod tests {
         h.state_mut().focus(&gone);
         h.run_steps(3);
         assert!(h.query_by_label_contains(&error).is_some(), "{error}");
+    }
+
+    fn harness<'a>(a: GuiApp) -> Harness<'a, GuiApp> {
+        Harness::builder()
+            .with_size([1000.0, 700.0])
+            .build_eframe(|_cc| a)
+    }
+
+    fn settle(h: &mut Harness<'_, GuiApp>, done: impl Fn(&Harness<'_, GuiApp>) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(h) && Instant::now() < deadline {
+            h.step();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        h.run_steps(2);
+    }
+
+    #[test]
+    fn command_k_finds_a_worktree_and_shows_it() {
+        // A worktree, not a session: sessions are listed only for an agent
+        // installed where the tests run, and CI has none.
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                ".claude/worktrees/needle",
+                "-b",
+                "needle",
+            ],
+        );
+        let mut h = harness(app(&td, vec![repo.clone()]));
+        settle(&mut h, |h| {
+            h.state()
+                .tabs()
+                .any(|t| t.rows().iter().any(|r| r.search == "needle"))
+        });
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::K);
+        h.run_steps(2);
+        assert!(h.state().palette.open, "⌘K did not open the palette");
+        h.event(egui::Event::Text("needle".into()));
+        h.run_steps(2);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert!(!h.state().palette.open, "Enter left it open");
+        let selected = h.state().tabs().next().and_then(|t| t.selected.clone());
+        assert!(
+            selected
+                .as_deref()
+                .is_some_and(|s| s.starts_with("w:") && s.ends_with("needle")),
+            "the worktree was not shown: {selected:?}"
+        );
+    }
+
+    #[test]
+    fn the_palette_runs_the_apps_commands_and_escape_closes_it() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let mut h = harness(app(&td, vec![repo]));
+        settle(&mut h, |h| h.state().tabs().any(|t| !t.rows().is_empty()));
+        h.state_mut().open_palette();
+        h.run_steps(2);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(2);
+        assert!(!h.state().palette.open);
+        h.state_mut().open_palette();
+        h.run_steps(2);
+        h.event(egui::Event::Text("settings".into()));
+        h.run_steps(2);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert!(h.state().settings.open, "Settings was not opened");
     }
 }

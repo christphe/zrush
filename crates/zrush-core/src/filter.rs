@@ -206,6 +206,41 @@ pub fn hits(rows: &[Row], needle: &str) -> Vec<Hit> {
         .collect()
 }
 
+/// The entries of a picker matching `needle`, best first, each with the
+/// characters that matched. Unlike [`hits`], order is the score's: a
+/// palette has no tree to keep, and the best match belongs on top. The
+/// same vocabulary as the filter; an empty needle keeps every entry in its
+/// order.
+pub fn rank(entries: &[&str], needle: &str) -> Vec<(usize, Vec<usize>)> {
+    let Some(query) = Query::parse(needle) else {
+        return (0..entries.len()).map(|i| (i, Vec::new())).collect();
+    };
+    let mut out: Vec<(u32, usize, Vec<usize>)> = Vec::new();
+    if let Query::Fuzzy(n) = query {
+        let mut matcher = Matcher::new(Config::DEFAULT);
+        let pattern = Pattern::parse(n, CaseMatching::Smart, Normalization::Smart);
+        let mut buf = Vec::new();
+        for (i, e) in entries.iter().enumerate() {
+            let mut idx = Vec::new();
+            if let Some(score) = pattern.indices(Utf32Str::new(e, &mut buf), &mut matcher, &mut idx)
+            {
+                idx.sort_unstable();
+                idx.dedup();
+                out.push((score, i, idx.into_iter().map(|c| c as usize).collect()));
+            }
+        }
+    } else {
+        for (i, e) in entries.iter().enumerate() {
+            if let Some(range) = query.find(e) {
+                out.push((0, i, range.collect()));
+            }
+        }
+    }
+    // Best score first; equal scores keep the entries' order.
+    out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    out.into_iter().map(|(_, i, m)| (i, m)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,7 +454,7 @@ mod tests {
                 node: NodeId::Worktree("/w".into()),
                 session_id: None,
                 glyph: String::new(),
-                label: "   └─ […more]".into(),
+                label: "[…more]".into(),
                 search: String::new(),
                 badge: "+3 older".into(),
                 status: String::new(),
@@ -439,7 +474,7 @@ mod tests {
             node: NodeId::Worktree("/w".into()),
             session_id: None,
             glyph: String::new(),
-            label: "   └─ […more]".into(),
+            label: "[…more]".into(),
             search: String::new(),
             badge: "+3 older".into(),
             status: String::new(),
@@ -447,5 +482,27 @@ mod tests {
             location: String::new(),
         });
         assert_eq!(apply(&rows, "main"), vec![0, 1]);
+    }
+
+    #[test]
+    fn a_picker_puts_the_best_match_first() {
+        let entries = ["settings", "new worktree", "open repository"];
+        let ranked = rank(&entries, "wt");
+        assert_eq!(ranked[0].0, 1, "{ranked:?}");
+        let ranked = rank(&entries, "repo");
+        assert_eq!(ranked.first().map(|r| r.0), Some(2));
+        assert_eq!(ranked[0].1, vec![5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn an_empty_picker_needle_keeps_every_entry_in_order() {
+        let ranked = rank(&["b", "a"], "  ");
+        assert_eq!(ranked, vec![(0, vec![]), (1, vec![])]);
+    }
+
+    #[test]
+    fn a_picker_speaks_the_filters_vocabulary() {
+        let ranked = rank(&["main", "remain"], "^main");
+        assert_eq!(ranked, vec![(0, vec![0, 1, 2, 3])]);
     }
 }

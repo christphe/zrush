@@ -32,6 +32,17 @@ pub struct View<'a> {
     pub offset: usize,
 }
 
+/// The row's label as the terminal draws it. Core leaves the tree line off
+/// a `[…more]` row, which a window draws its own way; here it closes the
+/// node's branch like its last session would.
+pub fn drawn_label(row: &Row) -> std::borrow::Cow<'_, str> {
+    if row.kind == RowKind::More {
+        format!("   └─ {}", row.label).into()
+    } else {
+        row.label.as_str().into()
+    }
+}
+
 fn style_for(kind: RowKind) -> Style {
     match kind {
         RowKind::Worktree => theme::worktree(),
@@ -49,7 +60,7 @@ fn widths(rows: &[Row]) -> (usize, usize, usize) {
     let mut status = 0;
     for r in rows {
         label = label.max(
-            UnicodeWidthStr::width(r.glyph.as_str()) + UnicodeWidthStr::width(r.label.as_str()),
+            UnicodeWidthStr::width(r.glyph.as_str()) + UnicodeWidthStr::width(&*drawn_label(r)),
         );
         badge = badge.max(UnicodeWidthStr::width(r.badge.as_str()));
         status = status.max(UnicodeWidthStr::width(r.status.as_str()));
@@ -105,7 +116,7 @@ pub fn line<'a>(
     // Whatever is left after the fixed columns and the three gaps.
     let for_path = room.saturating_sub(1 + lw + 2 + bw + 2 + sw + 2);
     let mark = if marked { "▌" } else { " " };
-    let label = pad(&format!("{}{}", row.glyph, row.label), lw);
+    let label = pad(&format!("{}{}", row.glyph, drawn_label(row)), lw);
     let base = style_for(row.kind);
     let parts = [
         (mark.to_string(), theme::marked()),
@@ -357,6 +368,18 @@ mod tests {
 mod highlight_tests {
     use super::*;
     use zrush_core::model::tree::NodeId;
+
+    #[test]
+    fn the_terminal_closes_a_more_rows_branch_itself() {
+        let more = Row {
+            kind: RowKind::More,
+            label: "[…more]".into(),
+            ..session("x")
+        };
+        assert_eq!(drawn_label(&more), "   └─ […more]");
+        let s = session("Conversion en Rust");
+        assert_eq!(drawn_label(&s), s.label);
+    }
 
     fn session(title: &str) -> Row {
         Row {

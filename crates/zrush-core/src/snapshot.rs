@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::agent::Filing;
+use crate::agent::{Filing, Stamp};
 use crate::app::Zrush;
 use crate::error::Result;
 use crate::loader::{Done, Event, Preview, PreviewJob};
@@ -29,8 +29,19 @@ pub struct RepoSnapshot {
     pub scanned: bool,
     /// Branches a new worktree could be opened on.
     pub branches: Vec<String>,
-    previews: HashMap<String, Preview>,
+    previews: HashMap<String, Held>,
     preview_pending: HashSet<String>,
+}
+
+/// A preview as last fetched. It stays on screen through a new round,
+/// which only marks it as worth asking about again: forgetting it would
+/// blank the pane until the answer came back.
+#[derive(Debug, Clone)]
+struct Held {
+    preview: Preview,
+    stamp: Option<Stamp>,
+    /// Fetched, or confirmed unchanged, in the current round.
+    fresh: bool,
 }
 
 /// How the interface wants the tree laid out: what is folded, how far each
@@ -50,7 +61,7 @@ pub enum Applied {
     Stale,
     /// The rows are out of date: build them again.
     Rows,
-    /// A preview arrived.
+    /// A preview arrived that differs from what was shown.
     Preview,
     /// A long action finished.
     Acted(Done),
@@ -73,8 +84,11 @@ impl RepoSnapshot {
             Event::Worktrees(_, w) => {
                 self.worktrees = w;
                 self.scanned = false;
-                // Whatever was fetched described the previous state of the repo.
-                self.previews.clear();
+                // Whatever was fetched described the previous state of the
+                // repo: ask again, but keep showing it until the answer.
+                for held in self.previews.values_mut() {
+                    held.fresh = false;
+                }
                 self.preview_pending.clear();
                 Applied::Rows
             }
@@ -99,10 +113,32 @@ impl RepoSnapshot {
                 self.scanned = true;
                 Applied::Rows
             }
-            Event::Preview(_, key, preview) => {
+            Event::Preview(_, key, preview, stamp) => {
                 self.preview_pending.remove(&key);
-                self.previews.insert(key, preview);
-                Applied::Preview
+                let same = self
+                    .previews
+                    .get(&key)
+                    .is_some_and(|h| h.preview == preview);
+                self.previews.insert(
+                    key,
+                    Held {
+                        preview,
+                        stamp,
+                        fresh: true,
+                    },
+                );
+                if same {
+                    Applied::Nothing
+                } else {
+                    Applied::Preview
+                }
+            }
+            Event::PreviewUnchanged(_, key) => {
+                self.preview_pending.remove(&key);
+                if let Some(held) = self.previews.get_mut(&key) {
+                    held.fresh = true;
+                }
+                Applied::Nothing
             }
             Event::Acted(done) => Applied::Acted(done),
             Event::Failed(_, e) => Applied::Failed(e),
@@ -173,17 +209,22 @@ impl RepoSnapshot {
 
     /// What has been fetched for this preview key, or `Empty`.
     pub fn preview(&self, key: &str) -> Preview {
-        self.previews.get(key).cloned().unwrap_or(Preview::Empty)
+        self.previews
+            .get(key)
+            .map_or(Preview::Empty, |h| h.preview.clone())
     }
 
-    /// The fetch this row's preview needs, once: `None` when it is already
-    /// here or on its way, or when the row has no preview. `listed_agent`
+    /// The fetch this row's preview needs, once a round: `None` when it is
+    /// already fetched this round or on its way, or when the row has no
+    /// preview. `listed_agent`
     /// is the fallback for a session this snapshot does not know.
     pub fn want_preview(&mut self, row: &Row, listed_agent: &str) -> Option<(String, PreviewJob)> {
         let key = preview_key(row)?;
-        if self.previews.contains_key(&key) || self.preview_pending.contains(&key) {
+        let held = self.previews.get(&key);
+        if held.is_some_and(|h| h.fresh) || self.preview_pending.contains(&key) {
             return None;
         }
+        let known = held.and_then(|h| h.stamp);
         let job = match row.kind {
             RowKind::Session | RowKind::Orphan => {
                 let id = row.session_id.clone()?;
@@ -191,7 +232,7 @@ impl RepoSnapshot {
                     .session(&id)
                     .map_or(listed_agent, |s| s.agent)
                     .to_string();
-                PreviewJob::Conversation { agent, id }
+                PreviewJob::Conversation { agent, id, known }
             }
             RowKind::Worktree => match &row.node {
                 NodeId::Worktree(p) => PreviewJob::Worktree(p.clone()),
@@ -325,21 +366,131 @@ mod tests {
         assert!(matches!(s.apply(Event::Live(1, vec![]), 2), Applied::Stale));
     }
 
+    fn worktree_row(path: &str) -> Row {
+        Row {
+            facts: crate::model::tree::RowFacts::default(),
+            kind: RowKind::Worktree,
+            node: NodeId::Worktree(path.into()),
+            session_id: None,
+            glyph: String::new(),
+            label: path.into(),
+            search: path.into(),
+            badge: String::new(),
+            status: String::new(),
+            misfiled: false,
+            location: path.into(),
+        }
+    }
+
+    fn session_row(id: &str) -> Row {
+        Row {
+            kind: RowKind::Session,
+            session_id: Some(id.into()),
+            ..worktree_row("/a")
+        }
+    }
+
+    fn stamp(len: u64) -> Stamp {
+        Stamp {
+            len,
+            modified: None,
+        }
+    }
+
     #[test]
-    fn a_new_worktree_list_forgets_the_previews_and_the_scan() {
+    fn a_new_worktree_list_forgets_the_scan_but_keeps_showing_the_previews() {
+        // Blanking the pane until the new answer lands is the flicker the
+        // window showed every ten seconds.
         let mut s = RepoSnapshot::default();
         s.apply(
-            Event::Preview(1, "w:/a".into(), Preview::Worktree(vec!["x".into()])),
+            Event::Preview(1, "w:/a".into(), Preview::Worktree(vec!["x".into()]), None),
             1,
         );
         s.apply(Event::Resumable(1, vec![]), 1);
         assert!(s.scanned);
         assert!(matches!(
-            s.apply(Event::Worktrees(1, vec![wt("/a", true)]), 1),
+            s.apply(Event::Worktrees(2, vec![wt("/a", true)]), 2),
             Applied::Rows
         ));
-        assert_eq!(s.preview("w:/a"), Preview::Empty);
+        assert_eq!(s.preview("w:/a"), Preview::Worktree(vec!["x".into()]));
         assert!(!s.scanned);
+    }
+
+    #[test]
+    fn a_new_round_asks_again_once() {
+        let mut s = RepoSnapshot::default();
+        let row = worktree_row("/a");
+        let (key, _) = s.want_preview(&row, "claude").unwrap();
+        s.apply(Event::Preview(1, key, Preview::Worktree(vec![]), None), 1);
+        assert!(s.want_preview(&row, "claude").is_none(), "fresh this round");
+
+        s.apply(Event::Worktrees(2, vec![wt("/a", true)]), 2);
+        assert!(s.want_preview(&row, "claude").is_some(), "stale next round");
+        assert!(
+            s.want_preview(&row, "claude").is_none(),
+            "already on its way"
+        );
+    }
+
+    #[test]
+    fn a_conversation_is_asked_again_with_the_stamp_it_was_read_under() {
+        let mut s = RepoSnapshot::default();
+        let row = session_row("x");
+        let (key, job) = s.want_preview(&row, "claude").unwrap();
+        assert!(matches!(job, PreviewJob::Conversation { known: None, .. }));
+        s.apply(
+            Event::Preview(1, key, Preview::Conversation(vec![]), Some(stamp(42))),
+            1,
+        );
+
+        s.apply(Event::Worktrees(2, vec![]), 2);
+        let (_, job) = s.want_preview(&row, "claude").unwrap();
+        assert!(
+            matches!(job, PreviewJob::Conversation { known, .. } if known == Some(stamp(42))),
+            "the held copy's stamp must go with the request"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_conversation_keeps_what_is_shown_and_redraws_nothing() {
+        let mut s = RepoSnapshot::default();
+        let row = session_row("x");
+        let (key, _) = s.want_preview(&row, "claude").unwrap();
+        let shown = Preview::Worktree(vec!["held".into()]);
+        s.apply(
+            Event::Preview(1, key.clone(), shown.clone(), Some(stamp(1))),
+            1,
+        );
+        s.apply(Event::Worktrees(2, vec![]), 2);
+        s.want_preview(&row, "claude").unwrap();
+
+        assert!(matches!(
+            s.apply(Event::PreviewUnchanged(2, key.clone()), 2),
+            Applied::Nothing
+        ));
+        assert_eq!(s.preview(&key), shown);
+        assert!(s.want_preview(&row, "claude").is_none(), "fresh again");
+    }
+
+    #[test]
+    fn the_same_preview_again_is_nothing_to_redraw() {
+        let mut s = RepoSnapshot::default();
+        let same = || Preview::Worktree(vec!["x".into()]);
+        assert!(matches!(
+            s.apply(Event::Preview(1, "k".into(), same(), None), 1),
+            Applied::Preview
+        ));
+        assert!(matches!(
+            s.apply(Event::Preview(1, "k".into(), same(), None), 1),
+            Applied::Nothing
+        ));
+        assert!(matches!(
+            s.apply(
+                Event::Preview(1, "k".into(), Preview::Worktree(vec![]), None),
+                1
+            ),
+            Applied::Preview
+        ));
     }
 
     #[test]
@@ -372,6 +523,26 @@ mod tests {
     }
 
     #[test]
+    fn a_detached_worktree_says_so_as_a_fact() {
+        // Two detached worktrees share a branch name, "(detached)": an
+        // interface naming them by branch needs to know to name them
+        // otherwise.
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        crate::testing::git(&repo, &["worktree", "add", "-q", "--detach", "../loose"]);
+        let z = zrush(&td, repo);
+        let mut s = RepoSnapshot::default();
+        s.apply(Event::Worktrees(1, z.worktrees().unwrap()), 1);
+        let rows = s.rows(&z, &view());
+        let facts: Vec<bool> = rows
+            .iter()
+            .filter(|r| r.kind == RowKind::Worktree)
+            .map(|r| r.facts.detached)
+            .collect();
+        assert_eq!(facts, vec![false, true]);
+    }
+
+    #[test]
     fn a_worktree_row_carries_its_facts_not_only_its_text() {
         // An interface that is not a terminal draws these its own way, so
         // they come as data rather than inside the label.
@@ -395,19 +566,7 @@ mod tests {
     #[test]
     fn a_preview_is_asked_for_once() {
         let mut s = RepoSnapshot::default();
-        let row = Row {
-            facts: crate::model::tree::RowFacts::default(),
-            kind: RowKind::Worktree,
-            node: NodeId::Worktree("/a".into()),
-            session_id: None,
-            glyph: String::new(),
-            label: "a".into(),
-            search: "a".into(),
-            badge: String::new(),
-            status: String::new(),
-            misfiled: false,
-            location: "/a".into(),
-        };
+        let row = worktree_row("/a");
         let first = s.want_preview(&row, "claude");
         assert!(matches!(first, Some((_, PreviewJob::Worktree(_)))));
         assert!(s.want_preview(&row, "claude").is_none());

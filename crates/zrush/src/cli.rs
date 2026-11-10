@@ -288,7 +288,11 @@ fn list(z: &Zrush) -> Result<()> {
     for r in rows {
         println!(
             "{}{}\t{}\t{}\t{}",
-            r.glyph, r.label, r.badge, r.status, r.location
+            r.glyph,
+            crate::ui::table::drawn_label(&r),
+            r.badge,
+            r.status,
+            r.location
         );
     }
     Ok(())

@@ -118,10 +118,7 @@ pub(super) fn handle(
             path,
             with_sessions,
         } => remove(app, z, probes, path, with_sessions),
-        Action::Purge {
-            worktrees,
-            sessions,
-        } => purge(app, z, probes, worktrees, sessions),
+        Action::Purge(plan) => purge(app, z, probes, plan),
         Action::SwitchAgent(id) => switch_agent(app, z, probes, id),
         Action::SetEditor(name) => set_editor(app, z, &z.set_editor(&name), &name),
         Action::SetEditorCommand(cmd) => {
@@ -226,13 +223,10 @@ pub(super) fn purge(
     app: &mut App,
     z: &Arc<Zrush>,
     probes: &zrush_core::loader::Loader,
-    worktrees: Vec<std::path::PathBuf>,
-    sessions: Vec<(String, String)>,
+    plan: zrush_core::purge::Plan,
 ) {
     let z = Arc::clone(z);
-    start(app, probes, "Purge", move || {
-        actions::purge(&z, &worktrees, &sessions)
-    });
+    start(app, probes, "Purge", move || actions::purge(&z, &plan));
 }
 
 /// A setting was written, or was not. Either way the interface goes back
@@ -590,6 +584,7 @@ mod tests {
                 0,
                 key,
                 Preview::Worktree(vec!["## main...origin/main".into()]),
+                None,
             ),
             0,
         );
@@ -619,7 +614,7 @@ mod tests {
         drop(probes);
         let events: Vec<_> = rx.iter().collect();
         let found = events.iter().any(|e| {
-            matches!(e, crate::probe::Msg::Core(zrush_core::loader::Event::Preview(_, _, Preview::Worktree(lines)))
+            matches!(e, crate::probe::Msg::Core(zrush_core::loader::Event::Preview(_, _, Preview::Worktree(lines), _))
                 if lines.iter().any(|l| l.contains("init")))
         });
         assert!(found, "the git log never came back: {events:?}");

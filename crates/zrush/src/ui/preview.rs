@@ -125,10 +125,12 @@ mod tests {
             Turn {
                 role: Role::User,
                 text: "port it to rust".into(),
+                at: None,
             },
             Turn {
                 role: Role::Assistant,
                 text: "on it".into(),
+                at: None,
             },
         ];
         let text = draw(&Preview::Conversation(turns));
@@ -159,6 +161,7 @@ mod tests {
                     Role::Assistant
                 },
                 text: format!("turn number {i}"),
+                at: None,
             })
             .collect();
         let text = draw(&Preview::Conversation(turns));
@@ -172,6 +175,7 @@ mod tests {
             &[Turn {
                 role: Role::User,
                 text: "one two three four five".into(),
+                at: None,
             }],
             14,
         );
@@ -209,6 +213,7 @@ mod tests {
         let text = draw(&Preview::Conversation(vec![Turn {
             role: Role::User,
             text: long,
+            at: None,
         }]));
         // More than one row of x's means it wrapped.
         assert!(text.matches("xxxxx").count() > 1);

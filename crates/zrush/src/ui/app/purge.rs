@@ -1,6 +1,6 @@
 //! Purge mode: mark rows, then remove the lot.
 
-use super::{Action, App, Choice, KeyCode, KeyEvent, Modal, Mode, NodeId, PathBuf, RowKind};
+use super::{Action, App, Choice, KeyCode, KeyEvent, Modal, Mode};
 
 impl App {
     pub(super) fn purge_key(&mut self, key: KeyEvent) -> Action {
@@ -38,26 +38,14 @@ impl App {
     }
 
     pub(super) fn ask_purge(&mut self) -> Action {
-        let (worktrees, sessions, kept_live, skipped_main) = self.purge_plan();
-        if worktrees.is_empty() && sessions.is_empty() {
+        let plan = self.purge_plan();
+        if plan.is_empty() {
             self.flash("nothing to purge: mark rows with space first");
             return Action::Redraw;
         }
-        let mut note = String::new();
-        if kept_live > 0 {
-            use std::fmt::Write as _;
-            let _ = write!(note, "\n{kept_live} running session(s) kept.");
-        }
-        if skipped_main > 0 {
-            note.push_str("\nThe main worktree is skipped.");
-        }
         self.modal = Some(Modal::Confirm {
             title: "Purge".into(),
-            body: format!(
-                "{} worktree(s) and {} session(s).{note}",
-                worktrees.len(),
-                sessions.len()
-            ),
+            body: plan.summary(),
             choices: vec![
                 Choice::destructive("Purge, and their other sessions too"),
                 Choice::destructive("Purge only what is marked"),
@@ -68,65 +56,9 @@ impl App {
         Action::Redraw
     }
 
-    /// Marked rows into a plan. A session whose worktree is also marked
-    /// goes with the worktree, so the count never says it twice.
-    pub(super) fn purge_plan(&self) -> (Vec<PathBuf>, Vec<(String, String)>, usize, usize) {
-        let main = self
-            .snap
-            .worktrees
-            .iter()
-            .find(|w| w.is_main)
-            .map(|w| w.path.clone());
-        let mut worktrees = Vec::new();
-        let mut sessions: Vec<(String, String, Option<PathBuf>)> = Vec::new();
-        let mut kept_live = 0;
-        let mut skipped_main = 0;
-
-        for &i in &self.marked {
-            let Some(row) = self.rows.get(i) else {
-                continue;
-            };
-            match row.kind {
-                RowKind::Worktree => {
-                    let NodeId::Worktree(p) = &row.node else {
-                        continue;
-                    };
-                    if Some(p) == main.as_ref() {
-                        skipped_main += 1;
-                    } else {
-                        worktrees.push(p.clone());
-                    }
-                }
-                RowKind::Session | RowKind::Orphan => {
-                    let Some(id) = row.session_id.clone() else {
-                        continue;
-                    };
-                    if self.is_running(&id) {
-                        kept_live += 1;
-                        continue;
-                    }
-                    let agent = self
-                        .snap
-                        .live
-                        .iter()
-                        .chain(self.snap.resumable.iter())
-                        .find(|s| s.id == id)
-                        .map_or_else(String::new, |s| s.agent.to_string());
-                    let owner = match &row.node {
-                        NodeId::Worktree(p) => Some(p.clone()),
-                        NodeId::Orphans => None,
-                    };
-                    sessions.push((agent, id, owner));
-                }
-                RowKind::Orphans | RowKind::More => {}
-            }
-        }
-        let sessions = sessions
-            .into_iter()
-            .filter(|(_, _, owner)| !owner.as_ref().is_some_and(|p| worktrees.contains(p)))
-            .map(|(a, i, _)| (a, i))
-            .collect();
-        (worktrees, sessions, kept_live, skipped_main)
+    /// The marked rows, by core's rules.
+    pub(super) fn purge_plan(&self) -> zrush_core::purge::Plan {
+        zrush_core::purge::plan(&self.rows, self.marked.iter().copied(), &self.snap)
     }
 }
 
@@ -182,9 +114,9 @@ mod tests {
         let mut a = app();
         a.on_key(ctrl('p'));
         a.on_key(code(KeyCode::Char(' '))); // the main worktree
-        let (worktrees, _, _, skipped) = a.purge_plan();
-        assert_eq!(worktrees, Vec::<PathBuf>::new());
-        assert_eq!(skipped, 1);
+        let plan = a.purge_plan();
+        assert_eq!(plan.worktrees, Vec::<PathBuf>::new());
+        assert!(plan.skipped_main);
     }
 
     #[test]
@@ -193,13 +125,13 @@ mod tests {
         a.on_key(ctrl('p'));
         a.cursor = 3;
         a.on_key(code(KeyCode::Char(' ')));
-        let (_, sessions, kept_live, _) = a.purge_plan();
-        assert_eq!(sessions, Vec::<(String, String)>::new());
-        assert_eq!(kept_live, 1);
+        let plan = a.purge_plan();
+        assert_eq!(plan.sessions, Vec::new());
+        assert_eq!(plan.kept_live, 1);
     }
 
     #[test]
-    fn a_session_going_with_its_worktree_is_not_counted_twice() {
+    fn a_session_marked_with_its_worktree_is_deleted_too() {
         let mut a = app();
         a.on_key(ctrl('p'));
         a.cursor = 2;
@@ -218,9 +150,47 @@ mod tests {
         ));
         a.set_rows(rows);
         a.marked.insert(4);
-        let (worktrees, sessions, ..) = a.purge_plan();
-        assert_eq!(worktrees.len(), 1);
-        assert!(sessions.is_empty(), "it goes with the worktree");
+        let plan = a.purge_plan();
+        assert_eq!(plan.worktrees.len(), 1);
+        // Removing the worktree leaves its transcripts on disk.
+        assert_eq!(plan.sessions.len(), 1);
+        assert_eq!(plan.sessions[0].id, "dead2");
+    }
+
+    /// Worktree x marked, with a dead session of its own nobody marked.
+    fn x_marked_with_an_unmarked_session() -> App {
+        let mut a = app();
+        let mut s = session("unmarked", SessionKind::Resumable);
+        s.cwd = "/repo/.claude/worktrees/x".into();
+        a.snap.resumable.push(s);
+        a.on_key(ctrl('p'));
+        a.marked.insert(2); // worktree x
+        a
+    }
+
+    fn purged(a: &mut App, answer: usize) -> zrush_core::purge::Plan {
+        a.on_key(code(KeyCode::Enter));
+        let Some(Modal::Confirm { choices, .. }) = a.modal.clone() else {
+            panic!("no confirmation");
+        };
+        match a.confirmed("Purge", &choices, answer) {
+            Action::Purge(plan) => plan,
+            other => panic!("not a purge: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn purging_with_the_other_sessions_takes_them_too() {
+        let mut a = x_marked_with_an_unmarked_session();
+        let plan = purged(&mut a, 0);
+        assert!(plan.sessions.iter().any(|d| d.id == "unmarked"));
+    }
+
+    #[test]
+    fn purging_only_what_is_marked_leaves_the_rest() {
+        let mut a = x_marked_with_an_unmarked_session();
+        let plan = purged(&mut a, 1);
+        assert_eq!(plan.sessions, Vec::new());
     }
 
     #[test]

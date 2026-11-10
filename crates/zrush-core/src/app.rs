@@ -419,6 +419,12 @@ impl Zrush {
             .unwrap_or_default()
     }
 
+    /// Where a conversation's transcript stands, for telling whether its
+    /// preview is still what is on disk.
+    pub fn preview_stamp(&self, agent: &str, id: &str) -> Option<crate::agent::Stamp> {
+        self.agent(agent).ok()?.stamp(&self.dirs, id)
+    }
+
     pub fn binding(&self, worktree: &Path) -> Option<state::Binding> {
         state::read(worktree).ok().flatten()
     }

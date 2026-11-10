@@ -8,8 +8,13 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod app;
+pub mod chrome;
 pub mod conversation;
 pub mod dialog;
+pub mod fonts;
+pub mod login_path;
+pub mod menu;
+pub mod palette;
 pub mod panes;
 pub mod repos;
 pub mod settings;

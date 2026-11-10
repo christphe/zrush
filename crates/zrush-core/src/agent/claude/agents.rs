@@ -144,7 +144,7 @@ pub fn to_session(dirs: &Dirs, cfg: &Config, e: Entry, now: i64) -> Session {
 }
 
 pub fn live(dirs: &Dirs, cfg: &Config) -> Vec<Session> {
-    let Ok(out) = std::process::Command::new("claude")
+    let Ok(out) = crate::search_path::command("claude")
         .args(["agents", "--json", "--all"])
         .output()
     else {

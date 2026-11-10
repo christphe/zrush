@@ -163,12 +163,14 @@ impl App {
                     with_sessions: choices.len() == 3 && at == 1,
                 }),
             "Purge" => {
-                let (worktrees, sessions, ..) = self.purge_plan();
-                self.leave_purge();
-                Action::Purge {
-                    worktrees,
-                    sessions,
+                let mut plan = self.purge_plan();
+                // The first answer takes the marked worktrees' other
+                // sessions too; the second only what is marked.
+                if at == 0 {
+                    plan = plan.with_others(&self.snap);
                 }
+                self.leave_purge();
+                Action::Purge(plan)
             }
             _ => Action::Redraw,
         }

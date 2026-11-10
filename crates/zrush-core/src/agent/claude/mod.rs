@@ -16,7 +16,7 @@ pub mod transcript;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::agent::{Agent, Filing, Scope, Turn};
+use crate::agent::{Agent, Filing, Scope, Stamp, Turn};
 use crate::config::{Config, Dirs};
 use crate::error::Result;
 use crate::model::{Session, SessionKind, age, truncate_title};
@@ -133,6 +133,10 @@ impl Agent for ClaudeCode {
         projects::find_transcript(dirs, id)
             .map(|p| transcript::turns(&p, transcript::TAIL_LINES, turns))
             .unwrap_or_default()
+    }
+
+    fn stamp(&self, dirs: &Dirs, id: &str) -> Option<Stamp> {
+        Stamp::of(&projects::find_transcript(dirs, id)?)
     }
 
     /// The transcript wherever Claude Code filed it, plus the sidecar
