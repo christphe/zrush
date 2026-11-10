@@ -371,13 +371,13 @@ fn empty(ui: &mut egui::Ui) {
                 .spacing([12.0, 10.0])
                 .show(ui, |ui| {
                     for (keys, what) in [
-                        ("double click", "open in the editor"),
-                        ("right click", "every action on a row"),
-                        ("⌘F", "filter the tree"),
-                        ("⌘K", "find anything, do anything"),
+                        ("double click".to_string(), "open in the editor"),
+                        ("right click".to_string(), "every action on a row"),
+                        (crate::chrome::shortcut("F"), "filter the tree"),
+                        (crate::chrome::shortcut("K"), "find anything, do anything"),
                     ] {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            crate::chrome::chip(ui, keys, muted, "");
+                            crate::chrome::chip(ui, &keys, muted, "");
                         });
                         ui.label(RichText::new(what).color(muted));
                         ui.end_row();
@@ -410,6 +410,21 @@ mod tests {
             break_before_fences(text),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    #[test]
+    fn the_empty_pane_names_the_shortcuts_as_the_platform_does() {
+        let mut h = egui_kittest::Harness::builder()
+            .with_size([800.0, 600.0])
+            .build_ui(super::empty);
+        h.run();
+        for key in ["F", "K"] {
+            let label = crate::chrome::shortcut(key);
+            assert!(h.query_by_label(&label).is_some(), "no {label}");
+        }
+        if !cfg!(target_os = "macos") {
+            assert!(h.query_by_label_contains("⌘").is_none());
+        }
     }
 
     #[test]

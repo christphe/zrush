@@ -12,6 +12,16 @@ pub const LEFT_INSET: f32 = 76.0;
 #[cfg(not(target_os = "macos"))]
 pub const LEFT_INSET: f32 = 0.0;
 
+/// A keyboard shortcut as the platform writes it: `⌘K` on macOS, `Ctrl+K`
+/// elsewhere, the same keys egui's `Modifiers::COMMAND` answers to.
+pub fn shortcut(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("⌘{key}")
+    } else {
+        format!("Ctrl+{key}")
+    }
+}
+
 /// The app's icon, as the Dock shows it: the window's icon, and the source
 /// tools/bundle-macos.sh makes the macOS bundle's .icns from.
 pub const ICON: &[u8] = include_bytes!("../assets/icon.png");
@@ -153,5 +163,15 @@ mod tests {
     fn text_on_the_accent_stays_readable() {
         assert_eq!(on_colour(Color32::from_rgb(0, 90, 200)), Color32::WHITE);
         assert_ne!(on_colour(Color32::from_rgb(250, 220, 120)), Color32::WHITE);
+    }
+
+    #[test]
+    fn a_shortcut_is_written_the_way_the_platform_writes_it() {
+        let want = if cfg!(target_os = "macos") {
+            "⌘K"
+        } else {
+            "Ctrl+K"
+        };
+        assert_eq!(shortcut("K"), want);
     }
 }

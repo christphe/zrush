@@ -181,7 +181,7 @@ fn bar(ui: &mut egui::Ui, tab: &Tab, acts: &mut Vec<Act>) {
     });
 }
 
-/// The field that narrows the tree. Ctrl+F (⌘F) reaches it from anywhere
+/// The field that narrows the tree. Ctrl+F (⌘F on macOS) reaches it from anywhere
 /// in the tab; Escape empties it.
 fn filter_field(ui: &mut egui::Ui, tab: &mut Tab) {
     let field = ui
@@ -191,9 +191,10 @@ fn filter_field(ui: &mut egui::Ui, tab: &mut Tab) {
                 .margin(egui::Margin::symmetric(8, 5))
                 .desired_width(f32::INFINITY),
         )
-        .on_hover_text(
-            "Fuzzy by default.  'exact  ^start  end$  !not\n⌘F to get here, Escape to clear.",
-        );
+        .on_hover_text(format!(
+            "Fuzzy by default.  'exact  ^start  end$  !not\n{} to get here, Escape to clear.",
+            crate::chrome::shortcut("F")
+        ));
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
         field.request_focus();
     }
