@@ -287,6 +287,7 @@ pub fn apply(ctx: &egui::Context, t: &Theme) {
         color: egui::Color32::from_black_alpha(if t.dark { 110 } else { 40 }),
     };
     v.popup_shadow = v.window_shadow;
+    v.text_options.color_transfer_function = crate::fonts::smoothing(t.dark);
     ctx.global_style_mut(|s| {
         s.visuals = v;
         layout(s);

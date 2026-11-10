@@ -12,19 +12,27 @@ use crate::{conversation, tree_view};
 /// Draw the tab. A question one of its clicks raised comes back to be put
 /// up by the window.
 pub fn show(ui: &mut egui::Ui, tab: &mut Tab, md: &mut CommonMarkCache) -> Option<Question> {
-    if let Some(e) = tab.error.clone() {
-        ui.horizontal(|ui| {
-            ui.colored_label(ui.visuals().error_fg_color, e);
-            if ui.small_button("✕").clicked() {
-                tab.error = None;
-            }
-        });
-    }
-    if let Some(f) = tab.flash.clone() {
-        flash(ui, &tab.repo, &f);
-    }
     // A tab whose repository could not be opened has only its error.
-    tab.zrush()?;
+    if tab.zrush().is_none() {
+        if let Some(e) = &tab.error {
+            ui.add_space(16.0);
+            ui.horizontal(|ui| {
+                ui.add_space(16.0);
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            });
+        }
+        return None;
+    }
+    // What an action said, over the tab rather than pushing it down: a
+    // success fades on its own, a failure stays until dismissed.
+    let area = ui.max_rect();
+    if let Some(e) = tab.error.clone()
+        && toast(ui.ctx(), area, &tab.repo, &e)
+    {
+        tab.error = None;
+    } else if let Some(f) = tab.flash.clone() {
+        flash(ui.ctx(), area, &tab.repo, &f);
+    }
     let mut asked = None;
     let palette = crate::theme::palette(ui.ctx());
     let side = palette.map_or(ui.visuals().faint_bg_color, |p| p.panel_bg);
@@ -33,11 +41,12 @@ pub fn show(ui: &mut egui::Ui, tab: &mut Tab, md: &mut CommonMarkCache) -> Optio
         .resizable(true)
         .default_size(380.0)
         .size_range(260.0..=700.0)
-        .frame(
-            egui::Frame::new()
-                .fill(side)
-                .inner_margin(egui::Margin::symmetric(10, 10)),
-        )
+        .frame(egui::Frame::new().fill(side).inner_margin(egui::Margin {
+            left: 14,
+            right: 12,
+            top: 12,
+            bottom: 10,
+        }))
         .show(ui, |ui| asked = tree_view::show(ui, tab));
     egui::CentralPanel::default()
         .frame(
@@ -53,14 +62,16 @@ pub fn show(ui: &mut egui::Ui, tab: &mut Tab, md: &mut CommonMarkCache) -> Optio
     asked
 }
 
-/// How long a flash line stays up.
-const FLASH_FOR: Duration = Duration::from_secs(5);
+/// How long a success stays up, and how long it takes to fade.
+const FLASH_FOR: Duration = Duration::from_secs(4);
+const FADE: f32 = 0.4;
 
-/// Show `text` for `FLASH_FOR` from the first frame it appeared in.
-fn flash(ui: &mut egui::Ui, repo: &std::path::Path, text: &str) {
+/// Show `text` for `FLASH_FOR` from the first frame it appeared in, fading
+/// out at the end.
+fn flash(ctx: &egui::Context, area: egui::Rect, repo: &std::path::Path, text: &str) {
     let id = egui::Id::new(("flash", repo));
     let now = Instant::now();
-    let since = ui.ctx().data_mut(|d| {
+    let since = ctx.data_mut(|d| {
         let seen: Option<(String, Instant)> = d.get_temp(id);
         match seen {
             Some((t, at)) if t == text => at,
@@ -70,12 +81,79 @@ fn flash(ui: &mut egui::Ui, repo: &std::path::Path, text: &str) {
             }
         }
     });
-    let shown = now.duration_since(since);
-    if shown < FLASH_FOR {
-        ui.weak(text);
-        ui.ctx()
-            .request_repaint_after(FLASH_FOR.saturating_sub(shown));
+    let left = FLASH_FOR.as_secs_f32() - now.duration_since(since).as_secs_f32();
+    if left <= 0.0 {
+        return;
     }
+    let opacity = (left / FADE).min(1.0);
+    egui::Area::new(egui::Id::new(("toast", repo)))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -24.0))
+        .constrain_to(area)
+        .interactable(false)
+        .show(ctx, |ui| {
+            ui.set_opacity(opacity);
+            card(ui, text, false);
+        });
+    if opacity < 1.0 {
+        ctx.request_repaint();
+    } else {
+        ctx.request_repaint_after(Duration::from_secs_f32(left - FADE));
+    }
+}
+
+/// A failure, until its ✕ is clicked: true then.
+fn toast(ctx: &egui::Context, area: egui::Rect, repo: &std::path::Path, text: &str) -> bool {
+    egui::Area::new(egui::Id::new(("toast", repo)))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -24.0))
+        .constrain_to(area)
+        .show(ctx, |ui| card(ui, text, true))
+        .inner
+}
+
+/// The toast itself: a dot in the outcome's colour, the line, said as a
+/// sentence; a failure has its ✕. True when that was clicked.
+fn card(ui: &mut egui::Ui, text: &str, failed: bool) -> bool {
+    let v = ui.visuals().clone();
+    let colour = if failed {
+        v.error_fg_color
+    } else {
+        crate::theme::palette(ui.ctx()).map_or(v.selection.bg_fill, |p| p.live)
+    };
+    let mut dismissed = false;
+    egui::Frame::new()
+        .fill(v.window_fill)
+        .stroke(v.window_stroke)
+        .corner_radius(10)
+        .shadow(v.popup_shadow)
+        .inner_margin(egui::Margin::symmetric(14, 10))
+        .show(ui, |ui| {
+            ui.set_max_width(520.0);
+            ui.horizontal(|ui| {
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot.center(), 4.0, colour);
+                ui.add_space(4.0);
+                ui.add(egui::Label::new(sentence(text)).wrap());
+                if failed {
+                    ui.add_space(6.0);
+                    dismissed = ui
+                        .add(egui::Button::new("✕").frame_when_inactive(false).small())
+                        .on_hover_text("Dismiss")
+                        .clicked();
+                }
+            });
+        });
+    dismissed
+}
+
+/// The line as a sentence: zrush's lines start in lower case, as a
+/// terminal's status line does.
+fn sentence(text: &str) -> String {
+    let mut c = text.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -310,7 +388,7 @@ mod tests {
         let repo = scratch_repo(&td);
         let (mut h, _) = harness(&td, &repo);
         until(&mut h, "main");
-        h.get_by_label("+ New worktree").click_accesskit();
+        h.get_by_label("+").click_accesskit();
         h.run_steps(3);
         assert!(matches!(
             h.state().tab.pending,
@@ -328,7 +406,7 @@ mod tests {
         crate::testing::git(&repo, &["worktree", "add", "-q", "-b", "side", "../side"]);
         let (mut h, _) = harness(&td, &repo);
         until(&mut h, "side");
-        h.get_by_label("Purge…").click_accesskit();
+        h.get_by_label("🗑").click_accesskit();
         h.run_steps(3);
         assert!(h.state().tab.purging.is_some());
         until(&mut h, "Tick what goes");
@@ -346,7 +424,7 @@ mod tests {
         let repo = scratch_repo(&td);
         let (mut h, _) = harness(&td, &repo);
         until(&mut h, "main");
-        h.get_by_label("Purge…").click_accesskit();
+        h.get_by_label("🗑").click_accesskit();
         h.run_steps(3);
         until(&mut h, "Tick what goes");
         h.get_by_label("Done").click_accesskit();
@@ -372,6 +450,9 @@ mod tests {
         let repo = scratch_repo(&td);
         let (mut h, host) = harness(&td, &repo);
         until(&mut h, "main");
+        // It shows under the pointer only.
+        h.get_by_label("main").hover();
+        h.run_steps(2);
         h.get_by_label("Open").click();
         opened(&mut h, &host);
         assert_eq!(*host.opened.lock().unwrap(), vec![repo.clone()]);
@@ -412,5 +493,12 @@ mod tests {
         until(&mut h, SESSION_TITLE);
         h.get_by_label_contains(SESSION_TITLE).click();
         until(&mut h, "the very last answer");
+    }
+
+    #[test]
+    fn a_line_is_said_as_a_sentence() {
+        assert_eq!(super::sentence("removed side"), "Removed side");
+        assert_eq!(super::sentence("élan"), "Élan");
+        assert_eq!(super::sentence(""), "");
     }
 }

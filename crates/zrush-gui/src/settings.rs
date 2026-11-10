@@ -41,19 +41,26 @@ pub fn show(
     }
     let mut open = true;
     let mut changed = None;
+    // Placed once, then the user's to move and resize: an anchored window
+    // can do neither. It opens no taller than the window it sits in.
+    let screen = ctx.content_rect();
+    let height = (screen.height() - 140.0).clamp(240.0, 720.0);
     egui::Window::new("Settings")
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_size([600.0, 640.0])
-        .anchor(egui::Align2::CENTER_TOP, [0.0, 72.0])
+        .constrain(true)
+        .default_size([620.0, height])
+        .default_pos([screen.center().x - 310.0, screen.top() + 72.0])
         .show(ctx, |ui| {
             let cfg = state
                 .saved
                 .get_or_insert_with(|| Config::load(z.dirs()).unwrap_or_else(|_| z.config()))
                 .clone();
+            // Fills the window, so the scrollbar sits on its right edge and
+            // resizing the window resizes what scrolls.
             egui::ScrollArea::vertical()
-                .max_height(560.0)
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
                     section(ui, "Appearance");
                     if let Some(c) = theme_row(ui, state, z, &cfg, themes) {

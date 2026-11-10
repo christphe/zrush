@@ -73,14 +73,25 @@ impl Confirm {
         }
     }
 
+    /// What is about to go, named on its own line.
+    pub fn subject(&self) -> Option<&str> {
+        match self {
+            Self::DeleteSession { title, .. } => Some(title),
+            Self::RemoveWorktree { name, .. } => Some(name),
+            Self::Purge(_) => None,
+        }
+    }
+
+    /// What happens to it.
     pub fn body(&self) -> String {
         match self {
-            Self::DeleteSession { title, .. } => {
-                format!("{title}\n\nIts transcript goes for good.")
+            Self::DeleteSession { .. } => {
+                "Its transcript is deleted from disk. This can't be undone.".into()
             }
-            Self::RemoveWorktree { name, sessions, .. } => match sessions {
-                0 => format!("{name} has no sessions."),
-                n => format!("{name} has {n} session(s)."),
+            Self::RemoveWorktree { sessions, .. } => match sessions {
+                0 => "Its folder is removed. It has no sessions.".into(),
+                1 => "Its folder is removed. It holds 1 session.".into(),
+                n => format!("Its folder is removed. It holds {n} sessions."),
             },
             Self::Purge(plan) => plan.summary(),
         }
@@ -217,8 +228,22 @@ impl Tab {
         &self.rows
     }
 
+    /// Sessions running in this repository. The agent lists every one on
+    /// the machine; those working elsewhere belong to another tab, or none.
     pub fn live_count(&self) -> usize {
-        self.snap.live.len()
+        let root = self.main_root();
+        self.snap
+            .live
+            .iter()
+            .filter(|s| {
+                root.is_some_and(|r| s.cwd.starts_with(r))
+                    || self
+                        .snap
+                        .worktrees
+                        .iter()
+                        .any(|w| s.cwd.starts_with(&w.path))
+            })
+            .count()
     }
 
     pub fn last_refresh(&self) -> Instant {
@@ -529,13 +554,33 @@ impl Tab {
     /// Purge mode: every session listed, nothing ticked yet.
     pub fn start_purge(&mut self) {
         self.purging = Some(HashSet::new());
-        self.view.show_all = true;
-        self.refresh();
+        self.widen();
     }
 
     pub fn leave_purge(&mut self) {
         self.purging = None;
-        self.view.show_all = false;
+        self.widen();
+    }
+
+    /// The filter was typed in: it searches every session, not only the
+    /// few a worktree lists before "more".
+    pub fn filter_changed(&mut self) {
+        self.widen();
+    }
+
+    /// List every session while filtering or purging, the first few
+    /// otherwise. Those hidden behind "more" are already held and come at
+    /// once; the scan, bounded to the newest transcripts until now, then
+    /// looks again at all of them.
+    fn widen(&mut self) {
+        let all = self.purging.is_some() || !self.filter.trim().is_empty();
+        if all == self.view.show_all {
+            return;
+        }
+        self.view.show_all = all;
+        if let Some(l) = &self.live {
+            self.rows = self.snap.rows(&l.z, &self.view);
+        }
         self.refresh();
     }
 
@@ -696,9 +741,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_preview_survives_a_refresh() {
-        // Every round starts by forgetting the previews; what is selected
-        // must be fetched again rather than left as "Reading…".
+    fn a_refresh_never_blanks_the_preview() {
+        // The pane went back to "Reading…" at every round, every ten
+        // seconds: the conversation flickered while you read it.
         let td = tempfile::TempDir::new().unwrap();
         let repo = scratch_repo(&td);
         let mut t = open(&td, &repo);
@@ -707,10 +752,60 @@ pub(crate) mod tests {
         t.select(&row);
         until(&mut t, |t| t.preview() != Preview::Empty);
         t.refresh();
-        // Let the new round land, then give the preview time to come back.
-        until(&mut t, |t| t.preview() == Preview::Empty);
-        until(&mut t, |t| t.preview() != Preview::Empty);
-        assert_ne!(t.preview(), Preview::Empty, "preview gone after refresh");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            t.poll();
+            assert_ne!(t.preview(), Preview::Empty, "blanked by the refresh");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// `titles.len()` resumable conversations in `repo`, the first the
+    /// newest.
+    fn sessions(td: &tempfile::TempDir, repo: &Path, titles: &[&str]) {
+        let dir = zrush_core::config::dirs_under(td.path())
+            .claude_projects
+            .join(zrush_core::agent::claude::projects::slugify(repo));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = format!("{:?}", repo.to_string_lossy());
+        for (i, title) in titles.iter().enumerate() {
+            let id = format!("aaaaaaaa-1111-2222-3333-{i:012}");
+            let day = 28 - i;
+            let lines = [
+                format!("{{\"type\":\"ai-title\",\"aiTitle\":\"{title}\"}}"),
+                format!(
+                    "{{\"type\":\"user\",\"message\":{{\"content\":\"hi\"}},\"cwd\":{cwd},\"timestamp\":\"2026-10-{day:02}T10:00:00.000Z\"}}"
+                ),
+            ];
+            std::fs::write(dir.join(format!("{id}.jsonl")), lines.join("\n") + "\n").unwrap();
+        }
+    }
+
+    #[test]
+    fn the_filter_finds_sessions_hidden_behind_more() {
+        let td = tempfile::TempDir::new().unwrap();
+        let repo = scratch_repo(&td);
+        let mut titles = vec!["recent work"; 7];
+        titles.push("the needle");
+        sessions(&td, &repo, &titles);
+        let mut t = open(&td, &repo);
+        until(&mut t, |t| t.rows().iter().any(|r| r.kind == RowKind::More));
+        assert!(
+            row_named(&t, "the needle").is_none(),
+            "shown before filtering"
+        );
+        t.filter = "needle".into();
+        t.filter_changed();
+        until(&mut t, |t| row_named(t, "the needle").is_some());
+        assert!(
+            row_named(&t, "the needle").is_some(),
+            "the filter missed it"
+        );
+        // Emptied, the worktree lists its first few again.
+        t.filter.clear();
+        t.filter_changed();
+        until(&mut t, |t| row_named(t, "the needle").is_none());
+        assert!(row_named(&t, "the needle").is_none());
     }
 
     #[test]

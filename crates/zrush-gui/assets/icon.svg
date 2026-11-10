@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="1024" height="1024">
+  <!-- zrush: a z rushing in, its swarm trailing behind. The body keeps
+       macOS's grid: 80 of 100 units, so the Dock sizes it like its
+       neighbours. icon.png is this at 1024 px:
+       rsvg-convert -w 1024 -h 1024 icon.svg -o icon.png -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f97316"/>
+      <stop offset="1" stop-color="#9a3412"/>
+    </linearGradient>
+  </defs>
+  <rect x="10" y="10" width="80" height="80" rx="18" fill="url(#bg)"/>
+  <g fill="#fff">
+    <circle cx="22" cy="40" r="1.4" opacity="0.63"/>
+    <circle cx="18" cy="50" r="1.8" opacity="0.71"/>
+    <circle cx="24" cy="60" r="1.2" opacity="0.59"/>
+    <circle cx="30" cy="46" r="2.2" opacity="0.79"/>
+    <circle cx="31" cy="56" r="2" opacity="0.75"/>
+    <circle cx="14" cy="44" r="1" opacity="0.55"/>
+    <circle cx="15" cy="57" r="1.1" opacity="0.57"/>
+    <path d="M40 33 H74 V40 L52 63 H74 V70 H38 V63 L60 40 H40 Z"/>
+  </g>
+</svg>
