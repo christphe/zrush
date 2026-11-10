@@ -440,8 +440,10 @@ It is a preview, released as `gui-vX.Y.Z` pre-releases on the
   Intel). Open it and drag zrush to Applications. It is signed ad hoc, not
   notarised: the first time, right click it in Applications and choose
   **Open**, or run `xattr -d com.apple.quarantine /Applications/zrush.app`.
-- **Windows**: `zrush-x86_64-pc-windows-msvc.msi` installs zrush in Program
-  Files with a Start menu entry. It is not signed: SmartScreen says
+- **Windows**: `zrush-x86_64-pc-windows-msvc.msi` shows the licence, asks
+  where to install (Program Files unless you change it; updates go back to
+  the same folder) and installs zrush there with a Start menu entry. It
+  needs an administrator's yes. It is not signed: SmartScreen says
   "unknown publisher", **More info** then **Run anyway**.
 - **Linux**, or any of them by hand: the `zrush-gui-<target>` archive holds
   the bare binary.
