@@ -410,7 +410,7 @@ taskbar. It shows several repositories at once, one tab each: the worktrees
 and their sessions on the left, and on the right the conversation of the
 session you pick (Markdown, scrollable) or the git state of the worktree.
 From there, **Open in IDE** opens it the way enter does in the terminal, and
-**Agent in a terminal** resumes it in a new terminal window. It asks the same
+**Terminal** resumes it in a new terminal window. It asks the same
 questions about misfiled and orphaned sessions, and has a settings window for
 everything the terminal's settings screen has.
 
@@ -421,15 +421,36 @@ What the terminal does with a key, the window does with a right click:
 - **on a session**: open in the IDE, resume in a terminal, move it to a new
   worktree, copy its path, delete it (never a running one).
 
-Above the tree, a filter in the terminal's syntax (`Ctrl+F`, `⌘F` on a Mac),
-**+ New worktree**, and **Purge…**, which ticks rows and asks before removing
-them. A worktree on a detached HEAD is named by its folder.
+Above the tree, a filter in the terminal's syntax (`Ctrl+F`, `⌘F` on a Mac):
+it searches every session, those behind "more" too, and lights the letters
+it matched. Beside it, **+** for a new worktree and **🗑** to purge, which
+ticks rows and asks before removing them. A worktree on a detached HEAD is
+named by its folder.
 
-It is a preview, released as `gui-vX.Y.Z` pre-releases with a bare binary per
-platform; installers and self-update come later. From a checkout:
+`Ctrl+K` (`⌘K`) opens a palette that finds anything by a few of its letters:
+a session or a worktree in any open repository, a tab, a command. On a Mac
+the app's commands are in the menu bar (**Open Repository…** `⌘O`,
+**Settings…** `⌘,`) and the tabs sit in the title bar; elsewhere they are
+in a bar along the top.
+
+It is a preview, released as `gui-vX.Y.Z` pre-releases on the
+[releases page](https://github.com/christphe/zrush/releases):
+
+- **macOS**: `zrush-<arch>.dmg` (`aarch64` for Apple silicon, `x86_64` for
+  Intel). Open it and drag zrush to Applications. It is signed ad hoc, not
+  notarised: the first time, right click it in Applications and choose
+  **Open**, or run `xattr -d com.apple.quarantine /Applications/zrush.app`.
+- **Windows**: `zrush-x86_64-pc-windows-msvc.msi` installs zrush in Program
+  Files with a Start menu entry. It is not signed: SmartScreen says
+  "unknown publisher", **More info** then **Run anyway**.
+- **Linux**, or any of them by hand: the `zrush-gui-<target>` archive holds
+  the bare binary.
+
+Self-update comes later. From a checkout:
 
 ```sh
 cargo run --release -p zrush-gui -- [REPO...]
+tools/bundle-macos.sh --install    # macOS: build zrush.app into /Applications
 ```
 
 It opens the tabs it had last time, plus any repository named on the
@@ -514,3 +535,9 @@ zcd() {
 ## License
 
 GPL-3.0-only. See [LICENSE](LICENSE).
+
+The desktop app bundles two fonts, both under the SIL Open Font License 1.1:
+[Inter](https://github.com/rsms/inter)
+([licence](crates/zrush-gui/assets/fonts/OFL-Inter.txt)) and
+[JetBrains Mono](https://github.com/JetBrains/JetBrainsMono)
+([licence](crates/zrush-gui/assets/fonts/OFL-JetBrainsMono.txt)).
