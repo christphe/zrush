@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/zrush-core", "crates/zrush", "crates/zrush-gui"]
+members = [
+    "crates/zrush-core",
+    "crates/zrush",
+    "crates/zrush-gui",
+    "crates/zrush-session-end",
+]
 
 # Shared by every crate in the workspace, so a version is decided once.
 [workspace.package]
@@ -42,6 +47,18 @@ egui_commonmark = "0.25.0"
 rfd = "0.18.0"
 # The macOS menu bar: eframe draws none of its own.
 muda = { version = "0.21.2", default-features = false }
+# The icon inside zrush.exe, which a pinned taskbar button shows.
+winresource = "0.1"
+# Windows asking the window to go: an installer replacing zrush.exe, a
+# sign-out. winit does not pass it on; zrush-session-end listens.
+zrush-session-end = { path = "crates/zrush-session-end" }
+raw-window-handle = "0.6.2"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Recovery",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 egui_kittest = { version = "0.36.2", features = ["eframe"] }
 
 assert_cmd = "2.2.2"

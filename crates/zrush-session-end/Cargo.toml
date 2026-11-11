@@ -1,0 +1,26 @@
+[package]
+name = "zrush-session-end"
+description = "Windows asking a window to close, heard: the one crate of the workspace allowed unsafe"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+raw-window-handle.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+# Not the workspace's lints: those forbid unsafe, which this crate exists to
+# hold, in one file, so no other has to. The rest is the workspace's.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+expect_used = "deny"

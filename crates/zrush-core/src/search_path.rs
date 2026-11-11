@@ -54,11 +54,46 @@ fn hide_console(_: &mut Command) {}
 /// Setting `PATH` on the command is enough: on Unix, a `PATH` given to the
 /// child is also where the program is looked for.
 fn command_in(program: impl AsRef<OsStr>, path: Option<&OsStr>) -> Command {
-    let mut c = Command::new(program);
+    let program = program.as_ref();
+    let mut c = match resolve(program, path) {
+        Some(found) => Command::new(found),
+        None => Command::new(program),
+    };
     if let Some(path) = path {
         c.env("PATH", path);
     }
     c
+}
+
+/// Windows looks a bare name up as `name.exe` only, but an editor's shell
+/// command is often a `.cmd` (VS Code's `code`, npm's `claude`): look in
+/// the `PATH` as a shell would, each directory in turn trying `PATHEXT`.
+/// A name with an extension or a directory in it is left as it is.
+#[cfg(windows)]
+fn resolve(program: &OsStr, path: Option<&OsStr>) -> Option<std::path::PathBuf> {
+    let p = std::path::Path::new(program);
+    if p.extension().is_some() || p.components().count() != 1 {
+        return None;
+    }
+    let path = path
+        .map(OsStr::to_os_string)
+        .or_else(|| std::env::var_os("PATH"))?;
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    let exts: Vec<&str> = exts.split(';').filter(|e| !e.is_empty()).collect();
+    std::env::split_paths(&path).find_map(|dir| {
+        exts.iter().find_map(|ext| {
+            let mut name = program.to_os_string();
+            name.push(ext.to_ascii_lowercase());
+            let candidate = dir.join(name);
+            candidate.is_file().then_some(candidate)
+        })
+    })
+}
+
+/// Elsewhere the lookup already finds what a shell would.
+#[cfg(not(windows))]
+fn resolve(_: &OsStr, _: Option<&OsStr>) -> Option<std::path::PathBuf> {
+    None
 }
 
 #[cfg(test)]
@@ -84,6 +119,24 @@ mod tests {
             String::from_utf8_lossy(&out.stdout).trim(),
             path.to_string_lossy()
         );
+    }
+
+    /// VS Code's `code` and npm's `claude` are `.cmd` files on Windows.
+    #[cfg(windows)]
+    #[test]
+    fn a_cmd_shell_command_is_found_by_its_bare_name() {
+        let td = tempfile::TempDir::new().unwrap();
+        std::fs::write(td.path().join("zrush-test-hello.cmd"), "@echo hello %1\r\n").unwrap();
+        let system = std::env::var_os("SystemRoot").unwrap();
+        let system32 = std::path::Path::new(&system).join("System32");
+        let path = std::env::join_paths([td.path(), system32.as_path()]).unwrap();
+
+        let out = command_in("zrush-test-hello", Some(&path))
+            .arg("there")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello there");
     }
 
     #[test]

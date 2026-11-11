@@ -433,6 +433,16 @@ the app's commands are in the menu bar (**Open Repository…** `⌘O`,
 **Settings…** `⌘,`) and the tabs sit in the title bar; elsewhere they are
 in a bar along the top.
 
+The app carries the command line with it, as `zrush-cli`, for the editor's
+key ([One key](#one-key-whatever-the-editor-and-the-agent)) without
+installing anything else. **Settings > Editor shortcut** writes the task
+and `⌘⌥J` (`Ctrl+Alt+J`) into the editor picked above it, VS Code, Cursor
+or Zed, naming that copy by its absolute path: nothing has to be on the
+`PATH`. Pick another editor later and the same row offers to set it up
+there; a task of ours written by hand shows **Update**. The files keep
+everything else in them, and the one changed is copied beside itself as
+`<name>.zrush-bak` first.
+
 It is a preview, released as `gui-vX.Y.Z` pre-releases on the
 [releases page](https://github.com/christphe/zrush/releases):
 
@@ -446,7 +456,7 @@ It is a preview, released as `gui-vX.Y.Z` pre-releases on the
   needs an administrator's yes. It is not signed: SmartScreen says
   "unknown publisher", **More info** then **Run anyway**.
 - **Linux**, or any of them by hand: the `zrush-gui-<target>` archive holds
-  the bare binary.
+  the bare binary, and `zrush-cli` beside it.
 
 Self-update comes later. From a checkout:
 

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-License-Identifier: GPL-3.0-only
+  Copyright (C) 2026 Christophe Opoix
+
+  WiX's own words on the last-look and the last pages, replaced
+  by properties zrush.wxs sets: one wording for a first install, another
+  when an earlier zrush is there and is about to be replaced, so an update
+  says it is one.
+-->
+<WixLocalization Culture="en-US" xmlns="http://wixtoolset.org/schemas/v4/wxl">
+  <String Id="VerifyReadyDlgInstallTitle" Value="{\WixUI_Font_Title}[ZrushReadyTitle]" />
+  <String Id="VerifyReadyDlgInstallText" Value="[ZrushReadyText]" />
+  <String Id="VerifyReadyDlgInstall" Value="[ZrushReadyButton]" />
+  <String Id="ExitDialogDescription" Value="[ZrushDoneText]" />
+</WixLocalization>
