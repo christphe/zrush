@@ -249,7 +249,12 @@ jobs:
           tools/bundle-macos.sh --target ${{ matrix.target }} --dmg
           cp "target/${{ matrix.target }}/release/zrush.dmg" "dist/zrush-${{ matrix.target }}.dmg"
 
-      # WiX v5: v6 and later ask for a maintenance fee agreement first.
+      # The .msi is built with WiX, held at v5 on purpose. From v6 its
+      # licence adds FireGiant's "Open Source Maintenance Fee" (a payment
+      # expected from organisations earning from the project) and newer
+      # releases make the build accept that licence explicitly. v5 is
+      # plain MS-RL and does all this installer needs; moving past it is a
+      # licensing decision, not a version bump.
       - name: Installer
         if: runner.os == 'Windows'
         shell: bash
@@ -257,9 +262,12 @@ jobs:
           set -euo pipefail
           dotnet tool install --global wix --version 5.0.2
           wix extension add -g WixToolset.UI.wixext/5.0.2
+          wix extension add -g WixToolset.Util.wixext/5.0.2
           tools/windows/license-rtf.sh > target/License.rtf
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/zrush-gui/Cargo.toml | head -1)
-          wix build tools/windows/zrush.wxs -arch x64 -ext WixToolset.UI.wixext \
+          wix build tools/windows/zrush.wxs tools/windows/ui.wxs \
+            -loc tools/windows/zrush.en-us.wxl -arch x64 \
+            -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext \
             -d Version="$version" \
             -d Exe="target/${{ matrix.target }}/release/zrush-gui.exe" \
             -d Cli="target/${{ matrix.target }}/release/zrush.exe" \

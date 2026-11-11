@@ -29,16 +29,38 @@ fn main() -> eframe::Result<()> {
     if let Ok(icon) = eframe::icon_data::from_png_bytes(zrush_gui::chrome::ICON) {
         viewport = viewport.with_icon(icon);
     }
-    let options = eframe::NativeOptions {
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions {
         viewport,
         persist_window: true,
         ..Default::default()
     };
+    // Not OpenGL on Windows, unless WGPU_BACKEND asks for it. Merely looked
+    // at, wgpu's OpenGL leaves a hidden window on a thread that reads no
+    // messages; the Restart Manager takes zrush for hung on that window and
+    // gives up closing it, so an installer could not replace zrush.exe.
+    // DirectX 12, with Vulkan beside it, draws everything zrush draws.
+    #[cfg(windows)]
+    {
+        use eframe::egui_wgpu::{WgpuSetupCreateNew, wgpu::Backends};
+        let mut setup = WgpuSetupCreateNew::without_display_handle();
+        setup.instance_descriptor.backends = Backends::from_env().unwrap_or(Backends::PRIMARY);
+        options.wgpu_options.wgpu_setup = setup.into();
+    }
     eframe::run_native(
         "zrush",
         options,
         Box::new(|cc| {
             zrush_gui::fonts::install(&cc.egui_ctx);
+            // Windows closing the session, or an installer closing zrush to
+            // replace it: close as the close button would, saving the
+            // window; and after an update, come back.
+            let ctx = cc.egui_ctx.clone();
+            zrush_session_end::on_session_end(cc, move || {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                ctx.request_repaint();
+            });
+            zrush_session_end::restart_after_update();
             #[cfg(target_os = "macos")]
             let menus = zrush_gui::menu::Menus::install(&cc.egui_ctx);
             let ctx = cc.egui_ctx.clone();

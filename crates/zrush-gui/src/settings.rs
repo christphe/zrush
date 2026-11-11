@@ -334,9 +334,14 @@ fn page(
                         }
                         ui.add_space(14.0);
                         ui.label(
-                            RichText::new(format!("Saved to {}", z.dirs().config_file().display()))
-                                .small()
-                                .color(ui.visuals().weak_text_color()),
+                            // The version too: off macOS there is no About.
+                            RichText::new(format!(
+                                "zrush {} · Saved to {}",
+                                env!("CARGO_PKG_VERSION"),
+                                z.dirs().config_file().display()
+                            ))
+                            .small()
+                            .color(ui.visuals().weak_text_color()),
                         );
                         state.current = current;
                     });
@@ -581,7 +586,7 @@ fn control_ui(
         Kind::Agent => {
             let ids: Vec<&str> = z.agents().iter().map(|a| a.id()).collect();
             let current = ids.iter().position(|id| cfg.agent.as_deref() == Some(*id));
-            segmented(ui, &ids, current).map(|i| actions::switch_agent(z, ids[i]))
+            agent_choice(ui, &ids, current).map(|i| actions::switch_agent(z, ids[i]))
         }
         Kind::Number | Kind::Words | Kind::Path => field(ui, state, z, cfg, key, kind, label),
     }
@@ -672,6 +677,18 @@ fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
         m(a.b(), b.b()),
         m(a.a(), b.a()),
     )
+}
+
+/// The agents installed, one to pick; or what to do when there are none.
+fn agent_choice(ui: &mut Ui, ids: &[&str], current: Option<usize>) -> Option<usize> {
+    if ids.is_empty() {
+        ui.label(
+            RichText::new("None found: install claude, or add its folder to the PATH")
+                .color(ui.visuals().warn_fg_color),
+        );
+        return None;
+    }
+    segmented(ui, ids, current)
 }
 
 /// One of a few, side by side in a rounded track; the index picked.
@@ -906,6 +923,23 @@ mod tests {
         for t in h.state().tabs() {
             assert!(!t.zrush().unwrap().config().titles, "{}", t.title);
         }
+    }
+
+    #[test]
+    fn no_agent_found_is_said_rather_than_an_empty_choice() {
+        let h = Harness::new_ui(|ui| {
+            super::agent_choice(ui, &[], None);
+        });
+        assert!(h.query_by_label_contains("None found").is_some());
+    }
+
+    /// Windows has no About menu: the version has to show somewhere.
+    #[test]
+    fn settings_name_the_version_running() {
+        let td = tempfile::TempDir::new().unwrap();
+        let h = harness(two_tabs(&td));
+        let version = format!("zrush {}", env!("CARGO_PKG_VERSION"));
+        assert!(h.query_by_label_contains(&version).is_some());
     }
 
     #[test]

@@ -32,8 +32,39 @@ pub fn adopt() {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows hands a window its user's `PATH`, but Claude's installer puts
+/// `claude.exe` in `~\.local\bin` and leaves adding it to the user: a
+/// terminal's profile often does, the Start menu never.
+#[cfg(windows)]
+pub fn adopt() {
+    let Some(home) = std::env::var_os("USERPROFILE") else {
+        return;
+    };
+    let path = std::env::var_os("PATH");
+    if let Some(path) = with_user_bins(path.as_deref(), Path::new(&home)) {
+        zrush_core::search_path::adopt(path);
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn adopt() {}
+
+/// `path` with `~/.local/bin` added at the end, when that folder exists and
+/// is not in it yet; `None` when nothing changes.
+pub fn with_user_bins(path: Option<&std::ffi::OsStr>, home: &Path) -> Option<OsString> {
+    let bin = home.join(".local").join("bin");
+    if !bin.is_dir() {
+        return None;
+    }
+    let mut dirs: Vec<_> = path
+        .map(|p| std::env::split_paths(p).collect())
+        .unwrap_or_default();
+    if dirs.contains(&bin) {
+        return None;
+    }
+    dirs.push(bin);
+    std::env::join_paths(dirs).ok()
+}
 
 /// The `PATH` an interactive login shell ends up with, or `None` when the
 /// shell failed, said nothing usable, or took too long.
@@ -80,6 +111,23 @@ mod tests {
     fn the_path_is_what_sits_between_the_marks() {
         let out = format!("Welcome!\n{MARK}/opt/homebrew/bin:/usr/bin{MARK}");
         assert_eq!(parse(&out), Some("/opt/homebrew/bin:/usr/bin"));
+    }
+
+    #[test]
+    fn the_folder_claude_installs_to_is_added_when_it_exists() {
+        let home = tempfile::TempDir::new().unwrap();
+        let bin = home.path().join(".local").join("bin");
+        let elsewhere = home.path().join("elsewhere");
+        let path = std::env::join_paths([&elsewhere]).unwrap();
+        assert_eq!(with_user_bins(Some(&path), home.path()), None);
+
+        std::fs::create_dir_all(&bin).unwrap();
+        let added = with_user_bins(Some(&path), home.path()).unwrap();
+        let dirs: Vec<_> = std::env::split_paths(&added).collect();
+        assert_eq!(dirs, vec![elsewhere, bin.clone()]);
+
+        // Already there: nothing to change.
+        assert_eq!(with_user_bins(Some(&added), home.path()), None);
     }
 
     #[test]
