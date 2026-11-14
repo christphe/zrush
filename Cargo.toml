@@ -42,7 +42,7 @@ egui_commonmark = "0.25.0"
 rfd = "0.18.0"
 # The macOS menu bar: eframe draws none of its own.
 muda = { version = "0.21.2", default-features = false }
-egui_kittest = { version = "0.36.2", features = ["eframe"] }
+egui_kittest = { version = "0.37.0", features = ["eframe"] }
 
 assert_cmd = "2.2.2"
 insta = "1.48.0"
