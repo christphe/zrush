@@ -38,7 +38,7 @@ xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
 eframe = { version = "0.36.2", features = ["persistence"] }
 egui = "0.36.2"
 egui_dock = "0.21.1"
-egui_commonmark = "0.25.0"
+egui_commonmark = "0.26.0"
 rfd = "0.18.0"
 # The macOS menu bar: eframe draws none of its own.
 muda = { version = "0.21.2", default-features = false }
